@@ -6,7 +6,7 @@ services:
   stock-daily-job:
     build: .
     image: omnibot:latest
-    container_name: omnistock-daily-job
+    container_name: v2-omnistock-daily-job
     command: python -m stock_bot.daily_job
     restart: unless-stopped
     volumes:
@@ -23,7 +23,7 @@ services:
   stock-tg-bot:
     build: .
     image: omnibot:latest
-    container_name: omnistock-tg-bot
+    container_name: v2-omnistock-tg-bot
     command: python -m stock_bot.tg_main
     restart: unless-stopped
     volumes:
@@ -42,7 +42,7 @@ services:
   ehs-tg-bot:
     build: .
     image: omnibot:latest
-    container_name: omniehs-tg-bot
+    container_name: v2-omniehs-tg-bot
     command: python -m ehs_bot.tg_main
     restart: unless-stopped
     volumes:
