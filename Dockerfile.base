@@ -1,9 +1,8 @@
 FROM python:3.11-slim
 
-# pip 依赖（阿里云镜像，实测最快）
+# pip 依赖（清华镜像）
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt -i https://mirrors.aliyun.com/pypi/simple/
+RUN pip install --no-cache-dir -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 
-# Playwright Chromium 内核（华为云镜像，实测可用）
-ENV PLAYWRIGHT_DOWNLOAD_HOST=https://mirrors.huaweicloud.com/playwright
+# Playwright Chromium 内核（自动安装所有系统依赖）
 RUN playwright install --with-deps chromium
