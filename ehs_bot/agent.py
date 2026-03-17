@@ -27,10 +27,10 @@ if not EMBEDDING_KEY:
 # 目录配置
 # ==========================================
 BASE_DIR = Path(__file__).parent
-SANDBOX_DIR = (BASE_DIR / "../../data/ehs/agent_workspace").resolve()
-KB_DIR = (BASE_DIR / "../../data/ehs/knowledge_base").resolve()
-MEMORY_DIR = (BASE_DIR / "../../data/ehs/memory").resolve()
-FAISS_DIR = (BASE_DIR / "../../data/ehs/embeddings").resolve()
+SANDBOX_DIR = (BASE_DIR / "../data/ehs/agent_workspace").resolve()
+KB_DIR = (BASE_DIR / "../data/ehs/knowledge_base").resolve()
+MEMORY_DIR = (BASE_DIR / "../data/ehs/memory").resolve()
+FAISS_DIR = (BASE_DIR / "../data/ehs/embeddings").resolve()
 
 for _d in [SANDBOX_DIR, KB_DIR, MEMORY_DIR, FAISS_DIR]:
     _d.mkdir(parents=True, exist_ok=True)
