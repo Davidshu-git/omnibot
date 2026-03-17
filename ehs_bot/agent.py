@@ -9,6 +9,7 @@ from core.agent_base import build_agent
 from core.tools.file_tools import make_file_tools
 from core.tools.memory_tools import make_memory_tools, get_user_profile
 from core.tools.job_tools import make_job_tools
+from ehs_bot.tools.ehs_tools import make_ehs_tools
 
 load_dotenv()
 
@@ -64,6 +65,7 @@ _tools = (
     make_file_tools(SANDBOX_DIR, KB_DIR, EMBEDDING_KEY, FAISS_DIR)
     + make_memory_tools(MEMORY_DIR)
     + make_job_tools("ehs_bot.daily_job")
+    + make_ehs_tools(SANDBOX_DIR, MEMORY_DIR)
 )
 
 # ==========================================
