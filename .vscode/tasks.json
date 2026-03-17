@@ -1,0 +1,52 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "🐳 Docker: 构建基础镜像（首次 / 依赖变更时执行）",
+            "type": "shell",
+            "command": "docker build -f Dockerfile.base -t omnibot-base:latest .",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
+        },
+        {
+            "label": "🐳 Docker: 无缓存重建基础镜像",
+            "type": "shell",
+            "command": "docker build -f Dockerfile.base -t omnibot-base:latest --no-cache .",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
+        },
+        {
+            "label": "🚀 OmniBot: 重建业务镜像并启动所有服务",
+            "type": "shell",
+            "command": "docker compose up -d --build",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
+        },
+        {
+            "label": "📋 OmniBot: 查看所有服务日志",
+            "type": "shell",
+            "command": "docker compose logs -f",
+            "group": "test",
+            "presentation": {
+                "reveal": "always",
+                "panel": "new",
+                "clear": true
+            }
+        }
+    ]
+}
