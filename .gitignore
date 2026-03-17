@@ -1,0 +1,9 @@
+.env
+.env.*
+*.pyc
+__pycache__/
+.venv/
+*.lock
+data/
+jobs/
+.DS_Store

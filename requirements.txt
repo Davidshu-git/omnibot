@@ -1,0 +1,54 @@
+# ==========================================
+# OmniStock Agent - 核心生产依赖清单
+# 依赖策略：应用级项目，使用 ~= 锁定 Minor 版本，防止破坏性更新
+# ==========================================
+
+# 1. 🤖 AI 编排与大模型基座 (LLM & Orchestration)
+langchain~=0.3.0
+langchain-core~=0.3.0              # 核心抽象层 (显式声明)
+langchain-openai~=0.3.0            # OpenAI 协议兼容适配器
+langchain-community~=0.3.0         # 社区生态加载器
+langchain-text-splitters~=0.3.0    # 文本切分器 (显式声明)
+tiktoken~=0.12.0                   # 词元分词器底层支持
+
+# 2. 🧠 RAG 知识库与向量引擎 (Retrieval-Augmented Generation)
+faiss-cpu~=1.13.0                  # 核心本地向量数据库
+pypdf~=6.7.0                       # PDF 文档解析
+dashscope~=1.25.0                  # 阿里云百炼 Embeddings 底层通信
+
+# 3. 📈 量化数据源与可视化 (Financial Data & Viz)
+yfinance~=1.2.0                    # 统一的全球股票数据引擎 (美股/港股/A 股)
+mplfinance==0.12.10b0              # 专用的金融 K 线图渲染引擎
+matplotlib~=3.9.0                  # 通用图表渲染引擎
+akshare~=1.16.0                    # A 股量化数据源 (财联社电报/板块热点/ETF 行情)
+pandas~=2.3.0                      # 数据结构化处理与分析
+playwright~=1.58.0                 # 无头浏览器截图引擎 (表格渲染)
+
+# 4. 🛠️ 核心系统组件与容错机制 (System Core & Resiliency)
+python-dotenv~=1.2.0               # 环境变量注入
+filelock~=3.13.0                   # 本地持久化记忆的原子锁
+tenacity~=9.1.0                    # 高可用指数退避重试框架
+ddgs~=9.8.0                        # DuckDuckGo 搜索 (股票代码盲搜)
+
+# 5. 💻 极客终端交互 UI (Terminal Hacker Experience)
+rich~=14.3.0                       # 终端 Markdown 与自适应布局排版
+prompt_toolkit~=3.0.0              # 带历史记录的极客级终端输入流
+
+# 6. 📧 旁路调度系统 (Daily Job Scheduler)
+schedule~=1.2.0                    # 常驻定时任务调度器
+markdown~=3.6.0                    # Markdown 转 HTML 渲染引擎
+pydantic~=2.12.0                   # 数据校验与 SecretStr 类型支持
+
+# 7. 🌐 网络请求基础库 (HTTP Client)
+requests~=2.32.0                   # HTTP 请求底层支持 (ddgs 依赖/异常捕获)
+
+# 8. 🧪 测试与质量保证 (Testing & QA)
+pytest~=8.0.0                      # 核心测试框架
+pytest-mock~=3.12.0                # pytest Mock 插件
+pytest-cov~=4.1.0                  # 代码覆盖率统计插件
+
+# 9. 🤖 Telegram 机器人 (Telegram Bot API)
+python-telegram-bot~=22.6          # Telegram Bot API (tg_main.py 依赖)
+
+# --- 新增：多智能体图计算引擎 ---
+langgraph~=0.2.0

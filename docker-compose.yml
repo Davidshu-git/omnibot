@@ -1,0 +1,70 @@
+version: "3.9"
+
+# ==========================================
+# OmniBot Monorepo - 多 Bot 容器编排
+# ==========================================
+# 服务架构：
+#   stock-tg-bot      - OmniStock Telegram Bot（实时交互）
+#   stock-daily-job   - OmniStock 盘后调度器（每日 15:30）
+#   ehs-tg-bot        - OmniEHS Telegram Bot（实时交互）
+#
+# 数据隔离：每个 bot 的持久化数据独立挂载到 ./data/<bot-name>/
+# 代码共享：所有容器挂载同一份代码，确保 core/ 共享模块对齐
+
+services:
+
+  # -----------------------------------------------------------
+  # OmniStock - Telegram Bot（常驻进程）
+  # -----------------------------------------------------------
+  stock-tg-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omnibot:latest
+    container_name: omnistock-tg-bot
+    command: python -m stock_bot.tg_main
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data/stock:/app/data/stock
+    working_dir: /app
+    depends_on:
+      - stock-daily-job
+
+  # -----------------------------------------------------------
+  # OmniStock - 盘后定时调度器（常驻进程，每日 15:30 触发）
+  # -----------------------------------------------------------
+  stock-daily-job:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omnibot:latest
+    container_name: omnistock-daily-job
+    command: python -m stock_bot.daily_job
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data/stock:/app/data/stock
+    working_dir: /app
+
+  # -----------------------------------------------------------
+  # OmniEHS - Telegram Bot（常驻进程）
+  # -----------------------------------------------------------
+  ehs-tg-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omnibot:latest
+    container_name: omniehs-tg-bot
+    command: python -m ehs_bot.tg_main
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - ./data/ehs:/app/data/ehs
+    working_dir: /app
