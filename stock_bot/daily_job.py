@@ -27,6 +27,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from pydantic import SecretStr
 from dotenv import load_dotenv
 from rich.console import Console
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from core.notifier import send_market_report_email
 
@@ -41,6 +42,10 @@ from stock_bot.valuation_engine import (
 
 console: Console = Console()
 
+BASE_DIR: Path = Path(__file__).resolve().parent.parent
+STOCK_MEMORY_DIR: Path = BASE_DIR / "data/stock/memory"
+STOCK_KB_DIR: Path = BASE_DIR / "data/stock/knowledge_base"
+STOCK_WORKSPACE_DIR: Path = BASE_DIR / "data/stock/agent_workspace"
 
 load_dotenv()
 
@@ -104,7 +109,7 @@ def load_user_profile() -> Dict[str, Any]:
     Returns:
         Dict[str, Any]: 用户记忆字典，如果文件不存在或解析失败则返回空字典。
     """
-    profile_path: Path = Path("./memory/user_profile.json").resolve()
+    profile_path: Path = STOCK_MEMORY_DIR / "user_profile.json"
 
     if not profile_path.exists():
         return {}
@@ -123,6 +128,21 @@ def load_user_profile() -> Dict[str, Any]:
         return {}
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+def _fetch_cls_news() -> pd.DataFrame:
+    return ak.stock_info_global_cls(symbol="全部")
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+def _fetch_sina_news() -> pd.DataFrame:
+    return ak.stock_info_global_sina()
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True)
+def _fetch_em_news() -> pd.DataFrame:
+    return ak.stock_info_global_em()
+
+
 def fetch_global_market_news() -> str:
     """
     高可用多源数据聚合抓取，内置三级降级与数据融合机制。
@@ -139,9 +159,9 @@ def fetch_global_market_news() -> str:
         RuntimeError: 所有数据源全部失效时抛出。
     """
     data_sources: List[Dict[str, Any]] = [
-        {"name": "财联社全球电报", "func": lambda: ak.stock_info_global_cls(symbol="全部")},
-        {"name": "新浪 7x24", "func": lambda: ak.stock_info_global_sina()},
-        {"name": "东财全球快讯", "func": lambda: ak.stock_info_global_em()},
+        {"name": "财联社全球电报", "func": _fetch_cls_news},
+        {"name": "新浪 7x24", "func": _fetch_sina_news},
+        {"name": "东财全球快讯", "func": _fetch_em_news},
     ]
 
     column_mapping: Dict[str, Dict[str, str]] = {
@@ -329,7 +349,7 @@ def cleanup_agent_workspace(threshold_mb: int = 500) -> None:
     Args:
         threshold_mb: 触发清理的容量阈值（MB），默认 500MB
     """
-    workspace = Path("./agent_workspace").resolve()
+    workspace = STOCK_WORKSPACE_DIR
     if not workspace.exists():
         return
 
@@ -411,7 +431,7 @@ def job_routine() -> None:
 
     console.print("[bold green]✔️  [报告生成] 盘后报告生成完毕[/bold green]")
 
-    kb_dir: Path = Path("./knowledge_base").resolve()
+    kb_dir: Path = STOCK_KB_DIR
     kb_dir.mkdir(parents=True, exist_ok=True)
 
     file_name: str = f"盘后日报_{datetime.now().strftime('%Y-%m-%d_%H%M')}.md"
@@ -440,7 +460,7 @@ def job_routine() -> None:
             int(u.strip()) for u in _os.getenv("ALLOWED_TG_USERS", "").split(",")
             if u.strip().isdigit()
         ]
-        _sandbox = _Path("./data/stock/agent_workspace").resolve()
+        _sandbox = STOCK_WORKSPACE_DIR
         console.print("[bold yellow]🚀 [Telegram 推送] 正在调用渲染引擎下发移动端...[/bold yellow]")
 
         asyncio.run(broadcast_to_telegram(report_content, _bot_token, _user_ids, _sandbox))
