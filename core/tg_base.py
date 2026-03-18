@@ -559,8 +559,6 @@ class TelegramBotBase:
     # ------------------------------------------------------------------
 
     def _is_authorized(self, user_id: int) -> bool:
-        if not self.allowed_user_ids:
-            return True
         return user_id in self.allowed_user_ids
 
     def _read_job_status_sync(self, job_id: str) -> str:

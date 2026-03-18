@@ -29,6 +29,8 @@ ALLOWED_USER_IDS: list[int] = [
 
 if not TG_BOT_TOKEN:
     raise ValueError("🚨 致命错误：EHS_TG_BOT_TOKEN 未配置！")
+if not ALLOWED_USER_IDS:
+    raise ValueError("🚨 致命错误：EHS_ALLOWED_TG_USERS 未配置或格式错误（需为逗号分隔的整数用户 ID）！")
 
 
 class EHSBot(TelegramBotBase):
