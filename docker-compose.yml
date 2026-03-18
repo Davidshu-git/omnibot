@@ -10,6 +10,8 @@ services:
     command: python -m stock_bot.daily_job
     restart: unless-stopped
     volumes:
+      - ./core:/app/core
+      - ./stock_bot:/app/stock_bot
       - ./data/stock/memory:/app/data/stock/memory
       - ./data/stock/agent_workspace:/app/data/stock/agent_workspace
       - ./data/stock/knowledge_base:/app/data/stock/knowledge_base
@@ -27,6 +29,8 @@ services:
     command: python -m stock_bot.tg_main
     restart: unless-stopped
     volumes:
+      - ./core:/app/core
+      - ./stock_bot:/app/stock_bot
       - ./data/stock/memory:/app/data/stock/memory
       - ./data/stock/agent_workspace:/app/data/stock/agent_workspace
       - ./data/stock/knowledge_base:/app/data/stock/knowledge_base
@@ -46,6 +50,8 @@ services:
     command: python -m ehs_bot.tg_main
     restart: unless-stopped
     volumes:
+      - ./core:/app/core
+      - ./ehs_bot:/app/ehs_bot
       - ./data/ehs/memory:/app/data/ehs/memory
       - ./data/ehs/agent_workspace:/app/data/ehs/agent_workspace
       - ./data/ehs/knowledge_base:/app/data/ehs/knowledge_base
