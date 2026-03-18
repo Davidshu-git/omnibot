@@ -255,7 +255,7 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
         if not names:
             return "❌ 未提供任何文件名。"
 
-        deleted, failed = [], []
+        deleted_labels, deleted_sizes, failed = [], [], []
         for name in names:
             target, err = _resolve_safe_path(name, sandbox_dir)
             if err:
@@ -267,13 +267,105 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
             try:
                 size_mb = round(target.stat().st_size / (1024 * 1024), 3)
                 target.unlink()
-                deleted.append(f"{name} ({size_mb} MB)")
+                deleted_labels.append(f"{name} ({size_mb} MB)")
+                deleted_sizes.append(size_mb)
             except OSError as e:
                 failed.append(f"{name}（删除失败：{e}）")
 
-        total_mb = sum(float(d.split('(')[1].rstrip(' MB)')) for d in deleted)
-        result = [f"✅ 成功删除 {len(deleted)} 个文件，释放 {total_mb:.2f} MB："]
-        result += [f"  • {d}" for d in deleted]
+        total_mb = sum(deleted_sizes)
+        result = [f"✅ 成功删除 {len(deleted_labels)} 个文件，释放 {total_mb:.2f} MB："]
+        result += [f"  • {d}" for d in deleted_labels]
+        if failed:
+            result += [f"\n⚠️ 以下文件未能删除："] + [f"  • {f}" for f in failed]
+        return "\n".join(result)
+
+    @tool
+    def preview_kb_cleanup(older_than_days: int = 0, name_pattern: str = "", file_extensions: str = "") -> str:
+        """
+        扫描知识库并列出符合条件的待删文件，不执行任何删除操作。
+        用户确认列表后，再调用 execute_kb_cleanup 执行删除。
+
+        Args:
+            older_than_days: 仅列出修改时间超过指定天数的文件，0 表示不限制。
+            name_pattern: 仅列出文件名包含该关键词的文件（如 "盘后日报"），空字符串表示不限制。
+            file_extensions: 仅列出指定后缀的文件，多个后缀用逗号分隔（如 "md,pdf"），空字符串表示不限制。
+        """
+        now = _time.time()
+        ext_filter = [e.strip().lstrip('.').lower()
+                      for e in file_extensions.split(',') if e.strip()] if file_extensions else []
+
+        candidates = []
+        try:
+            for f in kb_dir.iterdir():
+                if not f.is_file() or f.suffix.lower() not in allowed_extensions:
+                    continue
+                if name_pattern and name_pattern not in f.name:
+                    continue
+                stat = f.stat()
+                age_days = (now - stat.st_mtime) / 86400
+                ext = f.suffix.lstrip('.').lower()
+                if older_than_days > 0 and age_days < older_than_days:
+                    continue
+                if ext_filter and ext not in ext_filter:
+                    continue
+                candidates.append({
+                    "name": f.name,
+                    "size_mb": round(stat.st_size / (1024 * 1024), 3),
+                    "age_days": round(age_days, 1),
+                })
+        except Exception as e:
+            return f"❌ 扫描知识库出错：{type(e).__name__} - {str(e)}"
+
+        if not candidates:
+            return "✅ 未找到符合条件的知识库文件，无需清理。"
+
+        candidates.sort(key=lambda x: x["age_days"], reverse=True)
+        total_mb = sum(c["size_mb"] for c in candidates)
+        lines = [f"📋 找到 {len(candidates)} 个知识库文件，共 {total_mb:.2f} MB：\n"]
+        for c in candidates:
+            lines.append(f"  • {c['name']}  ({c['size_mb']} MB, {c['age_days']} 天前)")
+        lines.append("\n⚠️ 请向用户展示以上列表并询问是否确认删除。确认后调用 execute_kb_cleanup 执行。")
+        return "\n".join(lines)
+
+    @tool
+    def execute_kb_cleanup(filenames: str) -> str:
+        """
+        删除知识库中指定的文件，同时清理对应的 FAISS 向量缓存。必须在用户明确确认后才能调用。
+
+        Args:
+            filenames: 要删除的文件名列表，用逗号分隔（仅文件名，不含路径）。
+        """
+        import shutil
+        names = [n.strip() for n in filenames.split(',') if n.strip()]
+        if not names:
+            return "❌ 未提供任何文件名。"
+
+        deleted_labels, deleted_sizes, failed = [], [], []
+        for name in names:
+            target, err = _resolve_safe_path(name, kb_dir)
+            if err:
+                failed.append(f"{name}（路径越权，已拦截）")
+                continue
+            if not target.exists():
+                failed.append(f"{name}（文件不存在）")
+                continue
+            try:
+                size_mb = round(target.stat().st_size / (1024 * 1024), 3)
+                target.unlink()
+                cache_dir = faiss_dir / f"{name}_vstore"
+                if cache_dir.exists():
+                    shutil.rmtree(cache_dir)
+                deleted_labels.append(f"{name} ({size_mb} MB)")
+                deleted_sizes.append(size_mb)
+            except OSError as e:
+                failed.append(f"{name}（删除失败：{e}）")
+
+        if deleted_labels:
+            _get_or_build_vectorstore.cache_clear()
+
+        total_mb = sum(deleted_sizes)
+        result = [f"✅ 成功删除 {len(deleted_labels)} 个知识库文件，释放 {total_mb:.2f} MB："]
+        result += [f"  • {d}" for d in deleted_labels]
         if failed:
             result += [f"\n⚠️ 以下文件未能删除："] + [f"  • {f}" for f in failed]
         return "\n".join(result)
@@ -285,4 +377,6 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
         analyze_local_document,
         preview_workspace_cleanup,
         execute_workspace_cleanup,
+        preview_kb_cleanup,
+        execute_kb_cleanup,
     ]

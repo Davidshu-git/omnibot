@@ -50,6 +50,7 @@ class EHSBot(TelegramBotBase):
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
         return [
             [InlineKeyboardButton("📚 调阅知识库档案", callback_data="cmd_kb_list")],
+            [InlineKeyboardButton("🗑️ 清理知识库", callback_data="cmd_kb_cleanup")],
             [InlineKeyboardButton("📝 触发 EHS 定期简报", callback_data="cmd_trigger_job")],
             [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
         ]
@@ -64,6 +65,8 @@ class EHSBot(TelegramBotBase):
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "trigger_job": "🚀 正在将简报任务投递至独立进程...",
+            "preview_kb_cleanup": "🔍 正在扫描知识库文件列表...",
+            "execute_kb_cleanup": "🗑️ 正在清理知识库文件及向量缓存...",
         }
 
     async def setup_extra_handlers(self, app: Application) -> None:
@@ -81,6 +84,8 @@ class EHSBot(TelegramBotBase):
     ) -> str:
         if cmd == "cmd_kb_list":
             return "列出知识库里现在有哪些文件可以读取？"
+        if cmd == "cmd_kb_cleanup":
+            return "请先用 preview_kb_cleanup 扫描整个知识库，列出所有文件（含大小和存放时长），然后询问我想删除哪些。"
         logger.warning(f"未知按钮指令：{cmd}")
         return ""
 

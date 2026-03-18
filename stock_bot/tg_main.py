@@ -67,6 +67,7 @@ class StockBot(TelegramBotBase):
             [InlineKeyboardButton("🔔 设定盯盘价格预警", callback_data="cmd_alert")],
             [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
             [InlineKeyboardButton("📚 调阅历史情报档案", callback_data="cmd_kb_list")],
+            [InlineKeyboardButton("🗑️ 清理知识库", callback_data="cmd_kb_cleanup")],
         ]
 
     def get_welcome_text(self, first_name: str) -> str:
@@ -85,6 +86,8 @@ class StockBot(TelegramBotBase):
             "calculate_exact_portfolio_value": "🧮 正在使用程序精确核算财务数据...",
             "create_price_alert": "🔔 正在将盯盘预警挂载到后台引擎...",
             "trigger_job": "🚀 正在将研报任务投递至独立进程...",
+            "preview_kb_cleanup": "🔍 正在扫描知识库文件列表...",
+            "execute_kb_cleanup": "🗑️ 正在清理知识库文件及向量缓存...",
         }
 
     async def setup_job_queue(self, app: Application) -> None:
@@ -115,6 +118,9 @@ class StockBot(TelegramBotBase):
 
         if cmd == "cmd_kb_list":
             return "列出知识库里现在有哪些文件可以读取？"
+
+        if cmd == "cmd_kb_cleanup":
+            return "请先用 preview_kb_cleanup 扫描整个知识库，列出所有文件（含大小和存放时长），然后询问我想删除哪些。"
 
         if cmd == "cmd_alert":
             text = (
