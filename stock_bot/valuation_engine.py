@@ -506,7 +506,7 @@ def _calculate_single_position(
             price_data = fetch_stock_price_raw(ticker)
             current_price = price_data["close"]
         
-        currency = detect_ticker_currency(ticker)
+        currency = detect_ticker_currency(format_universal_ticker(ticker))
         exchange_rate = exchange_rates.get(f"{currency}_CNY", 1.0)
         
         native_market_value = current_price * shares
