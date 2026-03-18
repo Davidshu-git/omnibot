@@ -42,9 +42,10 @@ class EHSBot(TelegramBotBase):
     def get_bot_commands(self) -> list[BotCommand]:
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("status", "📊 查询最新任务进度"),
             BotCommand("kb", "📚 调阅知识库档案"),
+            BotCommand("kb_cleanup", "🗑️ 清理知识库"),
             BotCommand("report", "📝 触发 EHS 定期简报"),
+            BotCommand("status", "📊 查询最新任务进度"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
@@ -72,6 +73,7 @@ class EHSBot(TelegramBotBase):
     async def setup_extra_handlers(self, app: Application) -> None:
         from telegram.ext import CommandHandler
         app.add_handler(CommandHandler("kb", self._kb_command))
+        app.add_handler(CommandHandler("kb_cleanup", self._kb_cleanup_command))
         app.add_handler(CommandHandler("report", self._report_command))
 
     async def handle_custom_cmd(
@@ -107,6 +109,25 @@ class EHSBot(TelegramBotBase):
         )
         await self.execute_agent_task(
             "列出知识库里现在有哪些文件可以读取？",
+            message, user.id, context, update,
+        )
+
+    async def _kb_cleanup_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权访问")
+            return
+        await message.reply_text(
+            "<blockquote><b>⚡ 菜单指令注入：</b>\n<i>清理知识库</i></blockquote>",
+            parse_mode=ParseMode.HTML,
+        )
+        await self.execute_agent_task(
+            "请先用 preview_kb_cleanup 扫描整个知识库，列出所有文件（含大小和存放时长），然后询问我想删除哪些。",
             message, user.id, context, update,
         )
 
