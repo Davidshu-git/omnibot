@@ -71,8 +71,13 @@ def job_routine() -> None:
         ]
         _sandbox = SANDBOX_DIR
         if _bot_token and _user_ids:
-            asyncio.run(broadcast_to_telegram(report_content, _bot_token, _user_ids, _sandbox))
-            logger.info("📱 Telegram 广播成功")
+            _result = asyncio.run(broadcast_to_telegram(report_content, _bot_token, _user_ids, _sandbox))
+            _ok = _result["success"]
+            _fail = _result["failed"]
+            if _fail:
+                logger.warning(f"⚠️  Telegram 广播部分失败：成功 {_ok}，失败用户 {_fail}")
+            else:
+                logger.info(f"📱 Telegram 广播成功，已推送至全部 {len(_ok)} 位用户")
     except Exception as e:
         logger.warning(f"❌ Telegram 广播失败：{e}")
 

@@ -463,9 +463,13 @@ def job_routine() -> None:
         _sandbox = STOCK_WORKSPACE_DIR
         console.print("[bold yellow]🚀 [Telegram 推送] 正在调用渲染引擎下发移动端...[/bold yellow]")
 
-        asyncio.run(broadcast_to_telegram(report_content, _bot_token, _user_ids, _sandbox))
-        
-        console.print("[bold green]📱 [Telegram 推送] 研报已成功渲染并推送到手机！[/bold green]")
+        _result = asyncio.run(broadcast_to_telegram(report_content, _bot_token, _user_ids, _sandbox))
+        _ok = _result["success"]
+        _fail = _result["failed"]
+        if _fail:
+            console.print(f"[bold yellow]⚠️  [Telegram 推送] 部分推送失败：成功 {_ok}，失败用户 {_fail}[/bold yellow]")
+        else:
+            console.print(f"[bold green]📱 [Telegram 推送] 研报已成功推送至全部 {len(_ok)} 位用户！[/bold green]")
     except Exception as e:
         console.print(f"[bold red]❌ [Telegram 推送] 链路崩溃：{e}[/bold red]")
 

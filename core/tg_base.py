@@ -297,7 +297,7 @@ async def broadcast_to_telegram(
     bot_token: str,
     allowed_user_ids: list[int],
     sandbox_dir: Path,
-) -> None:
+) -> dict[str, list[int]]:
     """
     跨进程推送引擎：供 daily_job 在独立进程中直接调用。
 
@@ -306,15 +306,21 @@ async def broadcast_to_telegram(
         bot_token:        Telegram Bot Token
         allowed_user_ids: 推送目标用户 ID 列表
         sandbox_dir:      图片输出目录（用于表格渲染）
+
+    Returns:
+        dict，包含 "success" 和 "failed" 两个 user_id 列表。
     """
     if not bot_token or not allowed_user_ids:
         logger.warning("未配置 bot_token 或 allowed_user_ids，跳过推送。")
-        return
+        return {"success": [], "failed": []}
 
     bot = Bot(token=bot_token)
 
     final_text, table_render_paths = await render_markdown_table_to_image(text, sandbox_dir)
     chunks = re.split(r'(!\[.*?\]\(.*?\))', final_text)
+
+    success_ids: list[int] = []
+    failed_ids: list[int] = []
 
     for user_id in allowed_user_ids:
         try:
@@ -395,14 +401,19 @@ async def broadcast_to_telegram(
                         await bot.send_message(chat_id=user_id, text=fallback)
                     await asyncio.sleep(0.3)
 
+            success_ids.append(user_id)
+
         except Exception as e:
             logger.error(f"向用户 {user_id} 推送失败：{e}")
+            failed_ids.append(user_id)
 
     for _tmp_path in table_render_paths:
         try:
             Path(_tmp_path).unlink(missing_ok=True)
         except Exception:
             pass
+
+    return {"success": success_ids, "failed": failed_ids}
 
 
 # ---------------------------------------------------------------------------
