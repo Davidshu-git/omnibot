@@ -5,6 +5,7 @@
 import os
 import json
 import time as _time
+import unicodedata
 from pathlib import Path
 from typing import Optional
 from functools import lru_cache
@@ -31,6 +32,7 @@ def _resolve_safe_path(file_path: str, base_dir: Path) -> tuple[Optional[Path], 
         (resolved_path, None)   — 路径合法
         (None, error_message)   — 路径越权
     """
+    base_dir = base_dir.resolve()
     target = (base_dir / file_path).resolve()
     if not target.is_relative_to(base_dir):
         return None, f"❌ 安全拦截：路径 '{file_path}' 超出允许范围，已被系统拒绝。"
@@ -179,7 +181,23 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
             if err:
                 return err
             if not target_path.exists():
-                return f"❌ 找不到文件：{file_name}。请先使用 list_kb_files 工具查看当前有哪些文件。"
+                # 策略 B：多维归一化回退匹配（NFC + 去空格 + 小写）
+                # 应对 LLM 幻觉空格、macOS NFD 上传、大小写差异等场景
+                def _norm(s: str) -> str:
+                    return unicodedata.normalize('NFC', s).replace(' ', '').replace('_', '').lower()
+
+                query_norm = _norm(file_name)
+                matched = next(
+                    (f for f in kb_dir.iterdir()
+                     if f.is_file() and _norm(f.name) == query_norm),
+                    None,
+                )
+                if matched:
+                    logger.info(f"analyze_local_document 模糊匹配：'{file_name}' → '{matched.name}'")
+                    target_path = matched
+                    file_name = matched.name
+                else:
+                    return f"❌ 找不到文件：{file_name}。请先使用 list_kb_files 工具查看当前有哪些文件。"
 
             current_mtime = os.path.getmtime(target_path)
             vectorstore = _get_or_build_vectorstore(

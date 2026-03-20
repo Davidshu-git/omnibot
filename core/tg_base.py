@@ -21,6 +21,7 @@ import shutil
 import logging
 import asyncio
 import subprocess
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
@@ -522,6 +523,8 @@ class TelegramBotBase:
         self.kb_dir = kb_dir
         self.job_module = job_module
         self.job_func = job_func
+        # 暂存待确认的重复上传（user_id → 上传元信息），内存级，重启失效
+        self._pending_uploads: dict[int, dict] = {}
 
     # ------------------------------------------------------------------
     # 钩子方法（子类可重写）
@@ -616,6 +619,48 @@ class TelegramBotBase:
             return ""
         latest_file = max(files, key=os.path.getmtime)
         return latest_file.stem
+
+    async def _execute_kb_upload(
+        self,
+        message: Message,
+        user_id: int,
+        context: ContextTypes.DEFAULT_TYPE,
+        update: Update,
+        file_id: str,
+        file_name: str,
+        save_path: Path,
+        file_size_mb: float,
+    ) -> None:
+        """下载文件至知识库并触发 RAG 摘要（handle_document 与按钮回调的公共执行体）。"""
+        status_msg = await message.reply_text(
+            f"⏳ <b>正在拉取文件：</b>{file_name} ({file_size_mb:.1f}MB)",
+            parse_mode=ParseMode.HTML,
+        )
+        try:
+            tg_file = await context.bot.get_file(file_id)
+            await tg_file.download_to_drive(custom_path=save_path)
+
+            await status_msg.edit_text(
+                f"<blockquote><b>⚡ 文件已挂载至知识库：{file_name}</b></blockquote>\n"
+                f"<i>🧠 正在唤醒 Embedding 引擎进行 RAG 深度阅读，请稍候...</i>",
+                parse_mode=ParseMode.HTML,
+            )
+
+            rag_prompt = (
+                f"我已经把一份名为 '{file_name}' 的文件放进了知识库。"
+                f"请调用 analyze_local_document 工具，仔细阅读这篇文档，"
+                f"并给我一份结构化的核心内容摘要。"
+            )
+            await self.execute_agent_task(rag_prompt, message, user_id, context, update)
+
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.error(f"文件接收与解析失败：{e}")
+            await status_msg.edit_text(f"❌ 文件处理失败：{type(e).__name__}")
 
     async def _handle_status_query(self, message: Message) -> None:
         """内部函数：处理状态查询并回复（可被命令和按钮复用）。"""
@@ -884,7 +929,9 @@ class TelegramBotBase:
         if doc is None:
             return
 
-        file_name = doc.file_name or f"upload_{int(time.time())}.txt"
+        raw_name = doc.file_name or f"upload_{int(time.time())}.txt"
+        # 策略 A：NFC 统一编码 + 去首尾空格 + 内部空格→下划线，防止 LLM 文件名幻觉
+        file_name = unicodedata.normalize('NFC', raw_name).strip().replace(' ', '_')
         file_size_mb = doc.file_size / (1024 * 1024) if doc.file_size else 0
 
         if file_size_mb > 20.0:
@@ -899,42 +946,46 @@ class TelegramBotBase:
             await message.reply_text(f"⚠️ 格式拒绝：暂不支持 {ext} 格式进行向量化。")
             return
 
-        status_msg = await message.reply_text(
-            f"⏳ <b>正在拉取文件：</b>{file_name} ({file_size_mb:.1f}MB)",
-            parse_mode=ParseMode.HTML,
-        )
+        kb_dir_resolved = self.kb_dir.resolve()
+        save_path = (kb_dir_resolved / file_name).resolve()
 
-        try:
-            tg_file = await context.bot.get_file(doc.file_id)
-            save_path = (self.kb_dir / file_name).resolve()
+        if not save_path.is_relative_to(kb_dir_resolved):
+            await message.reply_text("❌ 安全拦截：非法的文件名，已销毁。")
+            return
 
-            if not save_path.is_relative_to(self.kb_dir):
-                await status_msg.edit_text("❌ 安全拦截：非法的文件名，已销毁。")
-                return
+        # ── 重复文件检测 ────────────────────────────────────────────────
+        if save_path.exists():
+            stat = save_path.stat()
+            old_size_mb = stat.st_size / (1024 * 1024)
+            age_days = (time.time() - stat.st_mtime) / 86400
 
-            await tg_file.download_to_drive(custom_path=save_path)
+            self._pending_uploads[user.id] = {
+                "file_id": doc.file_id,
+                "file_name": file_name,
+                "save_path": str(save_path),
+                "file_size_mb": file_size_mb,
+            }
 
-            await status_msg.edit_text(
-                f"<blockquote><b>⚡ 文件已挂载至知识库：{file_name}</b></blockquote>\n"
-                f"<i>🧠 正在唤醒 Embedding 引擎进行 RAG 深度阅读，请稍候...</i>",
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔄 覆盖旧文件", callback_data=f"dup_overwrite:{user.id}"),
+                InlineKeyboardButton("📋 重命名保留", callback_data=f"dup_rename:{user.id}"),
+            ]])
+            await message.reply_text(
+                f"⚠️ <b>知识库中已存在同名文件</b>\n\n"
+                f"<b>文件名：</b><code>{file_name}</code>\n"
+                f"<b>原文件：</b>{old_size_mb:.1f} MB，{age_days:.0f} 天前上传\n"
+                f"<b>新文件：</b>{file_size_mb:.1f} MB\n\n"
+                f"请选择操作：",
                 parse_mode=ParseMode.HTML,
+                reply_markup=keyboard,
             )
+            return
+        # ────────────────────────────────────────────────────────────────
 
-            rag_prompt = (
-                f"我已经把一份名为 '{file_name}' 的文件放进了知识库。"
-                f"请调用 analyze_local_document 工具，仔细阅读这篇文档，"
-                f"并给我一份结构化的核心内容摘要。"
-            )
-            await self.execute_agent_task(rag_prompt, message, user.id, context, update)
-
-            try:
-                await status_msg.delete()
-            except Exception:
-                pass
-
-        except Exception as e:
-            logger.error(f"文件接收与解析失败：{e}")
-            await status_msg.edit_text(f"❌ 文件处理失败：{type(e).__name__}")
+        await self._execute_kb_upload(
+            message, user.id, context, update,
+            doc.file_id, file_name, save_path, file_size_mb,
+        )
 
     async def handle_button_click(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1036,6 +1087,45 @@ class TelegramBotBase:
 
         if cmd == "archive_skip":
             await query.message.reply_text("已跳过归档。")
+            return
+
+        # 重复上传：覆盖 / 重命名
+        if cmd.startswith("dup_overwrite:") or cmd.startswith("dup_rename:"):
+            try:
+                target_uid = int(cmd.split(":", 1)[1])
+            except ValueError:
+                return
+
+            pending = self._pending_uploads.pop(target_uid, None)
+            if pending is None:
+                await query.message.reply_text("⚠️ 操作已失效，请重新上传文件。")
+                return
+
+            file_id: str = pending["file_id"]
+            orig_file_name: str = pending["file_name"]
+            file_size_mb: float = pending["file_size_mb"]
+
+            if cmd.startswith("dup_overwrite:"):
+                save_path = Path(pending["save_path"])
+                upload_name = orig_file_name
+                await query.message.reply_text(
+                    f"🔄 将覆盖旧文件：<code>{orig_file_name}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                original = Path(pending["save_path"])
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                upload_name = f"{original.stem}_{timestamp}{original.suffix}"
+                save_path = (self.kb_dir.resolve() / upload_name).resolve()
+                await query.message.reply_text(
+                    f"📋 已重命名为：<code>{upload_name}</code>，两份文件均保留。",
+                    parse_mode=ParseMode.HTML,
+                )
+
+            await self._execute_kb_upload(
+                query.message, user_id, context, update,
+                file_id, upload_name, save_path, file_size_mb,
+            )
             return
 
         # 返回主控台
