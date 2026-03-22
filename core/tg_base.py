@@ -426,6 +426,7 @@ _DEFAULT_TOOL_STATUS_MAP: dict[str, str] = {
     "write_local_file": "📝 正在排版并生成最终深度报告...",
     "list_kb_files": "🗂️ 正在扫描知识库文件索引...",
     "analyze_local_document": "📚 正在穿透本地向量库检索文档...",
+    "rename_kb_file": "✏️ 正在重命名知识库文件并清理旧缓存...",
     "update_user_memory": "🧠 正在将关键信息写入长期记忆库...",
     "append_transaction_log": "📜 正在追加交易日志流水账...",
     "trigger_job": "🚀 正在将任务投递至独立进程...",
@@ -650,6 +651,9 @@ class TelegramBotBase:
                 f"我已经把一份名为 '{file_name}' 的文件放进了知识库。"
                 f"请调用 analyze_local_document 工具，仔细阅读这篇文档，"
                 f"并给我一份结构化的核心内容摘要。"
+                f"另外，如果文件名看起来是乱码或无意义的随机字符串（如哈希值、纯数字串等），"
+                f"请根据文档内容自动推断一个简洁的中文名称（如'阿里巴巴2026中期财报.pdf'），"
+                f"并调用 rename_kb_file 工具完成重命名，在摘要中说明新文件名。"
             )
             await self.execute_agent_task(rag_prompt, message, user_id, context, update)
 

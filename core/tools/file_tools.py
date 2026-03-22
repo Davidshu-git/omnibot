@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_EXTENSIONS = {'.pdf', '.md', '.txt', '.csv'}
 _MAX_FAISS_CACHE = 10
+_CHUNK_SIZE = 800
+_CHUNK_OVERLAP = 150
+_RETRIEVER_K = 5
 
 
 def _resolve_safe_path(file_path: str, base_dir: Path) -> tuple[Optional[Path], Optional[str]]:
@@ -56,7 +59,9 @@ def _get_or_build_vectorstore(file_name: str, target_path_str: str, current_mtim
         try:
             with open(meta_file, 'r', encoding='utf-8') as f:
                 meta = json.load(f)
-            if meta.get("mtime") == current_mtime:
+            if (meta.get("mtime") == current_mtime
+                    and meta.get("chunk_size") == _CHUNK_SIZE
+                    and meta.get("chunk_overlap") == _CHUNK_OVERLAP):
                 return FAISS.load_local(str(doc_cache_dir), embeddings,
                                         allow_dangerous_deserialization=True)
         except (json.JSONDecodeError, TypeError, Exception):
@@ -72,7 +77,11 @@ def _get_or_build_vectorstore(file_name: str, target_path_str: str, current_mtim
         raise ValueError(f"不支持的文件格式：{ext}")
 
     docs = loader.load()
-    splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=_CHUNK_SIZE,
+        chunk_overlap=_CHUNK_OVERLAP,
+        separators=["\n\n", "\n", "。", "，", " ", ""],
+    )
     splits = [s for s in splitter.split_documents(docs) if s.page_content.strip()]
 
     if not splits:
@@ -82,7 +91,12 @@ def _get_or_build_vectorstore(file_name: str, target_path_str: str, current_mtim
     doc_cache_dir.mkdir(parents=True, exist_ok=True)
     vectorstore.save_local(str(doc_cache_dir))
     with open(meta_file, 'w', encoding='utf-8') as f:
-        json.dump({"mtime": current_mtime, "file_name": file_name}, f)
+        json.dump({
+            "mtime": current_mtime,
+            "file_name": file_name,
+            "chunk_size": _CHUNK_SIZE,
+            "chunk_overlap": _CHUNK_OVERLAP,
+        }, f)
 
     return vectorstore
 
@@ -203,7 +217,7 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
             vectorstore = _get_or_build_vectorstore(
                 file_name, str(target_path), current_mtime, embedding_key, faiss_dir_str
             )
-            retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+            retriever = vectorstore.as_retriever(search_kwargs={"k": _RETRIEVER_K})
             relevant_docs = retriever.invoke(query)
             context = "\n---\n".join([doc.page_content for doc in relevant_docs])
             return f"✅ 从文档 {file_name} 中检索到以下核心信息：\n{context}\n\n请根据以上数据回答。"
@@ -215,6 +229,67 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
             return f"❌ 系统错误：{e}"
         except Exception as e:
             return f"解析或检索文档出错：{type(e).__name__} - {str(e)}"
+
+    @tool
+    def rename_kb_file(old_name: str, new_name: str) -> str:
+        """
+        重命名知识库中的文件，并自动清理对应的旧向量缓存。
+        工具内部会自动读取文档前几页内容并随结果返回，供你确认新文件名与内容是否一致。
+
+        Args:
+            old_name: 当前文件名（仅文件名，不含路径）。
+            new_name: 新文件名（仅文件名，不含路径，须保留原始后缀）。
+        """
+        try:
+            old_path, err = _resolve_safe_path(old_name, kb_dir)
+            if err:
+                return err
+            if not old_path.exists():
+                return f"❌ 找不到文件：{old_name}"
+
+            new_path, err = _resolve_safe_path(new_name, kb_dir)
+            if err:
+                return err
+            if new_path.exists():
+                return f"❌ 目标文件名已存在：{new_name}，请换一个名称。"
+            if old_path.suffix.lower() != new_path.suffix.lower():
+                return f"❌ 不允许更改文件后缀（{old_path.suffix} → {new_path.suffix}）。"
+
+            # 重命名文件
+            old_path.rename(new_path)
+
+            # 清理旧向量缓存目录
+            old_cache_dir = faiss_dir / f"{old_name}_vstore"
+            if old_cache_dir.exists():
+                import shutil
+                shutil.rmtree(old_cache_dir)
+
+            # 清理 L1 内存缓存（lru_cache 无法按 key 删除，全量清除）
+            _get_or_build_vectorstore.cache_clear()
+
+            # 读取文档前3页内容，供 LLM 确认文件名与内容是否一致
+            ext = new_path.suffix.lower()
+            try:
+                if ext == '.pdf':
+                    from langchain_community.document_loaders import PyPDFLoader
+                    preview_docs = PyPDFLoader(str(new_path)).load()[:3]
+                else:
+                    from langchain_community.document_loaders import TextLoader
+                    preview_docs = TextLoader(str(new_path), encoding='utf-8').load()[:3]
+                preview = "\n".join(d.page_content for d in preview_docs)[:1000].strip()
+            except Exception:
+                preview = "（文档内容预览失败）"
+
+            logger.info(f"rename_kb_file: '{old_name}' → '{new_name}'，旧缓存已清理")
+            return (
+                f"✅ 重命名成功：{old_name} → {new_name}。向量缓存已清理，下次查询时将自动重建。\n\n"
+                f"📄 文档内容预览（前3页）：\n{preview}\n\n"
+                f"请确认新文件名与文档内容是否一致，如不符请再次调用本工具修正。"
+            )
+        except OSError as e:
+            return f"❌ 系统错误：{type(e).__name__} - {str(e)}"
+        except Exception as e:
+            return f"重命名出错：{type(e).__name__} - {str(e)}"
 
     @tool
     def preview_workspace_cleanup(older_than_days: int = 0, file_extensions: str = "") -> str:
@@ -393,6 +468,7 @@ def make_file_tools(sandbox_dir: Path, kb_dir: Path,
         write_local_file,
         list_kb_files,
         analyze_local_document,
+        rename_kb_file,
         preview_workspace_cleanup,
         execute_workspace_cleanup,
         preview_kb_cleanup,
