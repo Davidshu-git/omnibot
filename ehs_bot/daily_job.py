@@ -20,7 +20,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-DASHSCOPE_KEY = os.getenv("DASHSCOPE_API_KEY", "")
+DASHSCOPE_KEY = os.getenv("DASHSCOPE_CODINGPLAN_KEY", "")
 KB_DIR = Path("./data/ehs/knowledge_base").resolve()
 SANDBOX_DIR = Path("./data/ehs/agent_workspace").resolve()
 

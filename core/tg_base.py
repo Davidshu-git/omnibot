@@ -515,6 +515,7 @@ class TelegramBotBase:
         kb_dir: Path,
         job_module: str,
         job_func: str = "job_routine",
+        asr_api_key: str = "",
     ) -> None:
         self.bot_token = bot_token
         self.allowed_user_ids = allowed_user_ids
@@ -524,6 +525,7 @@ class TelegramBotBase:
         self.kb_dir = kb_dir
         self.job_module = job_module
         self.job_func = job_func
+        self.asr_api_key = asr_api_key
         # 暂存待确认的重复上传（user_id → 上传元信息），内存级，重启失效
         self._pending_uploads: dict[int, dict] = {}
 
@@ -1183,6 +1185,75 @@ class TelegramBotBase:
         return ""
 
     # ------------------------------------------------------------------
+    # 语音识别（DashScope Paraformer-v2）
+    # ------------------------------------------------------------------
+
+    def _transcribe_audio(self, file_path: str) -> str:
+        """
+        调用 Groq Whisper large-v3 转写本地音频文件（同步阻塞）。
+        原生支持 Telegram OGG OPUS 格式，无需格式转换。
+
+        Args:
+            file_path: 本地音频文件路径（OGA/OGG 格式）
+
+        Returns:
+            识别后的文本字符串，失败时返回空字符串
+        """
+        from groq import Groq
+
+        client = Groq(api_key=self.asr_api_key)
+        with open(file_path, 'rb') as f:
+            transcription = client.audio.transcriptions.create(
+                file=(Path(file_path).name, f),
+                model='whisper-large-v3',
+            )
+        return transcription.text
+
+    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """处理语音消息：下载 OGG → Paraformer 转写 → 交给 Agent。"""
+        import tempfile
+
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权访问")
+            return
+        if not self.asr_api_key:
+            await message.reply_text("⚠️ 语音识别未配置，请联系管理员。")
+            return
+
+        voice = message.voice
+        if voice is None:
+            return
+
+        status_msg = await message.reply_text("🎙️ 正在识别语音，请稍候...")
+        tmp_path: Optional[str] = None
+        try:
+            voice_file = await context.bot.get_file(voice.file_id)
+            with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as tmp:
+                tmp_path = tmp.name
+            await voice_file.download_to_drive(tmp_path)
+
+            text = await asyncio.to_thread(self._transcribe_audio, tmp_path)
+
+            if not text.strip():
+                await status_msg.edit_text("⚠️ 未识别到有效内容，请重试或改用文字输入。")
+                return
+
+            await status_msg.edit_text(f"🎙️ 已识别：<i>{text}</i>", parse_mode=ParseMode.HTML)
+            logger.info(f"语音识别完成 user={user.id}: {text}")
+            await self.execute_agent_task(text, message, user.id, context, update)
+
+        except Exception as e:
+            logger.error(f"语音处理失败：{e}")
+            await status_msg.edit_text(f"❌ 语音识别失败：{type(e).__name__}")
+        finally:
+            if tmp_path:
+                Path(tmp_path).unlink(missing_ok=True)
+
+    # ------------------------------------------------------------------
     # 错误处理器
     # ------------------------------------------------------------------
 
@@ -1224,6 +1295,7 @@ class TelegramBotBase:
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        application.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
         application.add_handler(CallbackQueryHandler(self.handle_button_click))
 
         application.run_polling(allowed_updates=Update.ALL_TYPES)

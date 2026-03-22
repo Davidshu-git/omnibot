@@ -39,8 +39,8 @@ docker compose restart stock-tg-bot                         # 重启单个服务
 
 ```env
 # 必填
-DASHSCOPE_API_KEY=          # 主模型推理（Qwen via DashScope）
-DASHSCOPE_EMBEDDING_KEY=    # RAG 向量化（text-embedding-v3）
+DASHSCOPE_CODINGPLAN_KEY=          # 主模型推理（Qwen via DashScope）
+DASHSCOPE_APIMODE_KEY=    # RAG 向量化（text-embedding-v3）
 
 # Stock Bot（stock_bot/tg_main.py 启动时必填）
 TG_BOT_TOKEN=
@@ -59,7 +59,7 @@ RECEIVER_EMAIL=
 ```
 
 - `.env` 通过 Docker volume 挂载进容器，**不得打入镜像**（`.dockerignore` 已排除）。
-- `DASHSCOPE_API_KEY` / `DASHSCOPE_EMBEDDING_KEY`：各 bot 的 `agent.py` 启动时立即校验，缺失直接 `ValueError` 终止。
+- `DASHSCOPE_CODINGPLAN_KEY` / `DASHSCOPE_APIMODE_KEY`：各 bot 的 `agent.py` 启动时立即校验，缺失直接 `ValueError` 终止。
 
 ---
 

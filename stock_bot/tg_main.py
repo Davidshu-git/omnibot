@@ -293,6 +293,7 @@ def main() -> None:
         sandbox_dir=SANDBOX_DIR,
         kb_dir=KB_DIR,
         job_module="stock_bot.daily_job",
+        asr_api_key=os.getenv("GROQ_API_KEY", ""),
     )
     bot.run()
 

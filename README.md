@@ -128,8 +128,8 @@ LLM 输出 → `translate_to_telegram_html()` → 检测 Markdown 表格 → Pla
 
 ```env
 # 必填
-DASHSCOPE_API_KEY=           # 主模型推理（Qwen via DashScope）
-DASHSCOPE_EMBEDDING_KEY=     # RAG 向量化（text-embedding-v3）
+DASHSCOPE_CODINGPLAN_KEY=           # 主模型推理（Qwen via DashScope）
+DASHSCOPE_APIMODE_KEY=     # RAG 向量化（text-embedding-v3）
 
 # Stock Bot
 TG_BOT_TOKEN=                # BotFather 获取

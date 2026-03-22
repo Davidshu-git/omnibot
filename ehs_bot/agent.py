@@ -16,13 +16,13 @@ load_dotenv()
 # ==========================================
 # 环境变量校验
 # ==========================================
-DASHSCOPE_KEY = os.getenv("DASHSCOPE_API_KEY", "")
-EMBEDDING_KEY = os.getenv("DASHSCOPE_EMBEDDING_KEY", "")
+DASHSCOPE_KEY = os.getenv("DASHSCOPE_CODINGPLAN_KEY", "")
+EMBEDDING_KEY = os.getenv("DASHSCOPE_APIMODE_KEY", "")
 
 if not DASHSCOPE_KEY:
-    raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_API_KEY！")
+    raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_CODINGPLAN_KEY！")
 if not EMBEDDING_KEY:
-    raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_EMBEDDING_KEY！")
+    raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_APIMODE_KEY！")
 
 # ==========================================
 # 目录配置

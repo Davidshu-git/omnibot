@@ -41,6 +41,7 @@ pydantic~=2.12.0                   # 数据校验与 SecretStr 类型支持
 
 # 7. 🌐 网络请求基础库 (HTTP Client)
 requests~=2.32.0                   # HTTP 请求底层支持 (ddgs 依赖/异常捕获)
+groq                               # Groq Whisper ASR（语音转文字，原生支持 OGG OPUS）
 
 # 8. 🧪 测试与质量保证 (Testing & QA)
 pytest~=8.0.0                      # 核心测试框架
