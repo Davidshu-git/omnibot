@@ -58,15 +58,22 @@ class StockBot(TelegramBotBase):
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
         return [
-            [InlineKeyboardButton("💼 盘点当前持仓与盈亏", callback_data="cmd_portfolio")],
-            [InlineKeyboardButton("📝 极速触发盘后研报", callback_data="cmd_trigger_job")],
+            [
+                InlineKeyboardButton("💼 盘点当前持仓盈亏", callback_data="cmd_portfolio"),
+                InlineKeyboardButton("📰 快查全球市场资讯", callback_data="cmd_market_news"),
+            ],
+            [
+                InlineKeyboardButton("📝 极速触发盘后研报", callback_data="cmd_trigger_job"),
+                InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status"),
+            ],
             [
                 InlineKeyboardButton("🔔 设定盯盘价格预警", callback_data="cmd_alert"),
-                InlineKeyboardButton("📋 查看/删除预警", callback_data="cmd_alert_manage"),
+                InlineKeyboardButton("📋 查看管理盯盘预警", callback_data="cmd_alert_manage"),
             ],
-            [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
-            [InlineKeyboardButton("📚 调阅历史情报档案", callback_data="cmd_kb_list")],
-            [InlineKeyboardButton("🗑️ 清理知识库", callback_data="cmd_kb_cleanup")],
+            [
+                InlineKeyboardButton("📚 调阅历史情报档案", callback_data="cmd_kb_list"),
+                InlineKeyboardButton("🗑️ 清理盘点知识档案", callback_data="cmd_kb_cleanup"),
+            ],
         ]
 
     def get_welcome_text(self, first_name: str) -> str:
@@ -89,6 +96,7 @@ class StockBot(TelegramBotBase):
             "trigger_job": "🚀 正在将研报任务投递至独立进程...",
             "preview_kb_cleanup": "🔍 正在扫描知识库文件列表...",
             "execute_kb_cleanup": "🗑️ 正在清理知识库文件及向量缓存...",
+            "fetch_market_news": "📰 正在多源聚合最新全球市场资讯...",
         }
 
     async def setup_job_queue(self, app: Application) -> None:
@@ -113,6 +121,9 @@ class StockBot(TelegramBotBase):
         """处理股票专属 Inline 按钮指令。"""
         if cmd == "cmd_portfolio":
             return "帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。"
+
+        if cmd == "cmd_market_news":
+            return "帮我快速汇总一下当前最新的市场资讯动态，包括 A 股、港股、美股的重要新闻和市场情绪，简明扼要。"
 
         if cmd == "cmd_kb_list":
             return "列出知识库里现在有哪些文件可以读取？"

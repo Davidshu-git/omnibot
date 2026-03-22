@@ -310,6 +310,78 @@ def make_stock_tools(
             logger.error(f"删除预警失败：{type(e).__name__} - {e}")
             return f"❌ 删除失败：{type(e).__name__} - {e}"
 
+    @tool
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    )
+    def fetch_market_news() -> str:
+        """
+        📰 快查全球市场实时资讯（A股/港股/美股）。
+        从财联社、新浪 7x24、东财多源聚合最新市场动态，返回最近 15 条资讯摘要。
+        当用户询问「最新市场动态」、「行情资讯」、「今日新闻」时调用。
+        """
+        import akshare as ak
+        import pandas as pd
+
+        sources = [
+            {
+                "name": "财联社",
+                "func": lambda: ak.stock_info_global_cls(symbol="全部"),
+                "time_col": "发布时间",
+                "content_col": "内容",
+            },
+            {
+                "name": "新浪",
+                "func": ak.stock_info_global_sina,
+                "time_col": "时间",
+                "content_col": "内容",
+            },
+            {
+                "name": "东财",
+                "func": ak.stock_info_global_em,
+                "time_col": "发布时间",
+                "content_col": "摘要",
+            },
+        ]
+
+        dfs = []
+        for source in sources:
+            try:
+                df = source["func"]()
+                if df is None or df.empty:
+                    continue
+                time_col = source["time_col"]
+                content_col = source["content_col"]
+                if time_col in df.columns and content_col in df.columns:
+                    selected = df[[time_col, content_col]].copy()
+                    selected.columns = ["time", "content"]
+                    dfs.append(selected)
+            except Exception as e:
+                logger.warning(f"资讯源 {source['name']} 获取失败：{e}")
+
+        if not dfs:
+            return "❌ 所有资讯源暂时无法访问，请稍后重试。"
+
+        merged = pd.concat(dfs, ignore_index=True)
+        deduped = merged.drop_duplicates(subset=["content"]).copy()
+
+        try:
+            deduped["time"] = pd.to_datetime(deduped["time"], errors="coerce")
+            deduped = deduped.sort_values("time", ascending=False)
+        except Exception:
+            pass
+
+        lines = ["📰 最新全球市场资讯（多源聚合）：\n"]
+        for _, row in deduped.head(15).iterrows():
+            time_str = str(row.get("time", ""))[:16]
+            content_str = str(row.get("content", "")).strip()
+            if content_str:
+                lines.append(f"[{time_str}] {content_str}")
+
+        return "\n".join(lines)
+
     return [
         get_universal_stock_price,
         get_etf_price,
@@ -319,4 +391,5 @@ def make_stock_tools(
         create_price_alert,
         list_price_alerts,
         delete_price_alert,
+        fetch_market_news,
     ]
