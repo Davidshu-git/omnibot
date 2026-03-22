@@ -216,12 +216,17 @@ def make_stock_tools(
             f"✅ 预警任务已安全挂载至底层引擎：当 {ticker} {operator} {target_price} 时将自动拦截并通知用户。"
         )
 
+    _COOLDOWN_MINUTES = 60
+
+    def _cooldown_for(ticker: str) -> int:
+        return 60
+
     @tool
     def list_price_alerts() -> str:
         """
         📋【查询当前所有盯盘预警】：
         当用户询问"我设了哪些预警"、"当前有什么盯盘任务"、"预警列表"时调用。
-        返回所有未触发的价格预警列表。
+        返回所有预警及其当前状态（监控中 / 冷却中）。
         """
         try:
             if not alerts_file.exists():
@@ -242,8 +247,20 @@ def make_stock_tools(
             lines = ["📋 当前盯盘预警列表：\n"]
             for key, alert in user_alerts.items():
                 op = op_label.get(alert["operator"], alert["operator"])
+                ticker = alert["ticker"]
+                cooldown_minutes = _cooldown_for(ticker)
+                last_triggered_at = alert.get("last_triggered_at")
+                if last_triggered_at:
+                    elapsed = (datetime.now() - datetime.fromisoformat(last_triggered_at)).total_seconds() / 60
+                    if elapsed < cooldown_minutes:
+                        remaining = int(cooldown_minutes - elapsed)
+                        status = f"冷却中（剩余 {remaining} 分钟）"
+                    else:
+                        status = "监控中"
+                else:
+                    status = "监控中"
                 lines.append(
-                    f"• {alert['ticker']} {op} {alert['target_price']}（设置于 {alert['created_at'][:10]}）"
+                    f"• {ticker} {op} {alert['target_price']} [{status}]（设置于 {alert['created_at'][:10]}）"
                 )
             return "\n".join(lines)
 

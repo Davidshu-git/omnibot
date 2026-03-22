@@ -10,7 +10,7 @@ from datetime import datetime
 
 from dotenv import load_dotenv
 from filelock import FileLock
-from telegram import Update, InlineKeyboardButton, BotCommand, Message
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
@@ -53,19 +53,17 @@ class StockBot(TelegramBotBase):
     def get_bot_commands(self) -> list[BotCommand]:
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("portfolio", "💼 盘点当前持仓与盈亏"),
-            BotCommand("report", "📝 极速触发盘后研报"),
-            BotCommand("alert", "🔔 设定盯盘价格预警"),
             BotCommand("status", "📊 查询最新任务进度"),
-            BotCommand("kb", "📚 调阅历史情报档案"),
-            BotCommand("kb_cleanup", "🗑️ 清理知识库"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
         return [
             [InlineKeyboardButton("💼 盘点当前持仓与盈亏", callback_data="cmd_portfolio")],
             [InlineKeyboardButton("📝 极速触发盘后研报", callback_data="cmd_trigger_job")],
-            [InlineKeyboardButton("🔔 设定盯盘价格预警", callback_data="cmd_alert")],
+            [
+                InlineKeyboardButton("🔔 设定盯盘价格预警", callback_data="cmd_alert"),
+                InlineKeyboardButton("📋 查看/删除预警", callback_data="cmd_alert_manage"),
+            ],
             [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
             [InlineKeyboardButton("📚 调阅历史情报档案", callback_data="cmd_kb_list")],
             [InlineKeyboardButton("🗑️ 清理知识库", callback_data="cmd_kb_cleanup")],
@@ -86,6 +84,8 @@ class StockBot(TelegramBotBase):
             "search_company_ticker": "🔍 正在全网检索股票代码...",
             "calculate_exact_portfolio_value": "🧮 正在使用程序精确核算财务数据...",
             "create_price_alert": "🔔 正在将盯盘预警挂载到后台引擎...",
+            "list_price_alerts": "📋 正在读取当前盯盘预警列表...",
+            "delete_price_alert": "🗑️ 正在删除指定盯盘预警...",
             "trigger_job": "🚀 正在将研报任务投递至独立进程...",
             "preview_kb_cleanup": "🔍 正在扫描知识库文件列表...",
             "execute_kb_cleanup": "🗑️ 正在清理知识库文件及向量缓存...",
@@ -94,17 +94,13 @@ class StockBot(TelegramBotBase):
     async def setup_job_queue(self, app: Application) -> None:
         """挂载每 5 分钟一次的纯 Python 盯盘巡检器。"""
         if app.job_queue:
-            app.job_queue.run_repeating(self._price_watcher_routine, interval=300, first=10)
+            app.job_queue.run_repeating(self._price_watcher_routine, interval=60, first=10)
             logger.info("✅ 盯盘价格预警定时任务已挂载（每 5 分钟）")
 
     async def setup_extra_handlers(self, app: Application) -> None:
         """注册股票专属命令处理器。"""
-        from telegram.ext import CommandHandler
-        app.add_handler(CommandHandler("portfolio", self._portfolio_command))
-        app.add_handler(CommandHandler("report", self._report_command))
-        app.add_handler(CommandHandler("alert", self._alert_command))
-        app.add_handler(CommandHandler("kb", self._kb_command))
-        app.add_handler(CommandHandler("kb_cleanup", self._kb_cleanup_command))
+        from telegram.ext import CallbackQueryHandler
+        app.add_handler(CallbackQueryHandler(self._delete_alert_callback, pattern=r"^del_alert:"), group=-1)
 
     async def handle_custom_cmd(
         self,
@@ -126,7 +122,7 @@ class StockBot(TelegramBotBase):
 
         if cmd == "cmd_alert":
             text = (
-                "<blockquote><b>🔔 智能盯盘预警系统</b></blockquote>\n"
+                "<b>🔔 智能盯盘预警系统</b>\n"
                 "您现在可以使用自然语言下发盯盘指令，AI 会自动为您解析参数并挂载到后台监控引擎。\n\n"
                 "<b>您可以直接这样对我说：</b>\n"
                 "🗣️ <i>「帮我盯着英伟达，如果跌破 100 块叫我一声。」</i>\n"
@@ -136,115 +132,63 @@ class StockBot(TelegramBotBase):
                 await query.message.reply_text(text, parse_mode=ParseMode.HTML)
             return ""
 
+        if cmd == "cmd_alert_manage":
+            return "查看我当前所有的盯盘预警，如果有预警就列出来，并询问我是否需要删除其中某条。"
+
         logger.warning(f"未知按钮指令：{cmd}")
         return ""
 
-    # ------------------------------------------------------------------
-    # 股票专属命令处理器
-    # ------------------------------------------------------------------
 
-    async def _portfolio_command(
+    async def _delete_alert_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        user = update.effective_user
-        message = update.message
-        if user is None or message is None:
+        """处理预警推送消息上的【删除此预警】按钮，纯 Python 直接操作，不走 LLM。"""
+        query = update.callback_query
+        if query is None:
             return
-        if not self._is_authorized(user.id):
-            await message.reply_text("⛔ 未授权访问")
-            return
-        await message.reply_text(
-            "<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>精确核算总市值</i></blockquote>",
-            parse_mode=ParseMode.HTML,
-        )
-        await self.execute_agent_task(
-            "帮我精确计算当前总市值和持仓盈亏，并生成财务明细报表。",
-            message, user.id, context, update,
-        )
+        await query.answer()
 
-    async def _report_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        import uuid
-        user = update.effective_user
-        message = update.message
-        if user is None or message is None:
+        parts = (query.data or "").split(":", 2)
+        if len(parts) != 3:
             return
-        if not self._is_authorized(user.id):
-            await message.reply_text("⛔ 未授权访问")
-            return
+        _, chat_id_str, task_key = parts
+
+        alerts_file = MEMORY_DIR / "alerts.json"
+        alerts_lock = MEMORY_DIR / "alerts.json.lock"
+
         try:
-            job_id = f"job_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            await self._dispatch_job_task(message, job_id)
+            with FileLock(alerts_lock, timeout=5):
+                with open(alerts_file, 'r', encoding='utf-8') as f:
+                    alerts = json.load(f)
+
+                user_alerts = alerts.get(chat_id_str, {})
+                if task_key not in user_alerts:
+                    await query.answer("该预警已不存在。", show_alert=True)
+                    return
+
+                del user_alerts[task_key]
+                alerts[chat_id_str] = user_alerts
+
+                with open(alerts_file, 'w', encoding='utf-8') as f:
+                    json.dump(alerts, f, ensure_ascii=False, indent=2)
+
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.message.reply_text("✅ 预警已删除。")
+
         except Exception as e:
-            logger.error(f"/report 命令执行失败：{e}")
-            await message.reply_text(f"⚠️ 任务派发失败：{type(e).__name__} - {str(e)}")
-
-    async def _kb_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        user = update.effective_user
-        message = update.message
-        if user is None or message is None:
-            return
-        if not self._is_authorized(user.id):
-            await message.reply_text("⛔ 未授权访问")
-            return
-        await message.reply_text(
-            "<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>查看知识库文件</i></blockquote>",
-            parse_mode=ParseMode.HTML,
-        )
-        await self.execute_agent_task(
-            "列出知识库里现在有哪些文件可以读取？",
-            message, user.id, context, update,
-        )
-
-    async def _kb_cleanup_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        user = update.effective_user
-        message = update.message
-        if user is None or message is None:
-            return
-        if not self._is_authorized(user.id):
-            await message.reply_text("⛔ 未授权访问")
-            return
-        await message.reply_text(
-            "<blockquote><b>⚡ 原生菜单指令注入：</b>\n<i>清理知识库</i></blockquote>",
-            parse_mode=ParseMode.HTML,
-        )
-        await self.execute_agent_task(
-            "请先用 preview_kb_cleanup 扫描整个知识库，列出所有文件（含大小和存放时长），然后询问我想删除哪些。",
-            message, user.id, context, update,
-        )
-
-    async def _alert_command(
-        self, update: Update, context: ContextTypes.DEFAULT_TYPE
-    ) -> None:
-        user = update.effective_user
-        message = update.message
-        if user is None or message is None:
-            return
-        if not self._is_authorized(user.id):
-            await message.reply_text("⛔ 未授权访问")
-            return
-        text = (
-            "<blockquote><b>🔔 智能盯盘预警系统</b></blockquote>\n"
-            "您现在可以使用自然语言下发盯盘指令，AI 会自动为您解析参数并挂载到后台监控引擎。\n\n"
-            "<b>您可以直接这样对我说：</b>\n"
-            "🗣️ <i>「帮我盯着英伟达，如果跌破 100 块叫我一声。」</i>\n"
-            "🗣️ <i>「如果腾讯涨破了 350 港币，发消息提醒我减仓。」</i>"
-        )
-        await message.reply_text(text, parse_mode=ParseMode.HTML)
+            logger.error(f"删除预警回调失败：{e}")
+            await query.answer("删除失败，请稍后重试。", show_alert=True)
 
     # ------------------------------------------------------------------
     # 价格预警定时任务
     # ------------------------------------------------------------------
 
+    _COOLDOWN_MINUTES: int = 60
+
     async def _price_watcher_routine(
         self, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """纯 Python 轻量级盯盘引擎（每 5 分钟执行，0 Token 消耗）。"""
+        """纯 Python 轻量级盯盘引擎（每 5 分钟执行，0 Token 消耗）。触发后进入冷却期持续监控。"""
         alerts_file = MEMORY_DIR / "alerts.json"
         alerts_lock = MEMORY_DIR / "alerts.json.lock"
 
@@ -263,16 +207,23 @@ class StockBot(TelegramBotBase):
 
         changed = False
 
-        for chat_id_str, user_tasks in list(alerts.items()):
+        for chat_id_str, user_tasks in alerts.items():
             chat_id = int(chat_id_str)
-            triggered_keys: list[str] = []
 
             for task_key, task_info in user_tasks.items():
                 ticker = task_info['ticker']
                 operator = task_info['operator']
                 target_price = float(task_info['target_price'])
+                last_triggered_at = task_info.get('last_triggered_at')
+                cooldown_minutes = self._COOLDOWN_MINUTES
 
                 try:
+                    # 冷却期内跳过
+                    if last_triggered_at:
+                        elapsed = (datetime.now() - datetime.fromisoformat(last_triggered_at)).total_seconds() / 60
+                        if elapsed < cooldown_minutes:
+                            continue
+
                     price_data = fetch_stock_price_raw(ticker)
                     current_price = float(price_data.get('close', 0))
                     if current_price == 0:
@@ -290,19 +241,23 @@ class StockBot(TelegramBotBase):
                             f"标的代码：<b>{ticker}</b>\n"
                             f"预警条件：{op_display} {target_price}\n"
                             f"当前最新价：<b>{current_price}</b>\n\n"
-                            f"<i>系统已自动将此单次预警任务销毁。</i>"
+                            f"<i>冷却 {cooldown_minutes} 分钟后将继续监控。</i>"
                         )
+                        delete_btn = InlineKeyboardMarkup([[
+                            InlineKeyboardButton(
+                                "🗑️ 删除此预警",
+                                callback_data=f"del_alert:{chat_id_str}:{task_key}"
+                            )
+                        ]])
                         await context.bot.send_message(
-                            chat_id=chat_id, text=alert_msg, parse_mode=ParseMode.HTML
+                            chat_id=chat_id, text=alert_msg,
+                            parse_mode=ParseMode.HTML, reply_markup=delete_btn
                         )
-                        triggered_keys.append(task_key)
+                        task_info['last_triggered_at'] = datetime.now().isoformat()
+                        changed = True
 
                 except Exception as e:
                     logger.warning(f"预警查价失败 {ticker}: {e}")
-
-            for key in triggered_keys:
-                del alerts[chat_id_str][key]
-                changed = True
 
         if changed:
             try:
