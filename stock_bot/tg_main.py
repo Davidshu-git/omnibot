@@ -284,10 +284,11 @@ class StockBot(TelegramBotBase):
                     )
 
                     if is_triggered:
+                        op_display = "&lt;" if operator == "<" else "&gt;"
                         alert_msg = (
-                            f"<blockquote><b>🚨 智能盯盘触发警告</b></blockquote>\n"
+                            f"<b>🚨 智能盯盘触发警告</b>\n"
                             f"标的代码：<b>{ticker}</b>\n"
-                            f"预警条件：{operator} {target_price}\n"
+                            f"预警条件：{op_display} {target_price}\n"
                             f"当前最新价：<b>{current_price}</b>\n\n"
                             f"<i>系统已自动将此单次预警任务销毁。</i>"
                         )

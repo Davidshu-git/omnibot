@@ -48,7 +48,7 @@ pytest-mock~=3.12.0                # pytest Mock 插件
 pytest-cov~=4.1.0                  # 代码覆盖率统计插件
 
 # 9. 🤖 Telegram 机器人 (Telegram Bot API)
-python-telegram-bot~=22.6          # Telegram Bot API (tg_main.py 依赖)
+python-telegram-bot[job-queue]~=22.6  # Telegram Bot API + APScheduler 盯盘定时任务
 
 # --- 新增：多智能体图计算引擎 ---
 langgraph~=0.2.0

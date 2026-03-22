@@ -216,6 +216,83 @@ def make_stock_tools(
             f"✅ 预警任务已安全挂载至底层引擎：当 {ticker} {operator} {target_price} 时将自动拦截并通知用户。"
         )
 
+    @tool
+    def list_price_alerts() -> str:
+        """
+        📋【查询当前所有盯盘预警】：
+        当用户询问"我设了哪些预警"、"当前有什么盯盘任务"、"预警列表"时调用。
+        返回所有未触发的价格预警列表。
+        """
+        try:
+            if not alerts_file.exists():
+                return "当前没有任何盯盘预警。"
+
+            with FileLock(alerts_lock, timeout=5):
+                with open(alerts_file, 'r', encoding='utf-8') as f:
+                    current_alerts: dict = json.load(f)
+
+            users = [u.strip() for u in allowed_tg_users.split(",") if u.strip().isdigit()]
+            admin_id = users[0] if users else "default"
+            user_alerts = current_alerts.get(admin_id, {})
+
+            if not user_alerts:
+                return "当前没有任何盯盘预警。"
+
+            op_label = {">": "突破", "<": "跌破"}
+            lines = ["📋 当前盯盘预警列表：\n"]
+            for key, alert in user_alerts.items():
+                op = op_label.get(alert["operator"], alert["operator"])
+                lines.append(
+                    f"• {alert['ticker']} {op} {alert['target_price']}（设置于 {alert['created_at'][:10]}）"
+                )
+            return "\n".join(lines)
+
+        except TimeoutError:
+            return "❌ 查询失败：文件锁超时，请稍后重试"
+        except Exception as e:
+            return f"❌ 查询失败：{type(e).__name__} - {e}"
+
+    @tool
+    def delete_price_alert(ticker: str, operator: str, target_price: float) -> str:
+        """
+        🗑️【删除指定盯盘预警】：
+        当用户要求"取消"、"删除"、"移除"某个价格预警时调用。
+
+        Args:
+            ticker:       股票代码（如 AAPL, 0700.HK）
+            operator:     '<' 或 '>'
+            target_price: 该预警的目标价格
+        """
+        try:
+            if not alerts_file.exists():
+                return "当前没有任何盯盘预警，无需删除。"
+
+            with FileLock(alerts_lock, timeout=5):
+                with open(alerts_file, 'r', encoding='utf-8') as f:
+                    current_alerts: dict = json.load(f)
+
+                users = [u.strip() for u in allowed_tg_users.split(",") if u.strip().isdigit()]
+                admin_id = users[0] if users else "default"
+                user_alerts = current_alerts.get(admin_id, {})
+
+                task_key = f"{ticker}_{operator}_{target_price}"
+                if task_key not in user_alerts:
+                    return f"❌ 未找到预警：{ticker} {operator} {target_price}，请先调用 list_price_alerts 确认当前列表。"
+
+                del user_alerts[task_key]
+                current_alerts[admin_id] = user_alerts
+
+                with open(alerts_file, 'w', encoding='utf-8') as f:
+                    json.dump(current_alerts, f, ensure_ascii=False, indent=2)
+
+            return f"✅ 已删除预警：{ticker} {operator} {target_price}"
+
+        except TimeoutError:
+            return "❌ 删除失败：文件锁超时，请稍后重试"
+        except Exception as e:
+            logger.error(f"删除预警失败：{type(e).__name__} - {e}")
+            return f"❌ 删除失败：{type(e).__name__} - {e}"
+
     return [
         get_universal_stock_price,
         get_etf_price,
@@ -223,4 +300,6 @@ def make_stock_tools(
         search_company_ticker,
         calculate_exact_portfolio_value,
         create_price_alert,
+        list_price_alerts,
+        delete_price_alert,
     ]
