@@ -232,25 +232,27 @@ def fetch_global_market_news() -> str:
 
 def generate_market_report(news_text: str, user_memory: str, indices_data: str, portfolio_metrics: Dict[str, Any]) -> str:
     """基于 LangGraph 的多智能体研报辩论引擎"""
-    dashscope_key: str = os.getenv("DASHSCOPE_CODINGPLAN_KEY", "")
+    dashscope_key: str = os.getenv("MINIMAX_API_KEY", "")
     if not dashscope_key:
-        raise ValueError("DASHSCOPE_CODINGPLAN_KEY 未配置")
+        raise ValueError("MINIMAX_API_KEY 未配置")
 
     llm = ChatOpenAI(
-        model="qwen3.5-plus",
-        base_url="https://coding.dashscope.aliyuncs.com/v1",
-        temperature=0.7, 
+        model="MiniMax-M2.7",
+        base_url="https://api.minimax.chat/v1",
+        temperature=0.7,  # 牛熊辩论节点：激进发散，挖掘极端多空逻辑
         timeout=120,
         max_retries=3,
+        max_tokens=8192,
         api_key=SecretStr(dashscope_key),
     )
-    
+
     pm_llm = ChatOpenAI(
-        model="qwen3.5-plus",
-        base_url="https://coding.dashscope.aliyuncs.com/v1",
-        temperature=0.1, 
+        model="MiniMax-M2.7",
+        base_url="https://api.minimax.chat/v1",
+        temperature=0.1,  # PM 裁判节点：保守收敛，确保最终结论严谨客观
         timeout=120,
         max_retries=3,
+        max_tokens=8192,
         api_key=SecretStr(dashscope_key),
     )
 

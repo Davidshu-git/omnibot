@@ -39,7 +39,7 @@ docker compose restart stock-tg-bot                         # 重启单个服务
 
 ```env
 # 必填
-DASHSCOPE_CODINGPLAN_KEY=          # 主模型推理（Qwen via DashScope）
+MINIMAX_API_KEY=                   # 主模型推理（MiniMax-M2.7 via MiniMax）
 DASHSCOPE_APIMODE_KEY=    # RAG 向量化（text-embedding-v3）
 
 # Stock Bot（stock_bot/tg_main.py 启动时必填）
@@ -207,7 +207,7 @@ Agent 推理全程通过 `AsyncTelegramCallbackHandler` 实时上报工具调用
 
 ### LLM 配置
 
-模型：`qwen3.5-plus`，接入点：`https://coding.dashscope.aliyuncs.com/v1`（OpenAI 兼容协议）。
+模型：`MiniMax-M2.7`，接入点：`https://api.minimax.chat/v1`（OpenAI 兼容协议）。
 
 | 场景 | 超时 | 重试 |
 |------|------|------|

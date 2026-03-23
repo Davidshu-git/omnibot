@@ -16,11 +16,11 @@ load_dotenv()
 # ==========================================
 # 环境变量校验
 # ==========================================
-DASHSCOPE_KEY = os.getenv("DASHSCOPE_CODINGPLAN_KEY", "")
+MINIMAX_KEY = os.getenv("MINIMAX_API_KEY", "")
 EMBEDDING_KEY = os.getenv("DASHSCOPE_APIMODE_KEY", "")
 
-if not DASHSCOPE_KEY:
-    raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_CODINGPLAN_KEY！")
+if not MINIMAX_KEY:
+    raise ValueError("❌ 致命错误：未在环境变量中找到 MINIMAX_API_KEY！")
 if not EMBEDDING_KEY:
     raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_APIMODE_KEY！")
 
@@ -116,7 +116,7 @@ _tools = (
 agent_with_chat_history = build_agent(
     system_prompt=STOCK_SYSTEM_PROMPT,
     tools=_tools,
-    dashscope_key=DASHSCOPE_KEY,
+    llm_api_key=MINIMAX_KEY,
     memory_dir=MEMORY_DIR,
     llm_timeout=90,
 )

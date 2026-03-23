@@ -128,7 +128,7 @@ LLM 输出 → `translate_to_telegram_html()` → 检测 Markdown 表格 → Pla
 
 ```env
 # 必填
-DASHSCOPE_CODINGPLAN_KEY=           # 主模型推理（Qwen via DashScope）
+MINIMAX_API_KEY=                    # 主模型推理（MiniMax-M2.7 via MiniMax）
 DASHSCOPE_APIMODE_KEY=     # RAG 向量化（text-embedding-v3）
 
 # Stock Bot

@@ -17,11 +17,12 @@ from core.tools.memory_tools import get_session_history as _get_session_history
 def build_agent(
     system_prompt: str,
     tools: list,
-    dashscope_key: str,
+    llm_api_key: str,
     memory_dir: Path,
-    llm_base_url: str = "https://coding.dashscope.aliyuncs.com/v1",
-    llm_model: str = "qwen3.5-plus",
+    llm_base_url: str = "https://api.minimax.chat/v1",
+    llm_model: str = "MiniMax-M2.7",
     llm_timeout: int = 90,
+    llm_max_tokens: int = 8192,
 ):
     """
     构建带记忆的 LangChain Agent。
@@ -36,11 +37,12 @@ def build_agent(
     Args:
         system_prompt:  完整系统提示，各 bot 自定义
         tools:          工具列表（core 工具 + 领域工具合并后传入）
-        dashscope_key:  DashScope API Key
+        llm_api_key:    MiniMax API Key
         memory_dir:     短期记忆文件目录
         llm_base_url:   LLM 接入点
         llm_model:      模型名称
         llm_timeout:    请求超时秒数
+        llm_max_tokens: 最大输出 token 数
 
     Returns:
         (agent_with_chat_history, get_user_profile_fn)
@@ -49,11 +51,12 @@ def build_agent(
     """
     llm = ChatOpenAI(
         model=llm_model,
-        api_key=SecretStr(dashscope_key),
+        api_key=SecretStr(llm_api_key),
         base_url=llm_base_url,
-        temperature=0,
+        temperature=0.2,
         timeout=llm_timeout,
         max_retries=3,
+        max_tokens=llm_max_tokens,
     )
 
     prompt = ChatPromptTemplate.from_messages([
