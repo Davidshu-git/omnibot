@@ -66,6 +66,9 @@ def translate_to_telegram_html(text: str) -> str:
     if not text:
         return text
 
+    # 过滤推理模型的思考链（MiniMax-M2.7 / DeepSeek-R1 等输出的 <think>...</think>）
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL).strip()
+
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     text = re.sub(
