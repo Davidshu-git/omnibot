@@ -7,6 +7,7 @@ services:
     build: .
     image: omnibot:latest
     container_name: v2-omnistock-daily-job
+    mem_limit: 1g
     command: python -m stock_bot.daily_job
     restart: unless-stopped
     volumes:
@@ -26,6 +27,7 @@ services:
     build: .
     image: omnibot:latest
     container_name: v2-omnistock-tg-bot
+    mem_limit: 1g
     command: python -m stock_bot.tg_main
     restart: unless-stopped
     volumes:
@@ -47,6 +49,7 @@ services:
     build: .
     image: omnibot:latest
     container_name: v2-omniehs-tg-bot
+    mem_limit: 1g
     command: python -m ehs_bot.tg_main
     restart: unless-stopped
     volumes:
