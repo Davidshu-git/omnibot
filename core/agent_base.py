@@ -19,8 +19,8 @@ def build_agent(
     tools: list,
     llm_api_key: str,
     memory_dir: Path,
-    llm_base_url: str = "https://api.minimax.chat/v1",
-    llm_model: str = "MiniMax-M2.7",
+    llm_base_url: str = "https://coding.dashscope.aliyuncs.com/v1",
+    llm_model: str = "qwen3.5-plus",
     llm_timeout: int = 90,
     llm_max_tokens: int = 8192,
 ):
@@ -37,7 +37,7 @@ def build_agent(
     Args:
         system_prompt:  完整系统提示，各 bot 自定义
         tools:          工具列表（core 工具 + 领域工具合并后传入）
-        llm_api_key:    MiniMax API Key
+        llm_api_key:    LLM API Key
         memory_dir:     短期记忆文件目录
         llm_base_url:   LLM 接入点
         llm_model:      模型名称
