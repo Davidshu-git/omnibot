@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 from filelock import FileLock
 from langchain_core.callbacks import AsyncCallbackHandler
@@ -190,6 +193,11 @@ def extract_think_blocks(text: str) -> list[str]:
     return [m.strip() for m in _THINK_RE.findall(text) if m.strip()]
 
 
+def strip_think_blocks(text: str) -> str:
+    """Remove all <think>…</think> blocks and collapse extra blank lines."""
+    return _THINK_RE.sub("", text).strip()
+
+
 # ---------------------------------------------------------------------------
 # LangChain callback handler
 # ---------------------------------------------------------------------------
@@ -219,18 +227,28 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
     # LLM events
     # ------------------------------------------------------------------
 
+    def _on_llm_start_common(self, serialized: dict) -> None:
+        self._run_counter += 1
+        self._current_run_id = f"{self._trace_id}:r{self._run_counter}"
+        self._llm_start_time = time.perf_counter()
+        kw = serialized.get("kwargs") or {}
+        self._llm_model = kw.get("model_name") or kw.get("model") or "unknown"
+
     async def on_llm_start(
         self,
         serialized: dict,
         prompts: list[str],
         **kwargs: Any,
     ) -> None:
-        self._run_counter += 1
-        self._current_run_id = f"{self._trace_id}:r{self._run_counter}"
-        self._llm_start_time = time.perf_counter()
-        # Best-effort model name extraction from serialized
-        kw = serialized.get("kwargs") or {}
-        self._llm_model = kw.get("model_name") or kw.get("model") or "unknown"
+        self._on_llm_start_common(serialized)
+
+    async def on_chat_model_start(
+        self,
+        serialized: dict,
+        messages: list,
+        **kwargs: Any,
+    ) -> None:
+        self._on_llm_start_common(serialized)
 
     async def on_llm_end(self, response: LLMResult, **kwargs: Any) -> None:
         duration_ms: float | None = None
@@ -239,17 +257,40 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
             self._llm_start_time = None
 
         lo = response.llm_output or {}
-        # OpenAI-compatible APIs return token_usage; some return usage
-        usage = lo.get("token_usage") or lo.get("usage") or {}
+        stop_reason: str | None = lo.get("finish_reason") or lo.get("stop_reason")
+        input_tok: int | None = None
+        output_tok: int | None = None
+        total_tok: int | None = None
+        cache_read: int | None = None
+        cache_write: int | None = None
 
-        input_tok: int | None = usage.get("prompt_tokens") or usage.get("input_tokens")
-        output_tok: int | None = usage.get("completion_tokens") or usage.get("output_tokens")
-        total_tok: int | None = usage.get("total_tokens")
-        cache_read: int | None = usage.get("cache_read_tokens") or usage.get("prompt_cache_hit_tokens")
-        cache_write: int | None = usage.get("cache_write_tokens") or usage.get("prompt_cache_miss_tokens")
+        # Path 1: AgentExecutor streaming — tokens land in message.usage_metadata
+        if response.generations:
+            g = response.generations[0][0] if response.generations[0] else None
+            if g is not None:
+                um = getattr(getattr(g, "message", None), "usage_metadata", None)
+                if um:
+                    input_tok = um.get("input_tokens")
+                    output_tok = um.get("output_tokens")
+                    total_tok = um.get("total_tokens")
+                    details = um.get("output_token_details") or {}
+                    # reasoning tokens not stored separately in our schema; skip
+                if not stop_reason:
+                    meta = getattr(getattr(g, "message", None), "response_metadata", None) or {}
+                    stop_reason = meta.get("finish_reason") or meta.get("stop_reason")
+
+        # Path 2: non-streaming / direct ainvoke — tokens in llm_output["token_usage"]
+        if input_tok is None:
+            usage: dict = lo.get("token_usage") or lo.get("usage") or {}
+            input_tok = usage.get("prompt_tokens") or usage.get("input_tokens")
+            output_tok = usage.get("completion_tokens") or usage.get("output_tokens")
+            total_tok = usage.get("total_tokens")
+            cache_read = usage.get("cache_read_tokens") or usage.get("prompt_cache_hit_tokens")
+            cache_write = usage.get("cache_write_tokens") or usage.get("prompt_cache_miss_tokens")
+            if not stop_reason:
+                stop_reason = usage.get("finish_reason") or usage.get("stop_reason")
 
         model = lo.get("model_name") or self._llm_model
-        stop_reason = lo.get("finish_reason") or lo.get("stop_reason")
 
         self._obs.log_model_call(
             model=model,

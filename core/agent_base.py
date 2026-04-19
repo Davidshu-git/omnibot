@@ -57,6 +57,7 @@ def build_agent(
         timeout=llm_timeout,
         max_retries=3,
         max_tokens=llm_max_tokens,
+        stream_usage=True,
     )
 
     prompt = ChatPromptTemplate.from_messages([

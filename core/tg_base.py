@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from core.observability import OmniObserver, OmnibotObsCallbackHandler, extract_think_blocks
+from core.observability import OmniObserver, OmnibotObsCallbackHandler, extract_think_blocks, strip_think_blocks
 
 import markdown
 from filelock import FileLock
@@ -771,13 +771,15 @@ class TelegramBotBase:
         typing_task = asyncio.create_task(keep_typing_action(chat_id, context))
         status_msg: Optional[Message] = None
 
-        # Observability: generate trace_id and set up observer for this turn
+        # memory_session_id: used by LangChain STM — must stay stable across bot upgrades
+        memory_session_id = f"tg_session_{user_id}"
+        # obs_session_id: includes agent_slug to avoid cross-bot PK collision in DB
         agent_slug = self.agent_id.replace("-", "_") if self.agent_id else "bot"
-        session_id = f"tg_session_{agent_slug}_{user_id}"
-        trace_id = f"{session_id}:t{int(time.time() * 1000)}"
+        obs_session_id = f"tg_session_{agent_slug}_{user_id}"
+        trace_id = f"{obs_session_id}:t{int(time.time() * 1000)}"
         obs: Optional[OmniObserver] = None
         if self.obs_dir is not None and self.agent_id:
-            obs = OmniObserver(session_id, self.agent_id, self.obs_dir)
+            obs = OmniObserver(obs_session_id, self.agent_id, self.obs_dir)
             obs.log_message("user", user_msg, trace_id=trace_id)
 
         try:
@@ -803,7 +805,7 @@ class TelegramBotBase:
                     "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
                 },
                 config={
-                    "configurable": {"session_id": session_id},
+                    "configurable": {"session_id": memory_session_id},
                     "callbacks": callbacks,
                 },
             )
@@ -815,9 +817,8 @@ class TelegramBotBase:
                 for think_content in extract_think_blocks(reply_text):
                     obs.log_thought(think_content, trace_id=trace_id)
 
-            # Log assistant message (with think blocks still present; observer sees raw text)
             if obs is not None:
-                obs.log_message("assistant", reply_text, trace_id=trace_id)
+                obs.log_message("assistant", strip_think_blocks(reply_text), trace_id=trace_id)
 
             await status_msg.delete()
 
