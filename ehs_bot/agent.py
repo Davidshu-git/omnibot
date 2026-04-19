@@ -16,11 +16,11 @@ load_dotenv()
 # ==========================================
 # 环境变量校验
 # ==========================================
-MINIMAX_KEY = os.getenv("ALI_CODING_PLAN_KEY", "")
+MINIMAX_KEY = os.getenv("MINIMAX_API_KEY", "")
 EMBEDDING_KEY = os.getenv("DASHSCOPE_APIMODE_KEY", "")
 
 if not MINIMAX_KEY:
-    raise ValueError("❌ 致命错误：未在环境变量中找到 ALI_CODING_PLAN_KEY！")
+    raise ValueError("❌ 致命错误：未在环境变量中找到 MINIMAX_API_KEY！")
 if not EMBEDDING_KEY:
     raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_APIMODE_KEY！")
 
@@ -76,8 +76,8 @@ agent_with_chat_history = build_agent(
     tools=_tools,
     llm_api_key=MINIMAX_KEY,
     memory_dir=MEMORY_DIR,
-    llm_base_url="https://coding.dashscope.aliyuncs.com/v1",
-    llm_model="qwen3.5-plus",
+    llm_base_url="https://api.minimaxi.com/v1",
+    llm_model="MiniMax-M2.7",
     llm_timeout=90,
 )
 
