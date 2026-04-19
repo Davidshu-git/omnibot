@@ -26,6 +26,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from core.observability import OmniObserver, OmnibotObsCallbackHandler, extract_think_blocks
+
 import markdown
 from filelock import FileLock
 from playwright.async_api import async_playwright
@@ -519,6 +521,8 @@ class TelegramBotBase:
         job_module: str,
         job_func: str = "job_routine",
         asr_api_key: str = "",
+        obs_dir: Optional[Path] = None,
+        agent_id: str = "",
     ) -> None:
         self.bot_token = bot_token
         self.allowed_user_ids = allowed_user_ids
@@ -529,6 +533,8 @@ class TelegramBotBase:
         self.job_module = job_module
         self.job_func = job_func
         self.asr_api_key = asr_api_key
+        self.obs_dir = obs_dir
+        self.agent_id = agent_id
         # 暂存待确认的重复上传（user_id → 上传元信息），内存级，重启失效
         self._pending_uploads: dict[int, dict] = {}
 
@@ -765,6 +771,15 @@ class TelegramBotBase:
         typing_task = asyncio.create_task(keep_typing_action(chat_id, context))
         status_msg: Optional[Message] = None
 
+        # Observability: generate trace_id and set up observer for this turn
+        agent_slug = self.agent_id.replace("-", "_") if self.agent_id else "bot"
+        session_id = f"tg_session_{agent_slug}_{user_id}"
+        trace_id = f"{session_id}:t{int(time.time() * 1000)}"
+        obs: Optional[OmniObserver] = None
+        if self.obs_dir is not None and self.agent_id:
+            obs = OmniObserver(session_id, self.agent_id, self.obs_dir)
+            obs.log_message("user", user_msg, trace_id=trace_id)
+
         try:
             status_msg = await message.reply_text(
                 f"<blockquote><b>🤖 {self.get_bot_name()} 引擎已唤醒</b></blockquote>\n"
@@ -777,6 +792,9 @@ class TelegramBotBase:
                 tool_status_map=self.get_tool_status_map(),
                 bot_name=self.get_bot_name(),
             )
+            callbacks = [tg_callback]
+            if obs is not None:
+                callbacks.append(OmnibotObsCallbackHandler(obs, trace_id))
 
             response = await self.agent.ainvoke(
                 {
@@ -785,12 +803,22 @@ class TelegramBotBase:
                     "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
                 },
                 config={
-                    "configurable": {"session_id": f"tg_session_{user_id}"},
-                    "callbacks": [tg_callback],
+                    "configurable": {"session_id": session_id},
+                    "callbacks": callbacks,
                 },
             )
 
             reply_text = response['output']
+
+            # Extract <think>…</think> BEFORE translate_to_telegram_html strips it
+            if obs is not None:
+                for think_content in extract_think_blocks(reply_text):
+                    obs.log_thought(think_content, trace_id=trace_id)
+
+            # Log assistant message (with think blocks still present; observer sees raw text)
+            if obs is not None:
+                obs.log_message("assistant", reply_text, trace_id=trace_id)
+
             await status_msg.delete()
 
             final_text, table_render_paths = await render_markdown_table_to_image(

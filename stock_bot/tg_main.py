@@ -24,6 +24,9 @@ from stock_bot.agent import (
 )
 from stock_bot.valuation_engine import fetch_stock_price_raw
 
+OBS_DIR = (Path(__file__).parent.parent / "data" / "stock" / "observability" / "sessions").resolve()
+OBS_DIR.mkdir(parents=True, exist_ok=True)
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -294,6 +297,8 @@ def main() -> None:
         kb_dir=KB_DIR,
         job_module="stock_bot.daily_job",
         asr_api_key=os.getenv("GROQ_API_KEY", ""),
+        obs_dir=OBS_DIR,
+        agent_id="stock-bot",
     )
     bot.run()
 

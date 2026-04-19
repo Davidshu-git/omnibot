@@ -3,6 +3,7 @@ EHS Bot Telegram 入口 - 继承 TelegramBotBase，注入 EHS 领域专属逻辑
 """
 import os
 import logging
+from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, BotCommand
@@ -16,6 +17,9 @@ from ehs_bot.agent import (
     SANDBOX_DIR,
     KB_DIR,
 )
+
+OBS_DIR = (Path(__file__).parent.parent / "data" / "ehs" / "observability" / "sessions").resolve()
+OBS_DIR.mkdir(parents=True, exist_ok=True)
 
 load_dotenv()
 
@@ -165,6 +169,8 @@ def main() -> None:
         sandbox_dir=SANDBOX_DIR,
         kb_dir=KB_DIR,
         job_module="ehs_bot.daily_job",
+        obs_dir=OBS_DIR,
+        agent_id="ehs-bot",
     )
     bot.run()
 

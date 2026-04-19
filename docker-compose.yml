@@ -37,6 +37,7 @@ services:
       - ./data/stock/agent_workspace:/app/data/stock/agent_workspace
       - ./data/stock/knowledge_base:/app/data/stock/knowledge_base
       - ./data/stock/embeddings:/app/data/stock/embeddings
+      - ./data/stock/observability:/app/data/stock/observability
       - ./jobs:/app/jobs
       - ./.env:/app/.env
     depends_on:
@@ -59,5 +60,6 @@ services:
       - ./data/ehs/agent_workspace:/app/data/ehs/agent_workspace
       - ./data/ehs/knowledge_base:/app/data/ehs/knowledge_base
       - ./data/ehs/embeddings:/app/data/ehs/embeddings
+      - ./data/ehs/observability:/app/data/ehs/observability
       - ./jobs:/app/jobs
       - ./.env:/app/.env
