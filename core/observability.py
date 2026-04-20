@@ -277,15 +277,16 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
                     cache_read = (
                         in_details.get("cache_read")
                         or in_details.get("cached_tokens")
-                        or um.get("cache_read_tokens")
                     ) or None
-                    cache_write = (
-                        in_details.get("cache_creation")
-                        or um.get("cache_write_tokens")
-                    ) or None
+                    cache_write = in_details.get("cache_creation") or None
+                # response_metadata 里读原始 token_usage，补 LangChain 未映射的字段
+                meta = getattr(getattr(g, "message", None), "response_metadata", None) or {}
+                raw_usage = meta.get("token_usage") or {}
                 if not stop_reason:
-                    meta = getattr(getattr(g, "message", None), "response_metadata", None) or {}
                     stop_reason = meta.get("finish_reason") or meta.get("stop_reason")
+                if cache_read is None:
+                    prompt_details = raw_usage.get("prompt_tokens_details") or {}
+                    cache_read = prompt_details.get("cached_tokens") or None
 
         # Path 2: non-streaming / direct ainvoke — tokens in llm_output["token_usage"]
         if input_tok is None:
