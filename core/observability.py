@@ -273,8 +273,16 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
                     input_tok = um.get("input_tokens")
                     output_tok = um.get("output_tokens")
                     total_tok = um.get("total_tokens")
-                    details = um.get("output_token_details") or {}
-                    # reasoning tokens not stored separately in our schema; skip
+                    in_details = um.get("input_token_details") or {}
+                    cache_read = (
+                        in_details.get("cache_read")
+                        or in_details.get("cached_tokens")
+                        or um.get("cache_read_tokens")
+                    ) or None
+                    cache_write = (
+                        in_details.get("cache_creation")
+                        or um.get("cache_write_tokens")
+                    ) or None
                 if not stop_reason:
                     meta = getattr(getattr(g, "message", None), "response_metadata", None) or {}
                     stop_reason = meta.get("finish_reason") or meta.get("stop_reason")
