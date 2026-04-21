@@ -5,6 +5,8 @@ import os
 import logging
 from pathlib import Path
 
+from core.logging_setup import setup_logging
+
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, BotCommand
 from telegram.constants import ParseMode
@@ -23,6 +25,7 @@ OBS_DIR.mkdir(parents=True, exist_ok=True)
 
 load_dotenv()
 
+setup_logging("./logs", "ehs")
 logger = logging.getLogger(__name__)
 
 TG_BOT_TOKEN = os.getenv("EHS_TG_BOT_TOKEN", "")
@@ -156,11 +159,6 @@ class EHSBot(TelegramBotBase):
 
 
 def main() -> None:
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-    )
-
     bot = EHSBot(
         bot_token=TG_BOT_TOKEN,
         allowed_user_ids=ALLOWED_USER_IDS,

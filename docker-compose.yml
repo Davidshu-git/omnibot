@@ -39,6 +39,7 @@ services:
       - ./data/stock/embeddings:/app/data/stock/embeddings
       - ./data/stock/observability:/app/data/stock/observability
       - ./jobs:/app/jobs
+      - ./logs/stock:/app/logs
       - ./.env:/app/.env
     depends_on:
       - stock-daily-job
@@ -62,4 +63,5 @@ services:
       - ./data/ehs/embeddings:/app/data/ehs/embeddings
       - ./data/ehs/observability:/app/data/ehs/observability
       - ./jobs:/app/jobs
+      - ./logs/ehs:/app/logs
       - ./.env:/app/.env

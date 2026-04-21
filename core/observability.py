@@ -5,9 +5,8 @@ Writes observability events to per-session-per-day JSONL files.
 Format mirrors mhxy_jsonl so the omnibot_jsonl adapter can share the same
 mapping logic.
 
-File naming: {obs_dir}/{session_id}_{YYYYMMDD}.jsonl
-Each daily file starts with a session header record (auto-inserted on
-first write of that day).
+File naming: {obs_dir}/{session_id}.jsonl  (date is embedded in session_id)
+Each file starts with a session header record (auto-inserted on first write).
 """
 from __future__ import annotations
 
@@ -51,8 +50,7 @@ class OmniObserver:
         obs_dir.mkdir(parents=True, exist_ok=True)
 
     def _today_path(self) -> Path:
-        day = date.today().strftime("%Y%m%d")
-        return self.obs_dir / f"{self.session_id}_{day}.jsonl"
+        return self.obs_dir / f"{self.session_id}.jsonl"
 
     def _write(self, record: dict) -> None:
         path = self._today_path()

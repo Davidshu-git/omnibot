@@ -22,7 +22,7 @@ import logging
 import asyncio
 import subprocess
 import unicodedata
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -773,9 +773,10 @@ class TelegramBotBase:
 
         # memory_session_id: used by LangChain STM — must stay stable across bot upgrades
         memory_session_id = f"tg_session_{user_id}"
-        # obs_session_id: includes agent_slug to avoid cross-bot PK collision in DB
+        # obs_session_id: includes agent_slug + date so each day gets its own DB session
         agent_slug = self.agent_id.replace("-", "_") if self.agent_id else "bot"
-        obs_session_id = f"tg_session_{agent_slug}_{user_id}"
+        today = date.today().strftime("%Y%m%d")
+        obs_session_id = f"tg_session_{agent_slug}_{user_id}_{today}"
         trace_id = f"{obs_session_id}:t{int(time.time() * 1000)}"
         obs: Optional[OmniObserver] = None
         if self.obs_dir is not None and self.agent_id:

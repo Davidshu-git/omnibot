@@ -6,6 +6,8 @@ import json
 import asyncio
 import logging
 from pathlib import Path
+
+from core.logging_setup import setup_logging
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -29,6 +31,7 @@ OBS_DIR.mkdir(parents=True, exist_ok=True)
 
 load_dotenv()
 
+setup_logging("./logs", "stock")
 logger = logging.getLogger(__name__)
 
 TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN", "")
@@ -283,10 +286,6 @@ class StockBot(TelegramBotBase):
 
 
 def main() -> None:
-    logging.basicConfig(
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        level=logging.INFO,
-    )
 
     bot = StockBot(
         bot_token=TG_BOT_TOKEN,
