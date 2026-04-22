@@ -8,3 +8,4 @@ data/
 jobs/
 .DS_Store
 .claude/
+logs/
