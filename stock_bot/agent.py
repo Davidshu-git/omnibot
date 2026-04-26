@@ -17,10 +17,33 @@ load_dotenv()
 # 环境变量校验
 # ==========================================
 MINIMAX_KEY = os.getenv("MINIMAX_API_KEY", "")
+DEEPSEEK_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 EMBEDDING_KEY = os.getenv("DASHSCOPE_APIMODE_KEY", "")
 
-if not MINIMAX_KEY:
-    raise ValueError("❌ 致命错误：未在环境变量中找到 MINIMAX_API_KEY！")
+# LLM_PROVIDER: "minimax"（默认）或 "deepseek"
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "minimax").strip().lower()
+
+_LLM_CONFIGS = {
+    "minimax": {
+        "api_key": MINIMAX_KEY,
+        "base_url": "https://api.minimaxi.com/v1",
+        "model": "MiniMax-M2.7",
+        "timeout": 90,
+    },
+    "deepseek": {
+        "api_key": DEEPSEEK_KEY,
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-v4-flash",
+        "timeout": 60,
+    },
+}
+
+if LLM_PROVIDER not in _LLM_CONFIGS:
+    raise ValueError(f"❌ 不支持的 LLM_PROVIDER: {LLM_PROVIDER!r}，可选值：minimax / deepseek")
+
+_active = _LLM_CONFIGS[LLM_PROVIDER]
+if not _active["api_key"]:
+    raise ValueError(f"❌ 致命错误：LLM_PROVIDER={LLM_PROVIDER}，但对应 API Key 未配置！")
 if not EMBEDDING_KEY:
     raise ValueError("❌ 致命错误：未在环境变量中找到 DASHSCOPE_APIMODE_KEY！")
 
@@ -116,11 +139,11 @@ _tools = (
 agent_with_chat_history = build_agent(
     system_prompt=STOCK_SYSTEM_PROMPT,
     tools=_tools,
-    llm_api_key=MINIMAX_KEY,
+    llm_api_key=_active["api_key"],
     memory_dir=MEMORY_DIR,
-    llm_base_url="https://api.minimaxi.com/v1",
-    llm_model="MiniMax-M2.7",
-    llm_timeout=90,
+    llm_base_url=_active["base_url"],
+    llm_model=_active["model"],
+    llm_timeout=_active["timeout"],
 )
 
 
