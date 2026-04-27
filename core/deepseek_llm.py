@@ -29,17 +29,28 @@ class DeepSeekChatLLM(ChatOpenAI):
     ) -> ChatResult:
         result = super()._create_chat_result(response, generation_info)
 
-        # 从原始响应提取 reasoning_content，注入每个 generation 的 AIMessage
+        # reasoning_content 在 OpenAI SDK pydantic 对象的 model_extra 里，
+        # model_dump() 不包含它，必须直接从原始 choice.message 对象读取
         try:
-            resp_dict = (
-                response if isinstance(response, dict) else response.model_dump()
+            choices = (
+                response.get("choices") or []
+                if isinstance(response, dict)
+                else getattr(response, "choices", []) or []
             )
-            choices = resp_dict.get("choices") or []
             for i, choice in enumerate(choices):
                 if i >= len(result.generations):
                     break
-                msg_dict = choice.get("message") or {}
-                rc = msg_dict.get("reasoning_content")
+                # 优先从 model_extra 读（SDK 对象路径）
+                msg_obj = (
+                    choice.get("message") if isinstance(choice, dict)
+                    else getattr(choice, "message", None)
+                )
+                if msg_obj is None:
+                    continue
+                rc = (
+                    msg_obj.get("reasoning_content") if isinstance(msg_obj, dict)
+                    else (getattr(msg_obj, "model_extra", None) or {}).get("reasoning_content")
+                )
                 if rc and isinstance(result.generations[i].message, AIMessage):
                     result.generations[i].message.additional_kwargs["reasoning_content"] = rc
         except Exception:
