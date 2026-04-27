@@ -9,6 +9,7 @@ import base64
 import time
 from typing import Dict, Any, Optional
 import logging
+from dotenv import dotenv_values
 from openai import OpenAI
 from mhxy_bot.config import QWEN_VL_PLUS_MODEL, DEFAULT_RESOLUTION
 
@@ -94,19 +95,15 @@ class CloudVisionAnalyzer:
         if not self.api_key:
             env_file = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env")
             if os.path.exists(env_file):
-                with open(env_file, "r", encoding="utf-8") as f:
-                    for line in f:
-                        if line.startswith("VL_DASHSCOPE_API_KEY="):
-                            self.api_key = line.strip().split("=", 1)[1]
-                            break
-                        elif line.startswith("DASHSCOPE_API_KEY="):
-                            self.api_key = line.strip().split("=", 1)[1]
+                env_vals = dotenv_values(env_file)
+                self.api_key = env_vals.get("VL_DASHSCOPE_API_KEY") or env_vals.get("DASHSCOPE_API_KEY")
 
         if not self.api_key:
             raise ValueError("未设置 VL_DASHSCOPE_API_KEY 或 DASHSCOPE_API_KEY")
 
         self.model = QWEN_VL_PLUS_MODEL
         self.log_callback = log_callback
+        self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 
     def _call_vl(self, image_path: str, prompt: str, json_mode: bool = False) -> Dict[str, Any]:
         """调用 VL API，返回 {"success": True, "content": str} 或 {"success": False, "error": str}"""
@@ -118,8 +115,7 @@ class CloudVisionAnalyzer:
             mime = "image/png" if ext in ("png", "") else f"image/{ext}"
 
             kwargs = {"response_format": {"type": "json_object"}} if json_mode else {}
-            client = OpenAI(api_key=self.api_key, base_url=self.base_url)
-            response = client.chat.completions.create(
+            response = self._client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},

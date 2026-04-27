@@ -532,6 +532,7 @@ class TelegramBotBase:
         obs_dir: Optional[Path] = None,
         agent_id: str = "",
         memory_dir: Optional[Path] = None,
+        obs_provider: str = "dashscope",
     ) -> None:
         self.bot_token = bot_token
         self.allowed_user_ids = allowed_user_ids
@@ -545,6 +546,7 @@ class TelegramBotBase:
         self.obs_dir = obs_dir
         self.agent_id = agent_id
         self.memory_dir = memory_dir
+        self.obs_provider = obs_provider
         # 暂存待确认的重复上传（user_id → 上传元信息），内存级，重启失效
         self._pending_uploads: dict[int, dict] = {}
 
@@ -731,20 +733,18 @@ class TelegramBotBase:
 
         log_dir = Path("./jobs/logs").resolve()
         log_dir.mkdir(parents=True, exist_ok=True)
-        stderr_log = open(log_dir / f"{job_id}_stderr.log", 'w', encoding='utf-8')
-
-        subprocess.Popen(
-            [
-                sys.executable, "-m", "core.job_runner",
-                "--job-id", job_id,
-                "--job-module", self.job_module,
-                "--job-func", self.job_func,
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=stderr_log,
-            start_new_session=True,
-        )
-        stderr_log.close()
+        with open(log_dir / f"{job_id}_stderr.log", 'w', encoding='utf-8') as stderr_log:
+            subprocess.Popen(
+                [
+                    sys.executable, "-m", "core.job_runner",
+                    "--job-id", job_id,
+                    "--job-module", self.job_module,
+                    "--job-func", self.job_func,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=stderr_log,
+                start_new_session=True,
+            )
 
         reply_text = (
             f"✅ 任务已成功挂载至后台独立进程！\n\n"
@@ -825,7 +825,7 @@ class TelegramBotBase:
             )
             callbacks = [tg_callback]
             if obs is not None:
-                callbacks.append(OmnibotObsCallbackHandler(obs, trace_id))
+                callbacks.append(OmnibotObsCallbackHandler(obs, trace_id, provider=self.obs_provider))
 
             response = await self.agent.ainvoke(
                 {

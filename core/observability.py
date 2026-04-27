@@ -49,11 +49,11 @@ class OmniObserver:
         self.obs_dir = obs_dir
         obs_dir.mkdir(parents=True, exist_ok=True)
 
-    def _today_path(self) -> Path:
+    def _session_path(self) -> Path:
         return self.obs_dir / f"{self.session_id}.jsonl"
 
     def _write(self, record: dict) -> None:
-        path = self._today_path()
+        path = self._session_path()
         lock_path = path.with_suffix(".lock")
         with FileLock(str(lock_path), timeout=5):
             new_file = not path.exists()
@@ -228,10 +228,11 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
         callbacks=[tg_callback, obs_callback]
     """
 
-    def __init__(self, observer: OmniObserver, trace_id: str) -> None:
+    def __init__(self, observer: OmniObserver, trace_id: str, provider: str = "dashscope") -> None:
         super().__init__()
         self._obs = observer
         self._trace_id = trace_id
+        self._provider = provider
         self._run_counter = 0
         self._current_run_id: str | None = None
         self._llm_start_time: float | None = None
@@ -320,7 +321,7 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
 
         self._obs.log_model_call(
             model=model,
-            provider="dashscope",
+            provider=self._provider,
             input_tokens=input_tok,
             output_tokens=output_tok,
             cache_read_tokens=cache_read,

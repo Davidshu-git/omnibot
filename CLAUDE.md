@@ -135,8 +135,9 @@ omnibot/
 
 | 文件 | 职责 |
 |------|------|
-| `core/tg_base.py` | Bot 基础设施：鉴权、渲染管道（HTML/表格图）、Agent 异步调度、文件上传入库、跨进程广播接收 |
+| `core/tg_base.py` | Bot 基础设施：鉴权、渲染管道（HTML/表格图）、Agent 异步调度、文件上传入库、跨进程广播接收；`obs_provider` 参数可为每个 bot 指定 LLM provider |
 | `core/agent_base.py` | 统一构建带记忆的 LangChain Agent（`RunnableWithMessageHistory`） |
+| `core/observability.py` | JSONL 会话日志器（`OmniObserver`）+ LangChain 回调（`OmnibotObsCallbackHandler`）；写入 `{obs_dir}/{session_id}.jsonl`；session_id 格式：`tg_session_{agent_slug}_{user_id}_{YYYYMMDD}` |
 | `core/tools/file_tools.py` | 沙箱读写 + RAG（L1 `lru_cache` / L2 FAISS 硬盘，mtime 热更新） |
 | `core/tools/memory_tools.py` | LTM：`user_profile.json` KV 状态机；STM：10 条滑动窗口 `FileChatMessageHistory` |
 | `core/tools/job_tools.py` | `trigger_job` 以 `subprocess.Popen` 启动 `core.job_runner`；`query_job_status` 读取状态文件 |
@@ -153,6 +154,8 @@ omnibot/
 - `setup_extra_handlers(app)` — 注册额外命令处理器（`_post_init` 异步钩子中调用）
 - `setup_job_queue(app)` — 注册定时任务（如价格预警轮询）
 - `handle_custom_cmd(cmd, query, user_id, context, update)` — Inline Keyboard 按钮分发
+
+**Observability 接入方式**：`TelegramBotBase.__init__` 传入 `obs_dir: Path` 和 `agent_id: str`，框架自动在每次 `execute_agent_task` 中创建 `OmniObserver` 并挂载 `OmnibotObsCallbackHandler`。`obs_provider` 参数（默认 `"dashscope"`）透传给 handler，记录到 JSONL 的 `provider` 字段。JSONL 文件由 agent-observability 项目周期性摄取入 PostgreSQL。
 
 **`broadcast_to_telegram` 为模块级独立函数**（非类方法）：daily_job 子进程需要调用它，不能依赖类实例。签名为 `broadcast_to_telegram(text, bot_token, allowed_user_ids, sandbox_dir)`。
 
