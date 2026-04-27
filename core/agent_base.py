@@ -23,6 +23,7 @@ def build_agent(
     llm_model: str = "qwen3.5-plus",
     llm_timeout: int = 90,
     llm_max_tokens: int = 8192,
+    llm_model_kwargs: dict | None = None,
 ):
     """
     构建带记忆的 LangChain Agent。
@@ -58,6 +59,7 @@ def build_agent(
         max_retries=3,
         max_tokens=llm_max_tokens,
         stream_usage=True,
+        model_kwargs=llm_model_kwargs or {},
     )
 
     prompt = ChatPromptTemplate.from_messages([
