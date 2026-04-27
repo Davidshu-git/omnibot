@@ -28,6 +28,7 @@ def build_agent(
     llm_max_tokens: int = 8192,
     llm_model_kwargs: dict | None = None,
     llm_extra_body: dict | None = None,
+    llm_class: type = ChatOpenAI,
 ):
     """
     构建带记忆的 LangChain Agent。
@@ -54,7 +55,7 @@ def build_agent(
         - agent_with_chat_history: 可直接调用 .invoke() / .ainvoke() 的 Agent
         - get_user_profile_fn:     无参函数，读取当前用户长期记忆字符串
     """
-    llm = ChatOpenAI(
+    llm = llm_class(
         model=llm_model,
         api_key=SecretStr(llm_api_key),
         base_url=llm_base_url,
@@ -128,6 +129,7 @@ class _DynamicAgent:
             llm_timeout=cfg.timeout,
             llm_max_tokens=cfg.max_tokens,
             llm_extra_body=cfg.extra_body,
+            llm_class=cfg.llm_class,
             **self._build_kwargs,
         )
         logger.info(f"[_DynamicAgent] 已构建 agent 实例：key={key}")
