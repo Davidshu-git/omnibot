@@ -52,9 +52,6 @@ class EHSBot(TelegramBotBase):
     def get_bot_commands(self) -> list[BotCommand]:
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("kb", "📚 调阅知识库档案"),
-            BotCommand("kb_cleanup", "🗑️ 清理知识库"),
-            BotCommand("report", "📝 触发 EHS 定期简报"),
             BotCommand("status", "🤖 查询当前模型"),
             BotCommand("jobs", "📊 查询最新任务进度"),
             BotCommand("new", "🗑️ 清空对话历史"),
