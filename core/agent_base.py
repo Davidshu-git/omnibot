@@ -1,9 +1,10 @@
 """
 Agent 构建工厂 - 各 bot 通过此函数统一构建 LangChain Agent。
 """
+import logging
 from pathlib import Path
 from datetime import datetime
-from typing import Callable
+from typing import Any, Callable
 
 from langchain_openai import ChatOpenAI
 from langchain.agents import create_tool_calling_agent, AgentExecutor
@@ -12,6 +13,8 @@ from langchain_core.runnables.history import RunnableWithMessageHistory
 from pydantic import SecretStr
 
 from core.tools.memory_tools import get_session_history as _get_session_history
+
+logger = logging.getLogger(__name__)
 
 
 def build_agent(
@@ -85,3 +88,84 @@ def build_agent(
     )
 
     return agent_with_chat_history
+
+
+# ---------------------------------------------------------------------------
+# _DynamicAgent + build_dynamic_agent
+# ---------------------------------------------------------------------------
+
+class _DynamicAgent:
+    """
+    动态模型路由 Agent 包装器。
+    根据 registry.current_key() 懒初始化并缓存 RunnableWithMessageHistory 实例。
+    ainvoke / invoke / astream 与 RunnableWithMessageHistory 接口相同。
+    """
+
+    def __init__(
+        self,
+        registry,           # ModelRegistry，运行时 import 避免循环依赖
+        system_prompt: str,
+        tools: list,
+        memory_dir: Path,
+        **build_kwargs,     # 透传给 build_agent 的额外参数（如 llm_model_kwargs）
+    ) -> None:
+        self._registry = registry
+        self._system_prompt = system_prompt
+        self._tools = tools
+        self._memory_dir = memory_dir
+        self._build_kwargs = build_kwargs
+        self._cache: dict[str, RunnableWithMessageHistory] = {}
+
+    def _build(self, key: str) -> RunnableWithMessageHistory:
+        cfg = self._registry._configs[key]
+        agent = build_agent(
+            system_prompt=self._system_prompt,
+            tools=self._tools,
+            llm_api_key=cfg.api_key,
+            memory_dir=self._memory_dir,
+            llm_base_url=cfg.base_url,
+            llm_model=cfg.model,
+            llm_timeout=cfg.timeout,
+            llm_max_tokens=cfg.max_tokens,
+            llm_extra_body=cfg.extra_body,
+            **self._build_kwargs,
+        )
+        logger.info(f"[_DynamicAgent] 已构建 agent 实例：key={key}")
+        return agent
+
+    def _agent(self) -> RunnableWithMessageHistory:
+        key = self._registry.current_key()
+        if key not in self._cache:
+            self._cache[key] = self._build(key)
+        return self._cache[key]
+
+    async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+        return await self._agent().ainvoke(*args, **kwargs)
+
+    def invoke(self, *args: Any, **kwargs: Any) -> Any:
+        return self._agent().invoke(*args, **kwargs)
+
+    async def astream(self, *args: Any, **kwargs: Any):
+        async for chunk in self._agent().astream(*args, **kwargs):
+            yield chunk
+
+
+def build_dynamic_agent(
+    registry,
+    system_prompt: str,
+    tools: list,
+    memory_dir: Path,
+    **kwargs,
+) -> _DynamicAgent:
+    """
+    构建一个 _DynamicAgent，内部按 model key 懒初始化并缓存 agent 实例。
+    registry: ModelRegistry 实例
+    其余参数与 build_agent 相同（除 llm_api_key / llm_base_url / llm_model 由 registry 提供）。
+    """
+    return _DynamicAgent(
+        registry=registry,
+        system_prompt=system_prompt,
+        tools=tools,
+        memory_dir=memory_dir,
+        **kwargs,
+    )

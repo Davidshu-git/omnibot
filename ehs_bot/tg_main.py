@@ -13,9 +13,11 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from core.tg_base import TelegramBotBase
+from core.model_switch_handler import register_model_switch
 from ehs_bot.agent import (
     agent_with_chat_history,
     get_user_profile_fn,
+    registry,
     SANDBOX_DIR,
     KB_DIR,
 )
@@ -53,6 +55,7 @@ class EHSBot(TelegramBotBase):
             BotCommand("kb_cleanup", "🗑️ 清理知识库"),
             BotCommand("report", "📝 触发 EHS 定期简报"),
             BotCommand("status", "📊 查询最新任务进度"),
+            BotCommand("model", "🤖 切换 LLM 模型"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
@@ -82,6 +85,7 @@ class EHSBot(TelegramBotBase):
         app.add_handler(CommandHandler("kb", self._kb_command))
         app.add_handler(CommandHandler("kb_cleanup", self._kb_cleanup_command))
         app.add_handler(CommandHandler("report", self._report_command))
+        register_model_switch(app, registry)
 
     async def handle_custom_cmd(
         self,

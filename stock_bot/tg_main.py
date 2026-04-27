@@ -17,9 +17,11 @@ from telegram.constants import ParseMode
 from telegram.ext import Application, ContextTypes
 
 from core.tg_base import TelegramBotBase
+from core.model_switch_handler import register_model_switch
 from stock_bot.agent import (
     agent_with_chat_history,
     get_user_profile_fn,
+    registry,
     SANDBOX_DIR,
     KB_DIR,
     MEMORY_DIR,
@@ -60,6 +62,7 @@ class StockBot(TelegramBotBase):
         return [
             BotCommand("start", "🏠 唤醒主控台"),
             BotCommand("status", "📊 查询最新任务进度"),
+            BotCommand("model", "🤖 切换 LLM 模型"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
@@ -115,6 +118,7 @@ class StockBot(TelegramBotBase):
         """注册股票专属命令处理器。"""
         from telegram.ext import CallbackQueryHandler
         app.add_handler(CallbackQueryHandler(self._delete_alert_callback, pattern=r"^del_alert:"), group=-1)
+        register_model_switch(app, registry)
 
     async def handle_custom_cmd(
         self,
