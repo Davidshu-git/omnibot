@@ -70,6 +70,25 @@ class OmniObserver:
                     f.write(json.dumps(session_rec, ensure_ascii=False) + "\n")
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def _now(self) -> str:
+        """Compatibility helper for mhxy-style log callbacks."""
+        return _now_iso()
+
+    def write_raw_event(self, record: dict) -> None:
+        """
+        Append a pre-shaped JSONL event.
+
+        This keeps migrated mhxy helpers that emit model_call records with
+        prompt/raw_output compatible without coupling the bot to a remote API.
+        """
+        rec = dict(record)
+        rec.setdefault("timestamp", _now_iso())
+        self._write(rec)
+
+    def _write_log(self, record: dict) -> None:
+        """Compatibility shim for mhxy.tools.core.session_logger callbacks."""
+        self.write_raw_event(record)
+
     # ------------------------------------------------------------------
     # Public log methods — one per event type
     # ------------------------------------------------------------------

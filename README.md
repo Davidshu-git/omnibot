@@ -117,6 +117,11 @@ LLM 输出 → `translate_to_telegram_html()` → 检测 Markdown 表格 → Pla
 ### 研报独立子进程
 `trigger_job` 工具以 `subprocess.Popen` 启动 `core/job_runner.py`，任务状态写入 `jobs/status/{job_id}.json`，不阻塞主线程。`query_job_status` 工具异步轮询进度。
 
+### Observability JSONL
+`TelegramBotBase` 在提供 `obs_dir` 与 `agent_id` 时写入本地 JSONL：`{obs_dir}/tg_session_{agent_slug}_{user_id}_{YYYYMMDD}.jsonl`。记录类型保持与 mhxy 日志兼容：`session`、`message`、`thought`、`model_call`、`tool_call`、`tool_result`，供 `agent-observability` 第一阶段通过本地 JSONL adapter 摄取；当前不要求 Bot 直接依赖 FastAPI/Postgres 服务。
+
+迁移的 mhxy VL 工具若需要记录 `prompt` / `raw_output`，应把当前 `OmniObserver` 传给 `mhxy_bot.game_core.cloud_vision.set_log_callback(observer)`，并在任务结束后清空。`OmniObserver` 同时提供 `write_raw_event()` 与 mhxy 兼容的 `_write_log()` shim，用于接收这些预成形 JSONL 事件。
+
 ### 沙箱安全防御
 所有 Agent I/O 使用 `pathlib.is_relative_to()` 校验路径层级，强制 sandbox 限制在 `agent_workspace/`，知识库操作限制在 `knowledge_base/` 内。
 
@@ -138,6 +143,15 @@ ALLOWED_TG_USERS=            # 白名单用户 ID，逗号分隔
 # EHS Bot
 EHS_TG_BOT_TOKEN=
 EHS_ALLOWED_TG_USERS=
+
+# MHXY Bot
+MHXY_TG_BOT_TOKEN=
+MHXY_ALLOWED_TG_USERS=
+MHXY_REMOTE_MODE=true
+MHXY_REMOTE_HOST=192.168.x.x
+MHXY_REMOTE_USER=your_windows_ssh_user
+VL_DASHSCOPE_API_KEY=
+VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 
 # 可选（邮件推送）
 SMTP_SERVER=
@@ -163,13 +177,14 @@ docker compose logs -f
 docker compose restart stock-tg-bot
 ```
 
-三个服务：
+四个服务：
 
 | 服务 | 容器名 | 说明 |
 |------|--------|------|
 | `stock-daily-job` | `v2-omnistock-daily-job` | 盘后调度器，每日 15:30 自动执行 |
 | `stock-tg-bot` | `v2-omnistock-tg-bot` | OmniStock Telegram Bot |
 | `ehs-tg-bot` | `v2-omniehs-tg-bot` | OmniEHS Telegram Bot |
+| `mhxy-tg-bot` | `v2-omnimhxy-tg-bot` | OmniMHXY 游戏控制 Bot |
 
 ### 本地开发
 

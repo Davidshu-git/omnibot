@@ -2,6 +2,7 @@
 记忆系统工具工厂 - LTM/STM 双轨记忆架构。
 """
 import json
+import tiktoken
 from pathlib import Path
 from filelock import FileLock
 from langchain_core.tools import tool
@@ -10,6 +11,23 @@ from langchain_community.chat_message_histories import FileChatMessageHistory
 import logging
 
 logger = logging.getLogger(__name__)
+
+# 预留给 system prompt + 工具定义 + 本轮用户消息 + 模型回复的 token 空间
+# 历史记忆可用预算 = 上下文窗口 - 此预留量
+_RESERVED_TOKENS = 16000
+# 默认历史 token 预算
+_DEFAULT_HISTORY_BUDGET = 32000
+
+_encoder = tiktoken.get_encoding("cl100k_base")  # 对 Qwen 模型偏保守估计，安全
+
+
+def _count_message_tokens(messages: list) -> int:
+    """估算消息列表的 token 数（cl100k_base，对中文偏高估，保守安全）。"""
+    total = 0
+    for msg in messages:
+        content = msg.content if isinstance(msg.content, str) else str(msg.content)
+        total += len(_encoder.encode(content)) + 4  # 每条消息约 4 token 额外开销
+    return total
 
 
 def get_user_profile(memory_dir: Path) -> str:
@@ -28,15 +46,38 @@ def get_user_profile(memory_dir: Path) -> str:
         return "暂无长期记忆"
 
 
-def get_session_history(memory_dir: Path, session_id: str):
-    """带滑动窗口的短期记忆引擎（10 条消息）"""
+def get_session_history(
+    memory_dir: Path,
+    session_id: str,
+    history_token_budget: int = _DEFAULT_HISTORY_BUDGET,
+):
+    """基于 token 预算的短期记忆引擎。
+
+    从最旧的消息对（human+ai）开始丢弃，直到历史 token 数在预算内。
+    始终保留最近至少 2 条消息（1 轮），避免上下文完全丢失。
+    """
     memory_file = str(memory_dir / f"{session_id}.json")
     history = FileChatMessageHistory(memory_file)
-    if len(history.messages) > 10:
-        kept = history.messages[-10:]
+    messages = list(history.messages)
+
+    if not messages:
+        return history
+
+    original_count = len(messages)
+
+    # 从头部每次裁掉 2 条（一对 human+ai），直到 token 数满足预算
+    while len(messages) > 2 and _count_message_tokens(messages) > history_token_budget:
+        messages = messages[2:]
+
+    if len(messages) != original_count:
+        logger.debug(
+            f"[memory] {session_id}: 裁剪历史 {original_count} → {len(messages)} 条消息"
+            f"（budget={history_token_budget} tokens）"
+        )
         history.clear()
-        for msg in kept:
+        for msg in messages:
             history.add_message(msg)
+
     return history
 
 

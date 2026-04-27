@@ -133,6 +133,48 @@ class ModelRegistry:
         return self._llm_cache[resolved_key]
 
 
+def make_mhxy_registry(settings_dir: Path) -> ModelRegistry:
+    """
+    mhxy_bot 전용 ModelRegistry. 환경변수에서 API Key를 읽어 구성.
+    settings 파일은 settings_dir/model_settings.json.
+    """
+    from core.deepseek_llm import DeepSeekChatLLM
+
+    configs = [
+        ModelConfig(
+            key="qwen",
+            display_name="Qwen 3.5 Plus",
+            api_key=os.getenv("ALI_CODING_PLAN_KEY", ""),
+            base_url="https://coding.dashscope.aliyuncs.com/v1",
+            model="qwen3.5-plus",
+            timeout=120,
+            max_tokens=8192,
+        ),
+        ModelConfig(
+            key="minimax",
+            display_name="MiniMax M2.7",
+            api_key=os.getenv("MINIMAX_API_KEY", ""),
+            base_url="https://api.minimaxi.com/v1",
+            model="MiniMax-M2.7",
+            timeout=120,
+            max_tokens=8192,
+        ),
+        ModelConfig(
+            key="deepseek",
+            display_name="DeepSeek V4 Flash",
+            api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-flash",
+            timeout=120,
+            max_tokens=8192,
+            llm_class=DeepSeekChatLLM,
+        ),
+    ]
+
+    settings_path = settings_dir / "model_settings.json"
+    return ModelRegistry(configs=configs, settings_path=settings_path, default_key="qwen")
+
+
 def make_standard_registry(settings_dir: Path) -> ModelRegistry:
     """
     从环境变量读取 API Key，构造三个标准 ModelConfig，返回 ModelRegistry。

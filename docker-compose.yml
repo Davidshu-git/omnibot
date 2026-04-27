@@ -65,3 +65,28 @@ services:
       - ./jobs:/app/jobs
       - ./logs/ehs:/app/logs
       - ./.env:/app/.env
+
+  # -----------------------------------------------------------
+  # OmniMHXY - Telegram Bot（游戏控制）
+  # -----------------------------------------------------------
+  mhxy-tg-bot:
+    build: .
+    image: omnibot:latest
+    container_name: v2-omnimhxy-tg-bot
+    mem_limit: 2g
+    entrypoint: /app/entrypoint.mhxy.sh
+    command: ["python", "-m", "mhxy_bot.tg_main"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./core:/app/core
+      - ./mhxy_bot:/app/mhxy_bot
+      - ./data/mhxy/config:/app/data/mhxy/config
+      - ./data/mhxy/memory:/app/data/mhxy/memory
+      - ./data/mhxy/agent_workspace:/app/data/mhxy/agent_workspace
+      - ./data/mhxy/knowledge_base:/app/data/mhxy/knowledge_base
+      - ./data/mhxy/observability:/app/data/mhxy/observability
+      - ./logs/mhxy:/app/logs
+      - ./.env:/app/.env
+      - /home/shudawei/.ssh:/root/.ssh_host:ro

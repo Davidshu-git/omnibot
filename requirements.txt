@@ -43,6 +43,15 @@ pydantic~=2.12.0                   # 数据校验与 SecretStr 类型支持
 requests~=2.32.0                   # HTTP 请求底层支持 (ddgs 依赖/异常捕获)
 groq                               # Groq Whisper ASR（语音转文字，原生支持 OGG OPUS）
 
+# 7.1 🎮 梦幻西游游戏运行时 (OCR / Vision / ADB)
+numpy~=1.26.0                      # OpenCV 图像 buffer 处理
+opencv-python-headless~=4.11.0     # 截图解码，使用 headless 版本避免 GUI 依赖
+onnxruntime~=1.23.0                # RapidOCR 推理运行时（Python 3.10 compatible）
+rapidocr-onnxruntime~=1.4.0        # 游戏截图 OCR
+pillow~=10.4.0                     # 图像文件处理
+pyclipper~=1.4.0                   # RapidOCR 后处理依赖
+shapely~=2.1.0                     # RapidOCR 后处理依赖
+
 # 8. 🧪 测试与质量保证 (Testing & QA)
 pytest~=8.0.0                      # 核心测试框架
 pytest-mock~=3.12.0                # pytest Mock 插件

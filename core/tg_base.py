@@ -442,6 +442,8 @@ _DEFAULT_TOOL_STATUS_MAP: dict[str, str] = {
 class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     """拦截 Agent 异步执行流，将工具调用状态实时回传到 Telegram 屏幕。"""
 
+    _IMG_PATTERN = re.compile(r'\[IMG:([^\]]+)\]')
+
     def __init__(
         self,
         status_message: Message,
@@ -453,6 +455,8 @@ class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
         self.written_md_files: set[str] = set()
         self.bot_name = bot_name
         self._tool_map = {**_DEFAULT_TOOL_STATUS_MAP, **(tool_status_map or {})}
+        # 工具执行过程中捕获的截图路径（不依赖 LLM 转发标记）
+        self.captured_images: list[str] = []
 
     async def _safe_edit(self, text: str) -> None:
         """防抖更新，最高 1 次/秒，避免触发 Telegram API 频率限制。"""
@@ -485,6 +489,10 @@ class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
         await self._safe_edit(ui_text)
 
     async def on_tool_end(self, output: str, **kwargs) -> None:
+        # 从工具输出中直接捕获 [IMG:path] 标记，不依赖 LLM 在最终回复中转发
+        for match in self._IMG_PATTERN.finditer(output):
+            self.captured_images.append(match.group(1).strip())
+
         ui_text = (
             f"<blockquote><b>🤖 {self.bot_name} 引擎运转中...</b></blockquote>\n"
             f"<i>✔️ 数据提取完毕，正在进行逻辑推理...</i>"
@@ -517,8 +525,8 @@ class TelegramBotBase:
         agent,
         get_user_profile_fn: Callable[[], str],
         sandbox_dir: Path,
-        kb_dir: Path,
-        job_module: str,
+        kb_dir: Optional[Path] = None,
+        job_module: Optional[str] = None,
         job_func: str = "job_routine",
         asr_api_key: str = "",
         obs_dir: Optional[Path] = None,
@@ -582,6 +590,10 @@ class TelegramBotBase:
 
     async def setup_job_queue(self, app: Application) -> None:
         """注册额外定时任务（子类重写）。"""
+        pass
+
+    def set_observability_context(self, observer: Optional[OmniObserver]) -> None:
+        """Expose the active observer to domain-specific helper modules if needed."""
         pass
 
     # ------------------------------------------------------------------
@@ -702,6 +714,10 @@ class TelegramBotBase:
 
     async def _dispatch_job_task(self, message: Message, job_id: str) -> None:
         """派发后台任务至独立进程（脊髓反射，绕过大模型）。"""
+        if self.job_module is None:
+            await message.reply_text("⚠️ 后台任务功能未配置（job_module 未设置）。")
+            return
+
         status_dir = Path("./jobs/status").resolve()
         status_dir.mkdir(parents=True, exist_ok=True)
         initial_status = {
@@ -794,6 +810,7 @@ class TelegramBotBase:
             obs.log_message("user", user_msg, trace_id=trace_id)
 
         try:
+            self.set_observability_context(obs)
             status_msg = await message.reply_text(
                 f"<blockquote><b>🤖 {self.get_bot_name()} 引擎已唤醒</b></blockquote>\n"
                 f"<i>⏳ 正在建立神经连接...</i>",
@@ -833,8 +850,10 @@ class TelegramBotBase:
 
             await status_msg.delete()
 
+            img_tag_pattern = re.compile(r'\[IMG:([^\]]+)\]')
+            text_reply_without_img_tags = img_tag_pattern.sub("", reply_text).strip()
             final_text, table_render_paths = await render_markdown_table_to_image(
-                reply_text, self.sandbox_dir
+                text_reply_without_img_tags, self.sandbox_dir
             )
 
             chunks = re.split(r'(!\[.*?\]\(.*?\))', final_text)
@@ -896,6 +915,25 @@ class TelegramBotBase:
                 except Exception:
                     pass
 
+            # 发送工具捕获的 [IMG:path] 截图（合并两路来源：callback 直接捕获 + LLM 输出残留）
+            all_img_paths = list(tg_callback.captured_images)
+            for p in img_tag_pattern.findall(reply_text):
+                if p.strip() not in all_img_paths:
+                    all_img_paths.append(p.strip())
+
+            for img_path_str in all_img_paths:
+                img_p = Path(img_path_str)
+                if img_p.exists():
+                    try:
+                        with open(img_p, 'rb') as f:
+                            await message.reply_photo(photo=f)
+                    except Exception as e:
+                        logger.error(f"发送截图失败：{e}")
+                        await message.reply_text(f"⚠️ 截图发送失败：{img_p.name}")
+                else:
+                    await message.reply_text(f"⚠️ 截图文件不存在：{img_p.name}")
+                await asyncio.sleep(0.2)
+
             if tg_callback.written_md_files:
                 buttons = [
                     [InlineKeyboardButton(f"📄 {md_name}", callback_data=f"send_file:{md_name}")]
@@ -915,6 +953,7 @@ class TelegramBotBase:
                     pass
             await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
         finally:
+            self.set_observability_context(None)
             typing_task.cancel()
             try:
                 await typing_task
@@ -972,6 +1011,10 @@ class TelegramBotBase:
             return
         if not self._is_authorized(user.id):
             await message.reply_text("⛔ 未授权访问")
+            return
+
+        if self.kb_dir is None:
+            await message.reply_text("⚠️ 知识库功能未配置（kb_dir 未设置）。")
             return
 
         doc = message.document
@@ -1122,6 +1165,9 @@ class TelegramBotBase:
             md_path = (self.sandbox_dir / md_name).resolve()
             if not md_path.exists():
                 await query.message.reply_text(f"⚠️ 源文件不存在：{md_name}")
+                return
+            if self.kb_dir is None:
+                await query.message.reply_text("⚠️ 知识库功能未配置（kb_dir 未设置）。")
                 return
             try:
                 dest = (self.kb_dir / md_name).resolve()
