@@ -61,7 +61,8 @@ class StockBot(TelegramBotBase):
     def get_bot_commands(self) -> list[BotCommand]:
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("status", "📊 查询最新任务进度"),
+            BotCommand("status", "🤖 查询当前模型"),
+            BotCommand("jobs", "📊 查询最新任务进度"),
             BotCommand("model", "🤖 切换 LLM 模型"),
         ]
 
@@ -73,7 +74,7 @@ class StockBot(TelegramBotBase):
             ],
             [
                 InlineKeyboardButton("📝 极速触发盘后研报", callback_data="cmd_trigger_job"),
-                InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status"),
+                InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_jobs"),
             ],
             [
                 InlineKeyboardButton("🔔 设定盯盘价格预警", callback_data="cmd_alert"),

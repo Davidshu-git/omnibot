@@ -51,7 +51,7 @@ class GameBot(TelegramBotBase):
     def get_bot_commands(self) -> list[BotCommand]:
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("status", "📊 查询状态"),
+            BotCommand("status", "🤖 查询当前模型"),
             BotCommand("model", "🤖 切换 LLM 模型"),
             BotCommand("new", "🗑️ 清空对话历史"),
         ]

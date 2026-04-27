@@ -558,14 +558,14 @@ class TelegramBotBase:
         """左下角菜单命令列表。"""
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("status", "📊 查询最新任务进度"),
+            BotCommand("status", "🤖 查询当前模型"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
         """主控台 Inline Keyboard 按钮布局。"""
         return [
             [InlineKeyboardButton("📝 触发后台任务", callback_data="cmd_trigger_job")],
-            [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
+            [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_jobs")],
         ]
 
     def get_welcome_text(self, first_name: str) -> str:
@@ -581,7 +581,7 @@ class TelegramBotBase:
         return {}
 
     def get_extra_status_text(self) -> str:
-        """额外的状态信息（子类重写），显示在 /status 顶部。"""
+        """模型状态文本（子类重写），/status 命令显示内容。"""
         return ""
 
     async def setup_extra_handlers(self, app: Application) -> None:
@@ -693,20 +693,19 @@ class TelegramBotBase:
             logger.error(f"文件接收与解析失败：{e}")
             await status_msg.edit_text(f"❌ 文件处理失败：{type(e).__name__}")
 
-    async def _handle_status_query(self, message: Message) -> None:
-        """内部函数：处理状态查询并回复（可被命令和按钮复用）。"""
-        extra = self.get_extra_status_text()
+    async def _handle_model_status(self, message: Message) -> None:
+        """处理 /status：只显示当前模型信息。"""
+        text = self.get_extra_status_text() or "⚠️ 暂无模型状态信息。"
+        await message.reply_text(text, parse_mode=ParseMode.HTML)
+
+    async def _handle_jobs_query(self, message: Message) -> None:
+        """处理 /jobs：显示最新后台任务状态。"""
         latest_job_id = self._get_latest_job_id()
         if not latest_job_id:
-            text = "📭 当前系统没有任何后台任务记录。"
-            if extra:
-                text = extra + "\n\n" + text
-            await message.reply_text(text, parse_mode=ParseMode.HTML)
+            await message.reply_text("📭 当前系统没有任何后台任务记录。", parse_mode=ParseMode.HTML)
             return
 
         status_text = self._read_job_status_sync(latest_job_id)
-        if extra:
-            status_text = extra + "\n\n" + status_text
         refresh_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data="check_job:latest")]
         ])
@@ -989,7 +988,17 @@ class TelegramBotBase:
         if not self._is_authorized(user.id):
             await message.reply_text("⛔ 未授权访问")
             return
-        await self._handle_status_query(message)
+        await self._handle_model_status(message)
+
+    async def jobs_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权访问")
+            return
+        await self._handle_jobs_query(message)
 
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
@@ -1232,10 +1241,16 @@ class TelegramBotBase:
             await self._send_dashboard(query.message, query.from_user.first_name)
             return
 
-        # cmd_status：状态查询（旁路，不走大模型）
+        # cmd_status：模型状态（旁路，不走大模型）
         if cmd == "cmd_status":
             if query.message and isinstance(query.message, Message):
-                await self._handle_status_query(query.message)
+                await self._handle_model_status(query.message)
+            return
+
+        # cmd_jobs：后台任务状态（旁路，不走大模型）
+        if cmd == "cmd_jobs":
+            if query.message and isinstance(query.message, Message):
+                await self._handle_jobs_query(query.message)
             return
 
         # cmd_trigger_job：直接派发任务
@@ -1380,6 +1395,8 @@ class TelegramBotBase:
         # 注册通用处理器
         application.add_handler(CommandHandler("start", self.start_command))
         application.add_handler(CommandHandler("status", self.status_command))
+        if self.job_module is not None:
+            application.add_handler(CommandHandler("jobs", self.jobs_command))
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )

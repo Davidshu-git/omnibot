@@ -54,7 +54,8 @@ class EHSBot(TelegramBotBase):
             BotCommand("kb", "📚 调阅知识库档案"),
             BotCommand("kb_cleanup", "🗑️ 清理知识库"),
             BotCommand("report", "📝 触发 EHS 定期简报"),
-            BotCommand("status", "📊 查询最新任务进度"),
+            BotCommand("status", "🤖 查询当前模型"),
+            BotCommand("jobs", "📊 查询最新任务进度"),
             BotCommand("model", "🤖 切换 LLM 模型"),
         ]
 
@@ -63,7 +64,7 @@ class EHSBot(TelegramBotBase):
             [InlineKeyboardButton("📚 调阅知识库档案", callback_data="cmd_kb_list")],
             [InlineKeyboardButton("🗑️ 清理知识库", callback_data="cmd_kb_cleanup")],
             [InlineKeyboardButton("📝 触发 EHS 定期简报", callback_data="cmd_trigger_job")],
-            [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_status")],
+            [InlineKeyboardButton("📊 查询最新任务进度", callback_data="cmd_jobs")],
         ]
 
     def get_welcome_text(self, first_name: str) -> str:
