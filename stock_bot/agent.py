@@ -35,7 +35,7 @@ _LLM_CONFIGS = {
         "base_url": "https://api.deepseek.com",
         "model": "deepseek-v4-flash",
         "timeout": 60,
-        "model_kwargs": {"thinking": {"type": "disabled"}},
+        "extra_body": {"thinking": {"type": "disabled"}},
     },
 }
 
@@ -146,6 +146,7 @@ agent_with_chat_history = build_agent(
     llm_model=_active["model"],
     llm_timeout=_active["timeout"],
     llm_model_kwargs=_active.get("model_kwargs"),
+    llm_extra_body=_active.get("extra_body"),
 )
 
 
