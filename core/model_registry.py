@@ -6,6 +6,7 @@ import os
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Type
 
 from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
@@ -23,6 +24,7 @@ class ModelConfig:
     extra_body: dict | None = None
     timeout: int = 90
     max_tokens: int = 8192
+    llm_class: Type[ChatOpenAI] = ChatOpenAI
 
 
 class ModelRegistry:
@@ -114,7 +116,7 @@ class ModelRegistry:
                 raise RuntimeError(
                     f"模型 {resolved_key!r} 的 API Key 未配置，无法构建 LLM。"
                 )
-            llm = ChatOpenAI(
+            llm = cfg.llm_class(
                 model=cfg.model,
                 api_key=SecretStr(cfg.api_key),
                 base_url=cfg.base_url,
@@ -137,6 +139,8 @@ def make_standard_registry(settings_dir: Path) -> ModelRegistry:
     settings 文件写入 settings_dir/model_settings.json。
     若某个 key 的 api_key 为空，仍注册但 build_llm 时会报错。
     """
+    from core.deepseek_llm import DeepSeekChatLLM
+
     configs = [
         ModelConfig(
             key="minimax",
@@ -144,7 +148,6 @@ def make_standard_registry(settings_dir: Path) -> ModelRegistry:
             api_key=os.getenv("MINIMAX_API_KEY", ""),
             base_url="https://api.minimaxi.com/v1",
             model="MiniMax-M2.7",
-            extra_body=None,
             timeout=90,
             max_tokens=8192,
         ),
@@ -154,7 +157,6 @@ def make_standard_registry(settings_dir: Path) -> ModelRegistry:
             api_key=os.getenv("ALI_CODING_PLAN_KEY", ""),
             base_url="https://coding.dashscope.aliyuncs.com/v1",
             model="qwen3.5-plus",
-            extra_body=None,
             timeout=90,
             max_tokens=8192,
         ),
@@ -164,9 +166,9 @@ def make_standard_registry(settings_dir: Path) -> ModelRegistry:
             api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com",
             model="deepseek-v4-flash",
-            extra_body={"thinking": {"type": "disabled"}},
             timeout=90,
             max_tokens=8192,
+            llm_class=DeepSeekChatLLM,
         ),
     ]
 

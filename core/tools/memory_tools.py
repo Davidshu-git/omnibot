@@ -6,7 +6,6 @@ from pathlib import Path
 from filelock import FileLock
 from langchain_core.tools import tool
 from langchain_community.chat_message_histories import FileChatMessageHistory
-from langchain_core.messages import BaseMessage, AIMessage
 
 import logging
 
@@ -29,31 +28,10 @@ def get_user_profile(memory_dir: Path) -> str:
         return "暂无长期记忆"
 
 
-class _CleanFileChatMessageHistory(FileChatMessageHistory):
-    """FileChatMessageHistory 子类：写入时剥离 reasoning_content。
-
-    部分模型（DeepSeek thinking、DashScope）在 AIMessage.additional_kwargs 中
-    返回 reasoning_content，但下一轮回放时不允许带着它，否则 API 报 400。
-    """
-    def add_message(self, message: BaseMessage) -> None:
-        if isinstance(message, AIMessage):
-            rc = message.additional_kwargs.get("reasoning_content")
-            if rc:
-                clean_kwargs = {k: v for k, v in message.additional_kwargs.items()
-                                if k != "reasoning_content"}
-                message = AIMessage(
-                    content=message.content,
-                    additional_kwargs=clean_kwargs,
-                    tool_calls=getattr(message, "tool_calls", []) or [],
-                    usage_metadata=getattr(message, "usage_metadata", None),
-                )
-        super().add_message(message)
-
-
 def get_session_history(memory_dir: Path, session_id: str):
     """带滑动窗口的短期记忆引擎（10 条消息）"""
     memory_file = str(memory_dir / f"{session_id}.json")
-    history = _CleanFileChatMessageHistory(memory_file)
+    history = FileChatMessageHistory(memory_file)
     if len(history.messages) > 10:
         kept = history.messages[-10:]
         history.clear()
