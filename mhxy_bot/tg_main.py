@@ -9,12 +9,13 @@ from pathlib import Path
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, ContextTypes
 
 from core.logging_setup import setup_logging
 from core.model_switch_handler import _build_model_keyboard, _build_model_text, register_model_switch
 from core.tg_base import TelegramBotBase
 from mhxy_bot.agent import (
+    MEMORY_DIR,
     SANDBOX_DIR,
     agent_with_chat_history,
     get_user_profile_fn,
@@ -109,7 +110,6 @@ class GameBot(TelegramBotBase):
         set_log_callback(observer)
 
     async def setup_extra_handlers(self, app: Application) -> None:
-        app.add_handler(CommandHandler("new", self._new_command))
         register_model_switch(app, registry)
 
     async def handle_custom_cmd(
@@ -141,22 +141,6 @@ class GameBot(TelegramBotBase):
         logger.warning(f"未知按钮指令：{cmd}")
         return ""
 
-    async def _new_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        user = update.effective_user
-        message = update.message
-        if user is None or message is None:
-            return
-        if not self._is_authorized(user.id):
-            await message.reply_text("⛔ 未授权访问")
-            return
-        memory_file = Path("data/mhxy/memory") / f"tg_session_{user.id}.json"
-        memory_file.unlink(missing_ok=True)
-        await message.reply_text(
-            "<blockquote><b>🗑️ 对话历史已清空</b></blockquote>\n可以开始新的游戏控制会话。",
-            parse_mode=ParseMode.HTML,
-        )
-
-
 def main() -> None:
     bot = GameBot(
         bot_token=TG_BOT_TOKEN,
@@ -168,6 +152,7 @@ def main() -> None:
         job_module=None,
         obs_dir=OBS_DIR,
         agent_id="mhxy-bot",
+        memory_dir=MEMORY_DIR,
     )
     bot.run()
 

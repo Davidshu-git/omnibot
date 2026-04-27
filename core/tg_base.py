@@ -531,6 +531,7 @@ class TelegramBotBase:
         asr_api_key: str = "",
         obs_dir: Optional[Path] = None,
         agent_id: str = "",
+        memory_dir: Optional[Path] = None,
     ) -> None:
         self.bot_token = bot_token
         self.allowed_user_ids = allowed_user_ids
@@ -543,6 +544,7 @@ class TelegramBotBase:
         self.asr_api_key = asr_api_key
         self.obs_dir = obs_dir
         self.agent_id = agent_id
+        self.memory_dir = memory_dir
         # 暂存待确认的重复上传（user_id → 上传元信息），内存级，重启失效
         self._pending_uploads: dict[int, dict] = {}
 
@@ -1000,6 +1002,24 @@ class TelegramBotBase:
             return
         await self._handle_jobs_query(message)
 
+    async def new_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权访问")
+            return
+        if self.memory_dir is None:
+            await message.reply_text("⚠️ 该 Bot 未配置对话记忆目录。")
+            return
+        memory_file = self.memory_dir / f"tg_session_{user.id}.json"
+        memory_file.unlink(missing_ok=True)
+        await message.reply_text(
+            "<blockquote><b>🗑️ 对话历史已清空</b></blockquote>\n可以开始全新会话了。",
+            parse_mode=ParseMode.HTML,
+        )
+
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         user = update.effective_user
         message = update.message
@@ -1397,6 +1417,8 @@ class TelegramBotBase:
         application.add_handler(CommandHandler("status", self.status_command))
         if self.job_module is not None:
             application.add_handler(CommandHandler("jobs", self.jobs_command))
+        if self.memory_dir is not None:
+            application.add_handler(CommandHandler("new", self.new_command))
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
         )

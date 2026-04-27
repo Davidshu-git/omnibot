@@ -20,6 +20,7 @@ from ehs_bot.agent import (
     registry,
     SANDBOX_DIR,
     KB_DIR,
+    MEMORY_DIR,
 )
 
 OBS_DIR = (Path(__file__).parent.parent / "data" / "ehs" / "observability" / "sessions").resolve()
@@ -56,6 +57,7 @@ class EHSBot(TelegramBotBase):
             BotCommand("report", "📝 触发 EHS 定期简报"),
             BotCommand("status", "🤖 查询当前模型"),
             BotCommand("jobs", "📊 查询最新任务进度"),
+            BotCommand("new", "🗑️ 清空对话历史"),
             BotCommand("model", "🤖 切换 LLM 模型"),
         ]
 
@@ -178,6 +180,7 @@ def main() -> None:
         job_module="ehs_bot.daily_job",
         obs_dir=OBS_DIR,
         agent_id="ehs-bot",
+        memory_dir=MEMORY_DIR,
     )
     bot.run()
 

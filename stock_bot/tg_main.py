@@ -63,6 +63,7 @@ class StockBot(TelegramBotBase):
             BotCommand("start", "🏠 唤醒主控台"),
             BotCommand("status", "🤖 查询当前模型"),
             BotCommand("jobs", "📊 查询最新任务进度"),
+            BotCommand("new", "🗑️ 清空对话历史"),
             BotCommand("model", "🤖 切换 LLM 模型"),
         ]
 
@@ -307,6 +308,7 @@ def main() -> None:
         asr_api_key=os.getenv("GROQ_API_KEY", ""),
         obs_dir=OBS_DIR,
         agent_id="stock-bot",
+        memory_dir=MEMORY_DIR,
     )
     bot.run()
 
