@@ -92,6 +92,10 @@ class StockBot(TelegramBotBase):
             f"<i>您可以直接输入自然语言下达指令，或通过下方战术面板执行核心宏任务：</i>"
         )
 
+    def get_extra_status_text(self) -> str:
+        cfg = registry.current()
+        return f"🤖 当前模型：<b>{cfg.display_name}</b>"
+
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "get_universal_stock_price": "📈 正在拉取全球实时盘面数据...",

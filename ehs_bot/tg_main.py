@@ -73,6 +73,10 @@ class EHSBot(TelegramBotBase):
             f"<i>您可以直接用自然语言咨询 EHS 专业问题，或通过下方面板快速执行任务：</i>"
         )
 
+    def get_extra_status_text(self) -> str:
+        cfg = registry.current()
+        return f"🤖 当前模型：<b>{cfg.display_name}</b>"
+
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "trigger_job": "🚀 正在将简报任务投递至独立进程...",

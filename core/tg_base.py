@@ -572,6 +572,10 @@ class TelegramBotBase:
         """追加到默认工具状态映射的领域专属条目（子类重写）。"""
         return {}
 
+    def get_extra_status_text(self) -> str:
+        """额外的状态信息（子类重写），显示在 /status 顶部。"""
+        return ""
+
     async def setup_extra_handlers(self, app: Application) -> None:
         """注册额外命令 / 消息处理器（子类重写）。"""
         pass
@@ -679,12 +683,18 @@ class TelegramBotBase:
 
     async def _handle_status_query(self, message: Message) -> None:
         """内部函数：处理状态查询并回复（可被命令和按钮复用）。"""
+        extra = self.get_extra_status_text()
         latest_job_id = self._get_latest_job_id()
         if not latest_job_id:
-            await message.reply_text("📭 当前系统没有任何后台任务记录。")
+            text = "📭 当前系统没有任何后台任务记录。"
+            if extra:
+                text = extra + "\n\n" + text
+            await message.reply_text(text, parse_mode=ParseMode.HTML)
             return
 
         status_text = self._read_job_status_sync(latest_job_id)
+        if extra:
+            status_text = extra + "\n\n" + status_text
         refresh_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔄 实时刷新任务进度", callback_data="check_job:latest")]
         ])
