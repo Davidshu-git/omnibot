@@ -54,8 +54,8 @@ def _log_vl_call(
             "model": model,
             "input_tokens": (usage or {}).get("input_tokens", 0),
             "output_tokens": (usage or {}).get("output_tokens", 0),
-            "cache_read_tokens": (usage or {}).get("cache_read_tokens", 0),
-            "cache_write_tokens": (usage or {}).get("cache_write_tokens", 0),
+            "cache_read_tokens": (usage or {}).get("cache_read_tokens"),
+            "cache_write_tokens": (usage or {}).get("cache_write_tokens"),
             "total_tokens": (usage or {}).get("total_tokens", 0),
             "duration_ms": round(duration_ms, 2),
             "stop_reason": "error" if error else "",
@@ -131,10 +131,15 @@ class CloudVisionAnalyzer:
             duration_ms = (time.perf_counter() - start_time) * 1000
             usage = {}
             if response.usage:
+                cache_read = None
+                ptd = getattr(response.usage, "prompt_tokens_details", None)
+                if ptd is not None:
+                    cache_read = getattr(ptd, "cached_tokens", None)
                 usage = {
                     "input_tokens": response.usage.prompt_tokens,
                     "output_tokens": response.usage.completion_tokens,
                     "total_tokens": response.usage.total_tokens,
+                    "cache_read_tokens": cache_read,
                 }
             content = response.choices[0].message.content or ""
             _log_vl_call(self.model, duration_ms, success=True, usage=usage, prompt=prompt, raw_output=content[:5000])
