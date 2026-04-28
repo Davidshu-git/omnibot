@@ -85,7 +85,11 @@ class GameBot(TelegramBotBase):
 
     def get_extra_status_text(self) -> str:
         cfg = registry.current()
-        return f"🤖 当前模型：<b>{cfg.display_name}</b>"
+        vl_cfg = vl_registry.current()
+        return (
+            f"🤖 当前模型：<b>{cfg.display_name}</b>\n"
+            f"👁️ 视觉模型：<b>{vl_cfg.display_name}</b>"
+        )
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {
