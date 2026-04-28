@@ -25,6 +25,7 @@ class ModelConfig:
     timeout: int = 90
     max_tokens: int = 8192
     llm_class: Type[ChatOpenAI] = ChatOpenAI
+    temperature: float | None = 0.2  # None = 不传（思考模式下不支持该参数）
 
 
 class ModelRegistry:
@@ -116,17 +117,20 @@ class ModelRegistry:
                 raise RuntimeError(
                     f"模型 {resolved_key!r} 的 API Key 未配置，无法构建 LLM。"
                 )
-            llm = cfg.llm_class(
+            kwargs: dict = dict(
                 model=cfg.model,
                 api_key=SecretStr(cfg.api_key),
                 base_url=cfg.base_url,
-                temperature=0.2,
                 timeout=cfg.timeout,
                 max_retries=3,
                 max_tokens=cfg.max_tokens,
                 stream_usage=True,
-                **({"extra_body": cfg.extra_body} if cfg.extra_body else {}),
             )
+            if cfg.temperature is not None:
+                kwargs["temperature"] = cfg.temperature
+            if cfg.extra_body:
+                kwargs["extra_body"] = cfg.extra_body
+            llm = cfg.llm_class(**kwargs)
             self._llm_cache[resolved_key] = llm
             logger.info(f"[ModelRegistry] 已构建 LLM 实例：{resolved_key}")
 
@@ -161,13 +165,15 @@ def make_mhxy_registry(settings_dir: Path) -> ModelRegistry:
         ),
         ModelConfig(
             key="deepseek",
-            display_name="DeepSeek V4 Flash",
+            display_name="DeepSeek V4 Flash (思考模式)",
             api_key=os.getenv("DEEPSEEK_API_KEY", ""),
             base_url="https://api.deepseek.com",
             model="deepseek-v4-flash",
             timeout=120,
             max_tokens=8192,
             llm_class=DeepSeekChatLLM,
+            temperature=None,
+            extra_body={"thinking": {"type": "enabled"}},
         ),
     ]
 
