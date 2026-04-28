@@ -115,6 +115,15 @@ class GameBot(TelegramBotBase):
     def set_observability_context(self, observer) -> None:
         set_log_callback(observer)
 
+    async def handle_button_click(self, update, context) -> None:
+        query = update.callback_query
+        if query and query.data and (
+            query.data.startswith("switch_model:")
+            or query.data.startswith("switch_vl_model:")
+        ):
+            return  # 由 register_model_switch 的 group=-1 handler 处理
+        await super().handle_button_click(update, context)
+
     async def setup_extra_handlers(self, app: Application) -> None:
         register_model_switch(app, registry)
         register_model_switch(
