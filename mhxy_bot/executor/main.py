@@ -24,6 +24,9 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from dotenv import load_dotenv
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
@@ -46,8 +49,18 @@ def _get_ocr():
 
 
 def _port_to_addr(port: str) -> str:
-    p = str(port)
-    return f"127.0.0.1:{p}" if ":" not in p else p
+    """将用户端口（如 5557）转换为 MuMu ADB serial（emulator-5556）。
+    标准约定：奇数端口为 ADB 传输端口，对应 emulator-(port-1)。
+    若已包含 ':' 则直接使用 TCP serial。
+    """
+    p = str(port).split(":")[-1]  # 兼容 127.0.0.1:5557 格式
+    try:
+        n = int(p)
+        if n % 2 == 1:
+            return f"emulator-{n - 1}"
+        return f"emulator-{n}"
+    except ValueError:
+        return port
 
 
 def _adb(port: str, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
