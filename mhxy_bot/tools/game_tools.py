@@ -33,7 +33,7 @@ def _load_instances() -> dict:
     return json.loads(INSTANCES_JSON.read_text(encoding="utf-8"))
 
 
-def make_game_tools(sandbox_dir: Path) -> list:
+def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     sandbox_dir.mkdir(parents=True, exist_ok=True)
     ELEMENT_LIBRARY_JSON.parent.mkdir(parents=True, exist_ok=True)
     W, H = DEFAULT_RESOLUTION
@@ -236,9 +236,10 @@ def make_game_tools(sandbox_dir: Path) -> list:
                 api_key=os.getenv("VL_DASHSCOPE_API_KEY") or os.getenv("DASHSCOPE_API_KEY", ""),
                 base_url=os.getenv("VL_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1"),
             )
+            vl_model = vl_registry.current_model() if vl_registry else QWEN_VL_PLUS_MODEL
             start = time.perf_counter()
             resp = client.chat.completions.create(
-                model=QWEN_VL_PLUS_MODEL,
+                model=vl_model,
                 messages=[{"role": "user", "content": [
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
                     {"type": "text", "text": user_prompt},
@@ -252,7 +253,7 @@ def make_game_tools(sandbox_dir: Path) -> list:
                 "output_tokens": getattr(resp.usage, "completion_tokens", 0),
                 "total_tokens": getattr(resp.usage, "total_tokens", 0),
             }
-            _log_vl_call(QWEN_VL_PLUS_MODEL, duration_ms, success=True, usage=usage, prompt=user_prompt, raw_output=content)
+            _log_vl_call(vl_model, duration_ms, success=True, usage=usage, prompt=user_prompt, raw_output=content)
             return f"🔍 场景分析结果：\n{content}"
         except Exception as e:
             return f"❌ 场景分析异常：{type(e).__name__} - {e}"
@@ -274,7 +275,7 @@ def make_game_tools(sandbox_dir: Path) -> list:
                 temp_path = Path(f.name)
             cv2.imwrite(str(temp_path), img)
             try:
-                result = CloudVisionAnalyzer().locate_element(str(temp_path), target=element_name)
+                result = CloudVisionAnalyzer(model=vl_registry.current_model() if vl_registry else None).locate_element(str(temp_path), target=element_name)
             finally:
                 temp_path.unlink(missing_ok=True)
             if not result.get("success"):

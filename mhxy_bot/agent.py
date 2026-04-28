@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from core.agent_base import build_dynamic_agent
 from core.model_registry import make_mhxy_registry
 from core.tools.memory_tools import get_user_profile, make_memory_tools
+from core.vl_model_registry import VlModelConfig, VlModelRegistry
 from mhxy_bot.config import CONFIG_DIR, DATA_DIR, INSTANCES_JSON
 from mhxy_bot.tools.game_tools import make_game_tools
 from mhxy_bot.tools.knowledge_tools import make_knowledge_tools
@@ -25,6 +26,15 @@ for _dir in [SANDBOX_DIR, MEMORY_DIR, KNOWLEDGE_DIR, SETTINGS_DIR, CONFIG_DIR]:
     _dir.mkdir(parents=True, exist_ok=True)
 
 registry = make_mhxy_registry(SETTINGS_DIR)
+
+vl_registry = VlModelRegistry(
+    configs=[
+        VlModelConfig(key="plus", display_name="Qwen3-VL Plus", model="qwen3-vl-plus"),
+        VlModelConfig(key="flash", display_name="Qwen3-VL Flash", model="qwen3-vl-flash"),
+    ],
+    settings_path=SETTINGS_DIR / "vl_model_settings.json",
+    default_key="plus",
+)
 
 
 GAME_SYSTEM_PROMPT = """你是梦幻西游手游的智能控制助理，通过 ADB 远程操控 Windows MuMu 模拟器。
@@ -107,7 +117,7 @@ def get_instances_summary() -> str:
 
 
 _tools = (
-    make_game_tools(SANDBOX_DIR)
+    make_game_tools(SANDBOX_DIR, vl_registry)
     + make_memory_tools(MEMORY_DIR)
     + make_knowledge_tools(KNOWLEDGE_DIR)
 )

@@ -81,7 +81,7 @@ class CloudVisionAnalyzer:
     - 理解游戏场景
     """
 
-    def __init__(self, api_key: str = None, log_callback=None):
+    def __init__(self, api_key: str = None, log_callback=None, model: str = None):
         """
         初始化分析器
 
@@ -101,7 +101,7 @@ class CloudVisionAnalyzer:
         if not self.api_key:
             raise ValueError("未设置 VL_DASHSCOPE_API_KEY 或 DASHSCOPE_API_KEY")
 
-        self.model = QWEN_VL_PLUS_MODEL
+        self.model = model or QWEN_VL_PLUS_MODEL
         self.log_callback = log_callback
         self._client = OpenAI(api_key=self.api_key, base_url=self.base_url)
 

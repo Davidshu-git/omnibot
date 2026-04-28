@@ -12,11 +12,20 @@ from core.model_registry import ModelRegistry
 logger = logging.getLogger(__name__)
 
 
-def register_model_switch(app: Application, registry: ModelRegistry) -> None:
+def register_model_switch(
+    app: Application,
+    registry,
+    command: str = "model",
+    callback_prefix: str = "switch_model",
+    title: str = "🤖 LLM 模型管理",
+) -> None:
     """
     向 Application 注册：
-      - /model 命令 → 显示当前模型 + inline keyboard
-      - CallbackQueryHandler(pattern=^switch_model:) → 切换并回编消息
+      - /{command} 命令 → 显示当前模型 + inline keyboard
+      - CallbackQueryHandler(pattern=^{callback_prefix}:) → 切换并回编消息
+
+    registry 只需实现 current() / current_key() / list_models() / switch()，
+    兼容 ModelRegistry 和 VlModelRegistry。
     """
 
     async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -24,9 +33,9 @@ def register_model_switch(app: Application, registry: ModelRegistry) -> None:
         if message is None:
             return
         await message.reply_text(
-            _build_model_text(registry),
+            _build_model_text(registry, title),
             parse_mode=ParseMode.HTML,
-            reply_markup=_build_model_keyboard(registry),
+            reply_markup=_build_model_keyboard(registry, callback_prefix),
         )
 
     async def switch_model_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -53,14 +62,14 @@ def register_model_switch(app: Application, registry: ModelRegistry) -> None:
             await query.edit_message_text(
                 text,
                 parse_mode=ParseMode.HTML,
-                reply_markup=_build_model_keyboard(registry),
+                reply_markup=_build_model_keyboard(registry, callback_prefix),
             )
         except Exception as exc:
             logger.warning(f"[model_switch] edit_message_text 失败：{exc}")
 
-    app.add_handler(CommandHandler("model", model_command))
+    app.add_handler(CommandHandler(command, model_command))
     app.add_handler(
-        CallbackQueryHandler(switch_model_callback, pattern=r"^switch_model:"),
+        CallbackQueryHandler(switch_model_callback, pattern=rf"^{callback_prefix}:"),
         group=-1,
     )
 
@@ -69,19 +78,19 @@ def register_model_switch(app: Application, registry: ModelRegistry) -> None:
 # 内部辅助
 # ---------------------------------------------------------------------------
 
-def _build_model_text(registry: ModelRegistry) -> str:
+def _build_model_text(registry, title: str = "🤖 LLM 模型管理") -> str:
     cfg = registry.current()
     return (
-        f"<blockquote><b>🤖 LLM 模型管理</b></blockquote>\n"
+        f"<blockquote><b>{title}</b></blockquote>\n"
         f"当前模型：<b>{cfg.display_name}</b>\n\n"
         f"<i>点击下方按钮即可热切换，无需重启。</i>"
     )
 
 
-def _build_model_keyboard(registry: ModelRegistry) -> InlineKeyboardMarkup:
+def _build_model_keyboard(registry, callback_prefix: str = "switch_model") -> InlineKeyboardMarkup:
     current = registry.current_key()
     buttons = []
     for cfg in registry.list_models():
         label = f"✅ {cfg.display_name}" if cfg.key == current else cfg.display_name
-        buttons.append([InlineKeyboardButton(label, callback_data=f"switch_model:{cfg.key}")])
+        buttons.append([InlineKeyboardButton(label, callback_data=f"{callback_prefix}:{cfg.key}")])
     return InlineKeyboardMarkup(buttons)

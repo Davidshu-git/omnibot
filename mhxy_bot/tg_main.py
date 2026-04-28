@@ -20,6 +20,7 @@ from mhxy_bot.agent import (
     agent_with_chat_history,
     get_user_profile_fn,
     registry,
+    vl_registry,
 )
 from mhxy_bot.game_core.cloud_vision import set_log_callback
 
@@ -54,6 +55,7 @@ class GameBot(TelegramBotBase):
             BotCommand("start", "🏠 唤醒主控台"),
             BotCommand("status", "🤖 查询当前模型"),
             BotCommand("model", "🤖 切换 LLM 模型"),
+            BotCommand("vlmodel", "👁️ 切换视觉模型"),
             BotCommand("new", "🗑️ 清空对话历史"),
         ]
 
@@ -111,6 +113,13 @@ class GameBot(TelegramBotBase):
 
     async def setup_extra_handlers(self, app: Application) -> None:
         register_model_switch(app, registry)
+        register_model_switch(
+            app,
+            vl_registry,
+            command="vlmodel",
+            callback_prefix="switch_vl_model",
+            title="👁️ 视觉模型管理",
+        )
 
     async def handle_custom_cmd(
         self,
