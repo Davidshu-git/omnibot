@@ -319,6 +319,14 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
 
         model = lo.get("model_name") or self._llm_model
 
+        # DeepSeek native reasoning_content (stored in additional_kwargs by deepseek_llm.py)
+        if response.generations:
+            g = response.generations[0][0] if response.generations[0] else None
+            if g is not None:
+                rc = (getattr(getattr(g, "message", None), "additional_kwargs", None) or {}).get("reasoning_content")
+                if rc and rc.strip():
+                    self._obs.log_thought(rc.strip(), trace_id=self._trace_id)
+
         self._obs.log_model_call(
             model=model,
             provider=self._provider,
