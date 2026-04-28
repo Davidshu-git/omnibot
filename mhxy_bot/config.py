@@ -11,22 +11,12 @@ import os
 from pathlib import Path
 
 
-def _env_bool(name: str, default: bool = False) -> bool:
-    raw = os.getenv(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in {"1", "true", "yes", "on"}
-
 
 PACKAGE_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_DIR.parent
 DATA_DIR = (PROJECT_ROOT / "data" / "mhxy").resolve()
 CONFIG_DIR = (DATA_DIR / "config").resolve()
 
-ADB_PATH = os.getenv("MHXY_ADB_PATH", r"C:\Program Files\Netease\MuMu\nx_main\adb.exe")
-REMOTE_MODE = _env_bool("MHXY_REMOTE_MODE", _env_bool("REMOTE_MODE", False))
-REMOTE_HOST = os.getenv("MHXY_REMOTE_HOST") or os.getenv("REMOTE_HOST", "")
-REMOTE_USER = os.getenv("MHXY_REMOTE_USER") or os.getenv("REMOTE_USER", "")
 PORT_RANGE = range(5555, 5581)
 
 DEFAULT_RESOLUTION = (1600, 900)
