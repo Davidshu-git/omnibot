@@ -106,7 +106,7 @@ class OmniObserver:
             rec["trace_id"] = trace_id
         self._write(rec)
 
-    def log_thought(self, content: str, trace_id: str | None = None) -> None:
+    def log_thought(self, content: str, trace_id: str | None = None, provider: str | None = None) -> None:
         if not content.strip():
             return
         rec: dict[str, Any] = {
@@ -114,6 +114,8 @@ class OmniObserver:
             "timestamp": _now_iso(),
             "content": content,
         }
+        if provider:
+            rec["provider"] = provider
         if trace_id:
             rec["trace_id"] = trace_id
         self._write(rec)
@@ -325,7 +327,7 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
             if g is not None:
                 rc = (getattr(getattr(g, "message", None), "additional_kwargs", None) or {}).get("reasoning_content")
                 if rc and rc.strip():
-                    self._obs.log_thought(rc.strip(), trace_id=self._trace_id)
+                    self._obs.log_thought(rc.strip(), trace_id=self._trace_id, provider=self._provider)
 
         self._obs.log_model_call(
             model=model,

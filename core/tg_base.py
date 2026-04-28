@@ -844,7 +844,7 @@ class TelegramBotBase:
             # Extract <think>…</think> BEFORE translate_to_telegram_html strips it
             if obs is not None:
                 for think_content in extract_think_blocks(reply_text):
-                    obs.log_thought(think_content, trace_id=trace_id)
+                    obs.log_thought(think_content, trace_id=trace_id, provider=self.obs_provider)
 
             if obs is not None:
                 obs.log_message("assistant", strip_think_blocks(reply_text), trace_id=trace_id)
