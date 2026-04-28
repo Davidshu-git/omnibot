@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import random
 import tempfile
 import time
@@ -20,6 +21,7 @@ from mhxy_bot.config import (
     INSTANCES_JSON,
     QWEN_VL_PLUS_MODEL,
 )
+from mhxy_bot.tools.executor_client import ExecutorClient
 
 
 def _port_to_str(port: Any) -> str:
@@ -38,6 +40,11 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     ELEMENT_LIBRARY_JSON.parent.mkdir(parents=True, exist_ok=True)
     W, H = DEFAULT_RESOLUTION
 
+    executor_url = os.getenv("MHXY_EXECUTOR_URL", "")
+    if not executor_url:
+        raise RuntimeError("MHXY_EXECUTOR_URL 未配置，请在 .env 中设置 Windows 执行器地址")
+    executor = ExecutorClient(executor_url)
+
     def _clamp_normalized(x: float, y: float) -> tuple[float, float]:
         return max(0.0, min(float(x), 1.0)), max(0.0, min(float(y), 1.0))
 
@@ -48,9 +55,10 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             data = _load_instances()
             if not data:
                 return "❌ instances.json 不存在或为空，请先配置实例。"
-            lines = [f"扫描时间：{data.get('scan_time', '未知')}"]
             instances = data.get("instances", [])
-            lines.append(f"\n【实例列表】共 {len(instances)} 个：")
+            if not instances:
+                return "❌ instances.json 中没有实例配置。"
+            lines = [f"共 {len(instances)} 个模拟器实例："]
             for inst in instances:
                 note = inst.get("note", "")
                 note_str = f"  备注：{note}" if note else ""
@@ -71,16 +79,9 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def capture_screenshot(port: str) -> str:
         """对指定端口截图并返回图片给 Telegram。port 如 5557 或 127.0.0.1:5557。"""
         try:
-            import cv2
-            from mhxy_bot.game_core.sensor import GameSensor
-
-            sensor = GameSensor(port=_port_to_str(port))
-            img = sensor.screenshot()
-            sensor.close()
-            if img is None:
-                return "❌ 截图失败：ADB 未返回有效图像"
+            img_b64 = executor.screenshot(port)
             path = sandbox_dir / f"screenshot_{str(port).replace(':', '_')}_{int(time.time())}.png"
-            cv2.imwrite(str(path), img)
+            path.write_bytes(base64.b64decode(img_b64))
             return f"✅ 已截图端口 {port}\n[IMG:{path}]"
         except Exception as e:
             return f"❌ 截图失败：{type(e).__name__} - {e}"
@@ -89,18 +90,14 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def sense_screen(port: str) -> str:
         """对指定端口截图并 OCR 识别，返回文字及坐标。"""
         try:
-            from mhxy_bot.game_core.sensor import GameSensor
-
-            sensor = GameSensor(port=_port_to_str(port))
-            results = sensor.sense()
-            sensor.close()
+            results = executor.sense(port)
             if not results:
                 return "屏幕未识别到任何文字。"
             lines = [f"识别到 {len(results)} 条文字："]
             for item in results:
                 x, y = _clamp_normalized(item["center_x"] / W, item["center_y"] / H)
                 lines.append(
-                    f"  像素[{item['center_x']}, {item['center_y']}] "
+                    f"  像素[{item['center_x']:.0f}, {item['center_y']:.0f}] "
                     f"归一化({x:.3f}, {y:.3f}) "
                     f"'{item['text']}'  (置信度 {item['confidence']:.2f})"
                 )
@@ -112,14 +109,9 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def tap_coordinate(port: str, x: float, y: float) -> str:
         """点击指定模拟器的归一化坐标（0-1）。"""
         try:
-            from mhxy_bot.game_core.actuator import GameActuator
-
             px = max(0, min(int(x * W + random.randint(-5, 5)), W - 1))
             py = max(0, min(int(y * H + random.randint(-5, 5)), H - 1))
-            actuator = GameActuator(port=_port_to_str(port))
-            ok = actuator.tap(px, py)
-            actuator.close()
-            time.sleep(random.uniform(0.2, 0.5))
+            ok = executor.tap(port, px, py)
             return f"✅ 已点击坐标 ({px}, {py})（原始归一化：{x:.3f}, {y:.3f}）" if ok else "❌ ADB 点击命令执行失败"
         except Exception as e:
             return f"❌ 点击失败：{type(e).__name__} - {e}"
@@ -128,27 +120,17 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def batch_tap_coordinate(x: float, y: float, ports: str = "") -> str:
         """批量点击所有实例或指定实例的同一归一化坐标。"""
         try:
-            from mhxy_bot.game_core.actuator import GameActuator
-
             if ports.strip():
                 port_list = [p.strip() for p in ports.split(",") if p.strip()]
             else:
                 port_list = [str(inst["port"]) for inst in _load_instances().get("instances", [])]
             if not port_list:
                 return "❌ 没有可用实例"
-            results = []
-            for port in port_list:
-                try:
-                    px = max(0, min(int(x * W) + random.randint(-5, 5), W - 1))
-                    py = max(0, min(int(y * H) + random.randint(-5, 5), H - 1))
-                    act = GameActuator(port=_port_to_str(port))
-                    ok = act.tap(px, py)
-                    act.close()
-                    results.append(f"  {'✅' if ok else '❌'} {port}")
-                    time.sleep(random.uniform(0.3, 0.7))
-                except Exception as e:
-                    results.append(f"  ❌ {port}：{type(e).__name__} - {e}")
-            return f"批量点击 ({x:.3f}, {y:.3f}) — {len(port_list)} 个实例：\n" + "\n".join(results)
+            px = max(0, min(int(x * W) + random.randint(-5, 5), W - 1))
+            py = max(0, min(int(y * H) + random.randint(-5, 5), H - 1))
+            results_map = executor.batch_tap(port_list, px, py)
+            lines = [f"  {'✅' if ok else '❌'} {port}" for port, ok in results_map.items()]
+            return f"批量点击 ({x:.3f}, {y:.3f}) — {len(port_list)} 个实例：\n" + "\n".join(lines)
         except Exception as e:
             return f"❌ 批量点击失败：{type(e).__name__} - {e}"
 
@@ -174,12 +156,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def press_back(port: str) -> str:
         """按下指定模拟器返回键。"""
         try:
-            from mhxy_bot.game_core.actuator import GameActuator
-
-            actuator = GameActuator(port=_port_to_str(port))
-            ok = actuator.back()
-            actuator.close()
-            time.sleep(0.3)
+            ok = executor.back(port)
             return "✅ 已按返回键" if ok else "❌ ADB 返回键命令执行失败"
         except Exception as e:
             return f"❌ 返回键失败：{type(e).__name__} - {e}"
@@ -188,25 +165,15 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def batch_press_back(ports: str = "") -> str:
         """批量对所有实例或指定实例按返回键。"""
         try:
-            from mhxy_bot.game_core.actuator import GameActuator
-
             if ports.strip():
                 port_list = [p.strip() for p in ports.split(",") if p.strip()]
             else:
                 port_list = [str(inst["port"]) for inst in _load_instances().get("instances", [])]
             if not port_list:
                 return "❌ 没有可用实例"
-            results = []
-            for port in port_list:
-                try:
-                    act = GameActuator(port=_port_to_str(port))
-                    ok = act.back()
-                    act.close()
-                    results.append(f"  {'✅' if ok else '❌'} {port}")
-                    time.sleep(0.3)
-                except Exception as e:
-                    results.append(f"  ❌ {port}：{type(e).__name__} - {e}")
-            return f"批量返回 — {len(port_list)} 个实例：\n" + "\n".join(results)
+            results_map = executor.batch_back(port_list)
+            lines = [f"  {'✅' if ok else '❌'} {port}" for port, ok in results_map.items()]
+            return f"批量返回 — {len(port_list)} 个实例：\n" + "\n".join(lines)
         except Exception as e:
             return f"❌ 批量返回失败：{type(e).__name__} - {e}"
 
@@ -214,18 +181,9 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def analyze_scene(port: str, prompt: str = "") -> str:
         """用 Qwen-VL 分析指定模拟器当前屏幕的游戏场景。"""
         try:
-            import cv2
             from mhxy_bot.game_core.cloud_vision import _log_vl_call
-            from mhxy_bot.game_core.sensor import GameSensor
-            import os
 
-            sensor = GameSensor(port=_port_to_str(port))
-            img = sensor.screenshot()
-            sensor.close()
-            if img is None:
-                return "❌ 场景分析失败：ADB 未返回有效图像"
-            _, buf = cv2.imencode(".png", img)
-            b64 = base64.b64encode(buf.tobytes()).decode()
+            img_b64 = executor.screenshot(port)
             user_prompt = prompt or """请详细分析这张梦幻西游手游的截图，包括：
 1. 游戏场景（在哪里）
 2. 角色信息（等级、门派、外观）
@@ -241,7 +199,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             resp = client.chat.completions.create(
                 model=vl_model,
                 messages=[{"role": "user", "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{b64}"}},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{img_b64}"}},
                     {"type": "text", "text": user_prompt},
                 ]}],
                 max_tokens=1024,
@@ -262,20 +220,16 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     def locate_element_vl(port: str, element_name: str) -> str:
         """用 Qwen-VL 定位指定 UI 元素的归一化坐标。"""
         try:
-            import cv2
             from mhxy_bot.game_core.cloud_vision import CloudVisionAnalyzer
-            from mhxy_bot.game_core.sensor import GameSensor
 
-            sensor = GameSensor(port=_port_to_str(port))
-            img = sensor.screenshot()
-            sensor.close()
-            if img is None:
-                return "❌ VL 元素识别失败：ADB 未返回有效图像"
+            img_b64 = executor.screenshot(port)
             with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
                 temp_path = Path(f.name)
-            cv2.imwrite(str(temp_path), img)
+            temp_path.write_bytes(base64.b64decode(img_b64))
             try:
-                result = CloudVisionAnalyzer(model=vl_registry.current_model() if vl_registry else None).locate_element(str(temp_path), target=element_name)
+                result = CloudVisionAnalyzer(
+                    model=vl_registry.current_model() if vl_registry else None
+                ).locate_element(str(temp_path), target=element_name)
             finally:
                 temp_path.unlink(missing_ok=True)
             if not result.get("success"):
