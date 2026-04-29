@@ -59,7 +59,11 @@ def return_to_main_ui(ctx: "RunnerContext", max_backs: int = 5) -> bool:
 
         if state == InstanceState.MAIN_UI:
             return True
-        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+        if state in (
+            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+            InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
+            InstanceState.ACTIVITY_POPUP,
+        ):
             ctx.warning("recovery: instance offline/login/disconnected, cannot auto-recover")
             return False
 
@@ -101,7 +105,11 @@ def attempt(ctx: "RunnerContext", step_id: str, attempt_num: int) -> bool:
         mark_needs_human(ctx, f"reconnect failed after step '{step_id}' disconnect")
         return False
 
-    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
+    if state in (
+        InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN,
+        InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
+        InstanceState.ACTIVITY_POPUP,
+    ):
         mark_needs_human(ctx, f"instance {state.value} after step '{step_id}' failure")
         return False
 

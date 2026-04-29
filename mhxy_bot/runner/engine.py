@@ -43,20 +43,29 @@ class TaskEngine:
         """执行完整任务，返回 TaskResult。"""
         ctx = self.ctx
         t0 = time.monotonic()
+        task_run_id = f"{task.id}:{ctx.port}:{int(time.time() * 1000)}"
         step_results: list[StepResult] = []
 
         ctx.info("task started: %s (%s) port=%s", task.id, task.name, ctx.port)
-        events.task_started(ctx, task.id, task.name)
+        events.task_started(
+            ctx,
+            task.id,
+            task.name,
+            task_run_id=task_run_id,
+            total_steps=len(task.preflight) + len(task.steps),
+            preflight_steps=len(task.preflight),
+            description=task.description,
+        )
 
         for phase, steps in (("preflight", task.preflight), ("steps", task.steps)):
             for step in steps:
-                result = self._run_task_step(task, step, phase, step_results, t0)
+                result = self._run_task_step(task, step, phase, step_results, t0, task_run_id)
                 if result is not None:
                     return result
 
         elapsed = _elapsed_ms(t0)
         ctx.info("task completed: %s in %.0fms", task.id, elapsed)
-        events.task_completed(ctx, task.id, elapsed)
+        events.task_completed(ctx, task.id, elapsed, task_run_id=task_run_id, step_results=step_results)
         return TaskResult(
             task_id=task.id,
             status=TaskStatus.COMPLETED,
@@ -70,6 +79,7 @@ class TaskEngine:
         phase: str,
         step_results: list[StepResult],
         task_started_at: float,
+        task_run_id: str,
     ) -> TaskResult | None:
         """Run one preflight/main step; return TaskResult when task must stop."""
         ctx = self.ctx
@@ -86,10 +96,18 @@ class TaskEngine:
                 message="stop_requested",
                 step_results=step_results,
             )
-            events.task_failed(ctx, task.id, step.id, "stopped", _elapsed_ms(task_started_at))
+            events.task_failed(
+                ctx,
+                task.id,
+                step.id,
+                "stopped",
+                _elapsed_ms(task_started_at),
+                task_run_id=task_run_id,
+                step_results=step_results,
+            )
             return result
 
-        sr = self._run_step(task.id, step)
+        sr = self._run_step(task.id, step, phase, task_run_id)
         sr.details.setdefault("phase", phase)
         step_results.append(sr)
 
@@ -97,7 +115,15 @@ class TaskEngine:
             msg = sr.message
             elapsed = _elapsed_ms(task_started_at)
             ctx.error("task FAILED at %s step '%s': %s", phase, step.id, msg)
-            events.task_failed(ctx, task.id, step.id, msg, elapsed)
+            events.task_failed(
+                ctx,
+                task.id,
+                step.id,
+                msg,
+                elapsed,
+                task_run_id=task_run_id,
+                step_results=step_results,
+            )
             return TaskResult(
                 task_id=task.id,
                 status=TaskStatus.FAILED,
@@ -110,7 +136,15 @@ class TaskEngine:
             msg = sr.message
             elapsed = _elapsed_ms(task_started_at)
             ctx.error("task NEEDS_HUMAN at %s step '%s': %s", phase, step.id, msg)
-            events.task_needs_human(ctx, task.id, msg)
+            events.task_needs_human(
+                ctx,
+                task.id,
+                msg,
+                task_run_id=task_run_id,
+                failed_step=step.id,
+                elapsed_ms=elapsed,
+                step_results=step_results,
+            )
             return TaskResult(
                 task_id=task.id,
                 status=TaskStatus.NEEDS_HUMAN,
@@ -128,17 +162,16 @@ class TaskEngine:
     # 内部：单步执行
     # ------------------------------------------------------------------
 
-    def _run_step(self, task_id: str, step: "TaskStep") -> StepResult:
+    def _run_step(self, task_id: str, step: "TaskStep", phase: str, task_run_id: str) -> StepResult:
         ctx = self.ctx
         ctx.info("step [%s] action=%s", step.id, step.action)
-        events.step_started(ctx, task_id, step)
 
         # denylist 检查
         denied = detect_denylisted_screen(ctx)
         if denied:
             msg = f"denylist triggered: {denied}"
             ctx.warning("step [%s] %s", step.id, msg)
-            events.denylist_triggered(ctx, task_id, step.id, denied)
+            events.denylist_triggered(ctx, task_id, step.id, denied, task_run_id=task_run_id)
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.SKIPPED,
@@ -151,15 +184,37 @@ class TaskEngine:
         last_error = ""
         last_error_details: dict = {}
         for attempt in range(1, max_attempts + 1):
+            events.step_started(
+                ctx,
+                task_id,
+                step,
+                task_run_id=task_run_id,
+                phase=phase,
+                attempt=attempt,
+                max_attempts=max_attempts,
+            )
             t0 = time.monotonic()
             try:
                 detail = execute(ctx, step)
             except ActionError as exc:
+                elapsed = _elapsed_ms(t0)
                 last_error = str(exc)
                 last_error_details = getattr(exc, "details", {}) or {}
                 ctx.warning("step [%s] attempt %d/%d failed: %s",
                             step.id, attempt, max_attempts, last_error)
-                events.step_failed(ctx, task_id, step, last_error, attempt)
+                events.step_failed(
+                    ctx,
+                    task_id,
+                    step,
+                    last_error,
+                    attempt,
+                    task_run_id=task_run_id,
+                    phase=phase,
+                    max_attempts=max_attempts,
+                    elapsed_ms=elapsed,
+                    will_retry=attempt < max_attempts,
+                    error_details=last_error_details,
+                )
 
                 if attempt < max_attempts:
                     can_retry = rec.attempt(ctx, step.id, attempt)
@@ -173,19 +228,45 @@ class TaskEngine:
                 continue
 
             # 执行成功 — 验证后置条件
-            elapsed = _elapsed_ms(t0)
+            action_elapsed = _elapsed_ms(t0)
+            verify_t0 = time.monotonic()
             verify_err = self._verify(step)
+            verify_ms = _elapsed_ms(verify_t0)
+            elapsed = _elapsed_ms(t0)
             if verify_err:
                 last_error = verify_err
                 ctx.warning("step [%s] verify failed attempt %d/%d: %s",
                             step.id, attempt, max_attempts, last_error)
-                events.step_failed(ctx, task_id, step, last_error, attempt)
+                events.step_failed(
+                    ctx,
+                    task_id,
+                    step,
+                    last_error,
+                    attempt,
+                    task_run_id=task_run_id,
+                    phase=phase,
+                    max_attempts=max_attempts,
+                    elapsed_ms=elapsed,
+                    will_retry=attempt < max_attempts,
+                    error_details={"verify_ms": verify_ms, "action_ms": action_elapsed},
+                )
                 if attempt < max_attempts:
                     rec.attempt(ctx, step.id, attempt)
                 continue
 
             # 全部通过
-            events.step_completed(ctx, task_id, step, elapsed, detail)
+            events.step_completed(
+                ctx,
+                task_id,
+                step,
+                elapsed,
+                detail,
+                task_run_id=task_run_id,
+                phase=phase,
+                attempt=attempt,
+                max_attempts=max_attempts,
+                verify_ms=verify_ms,
+            )
             return StepResult(
                 step_id=step.id,
                 status=StepStatus.COMPLETED,

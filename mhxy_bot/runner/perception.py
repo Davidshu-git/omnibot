@@ -22,11 +22,15 @@ DENYLIST: list[str] = [
 # 主界面特征文字（用于 detect_screen_state）
 # ---------------------------------------------------------------------------
 
-_MAIN_UI_MARKERS = ["背包", "地图", "任务", "商城", "设置"]
+_MAIN_UI_REQUIRED_MARKERS = ["任务", "队伍"]
 _LOGIN_MARKERS   = ["登录", "账号登录", "游客登录"]
 _DISCONNECTED_MARKERS = ["服务器已经关闭", "连接已断开", "网络连接失败", "重新登录"]
-_BATTLE_MARKERS  = ["战斗", "回合", "行动", "攻击", "技能"]
-_TEAM_MARKERS    = ["队伍", "队长", "队员", "组队"]
+_UPDATE_RESTART_MARKERS = ["游戏更新完成", "重新启动后生效", "确定按钮将退出游戏"]
+_APP_LOADING_MARKERS = ["开始检查文件完整性", "重载资源中", "检查更新", "加载中", "下载中"]
+_ANDROID_HOME_MARKERS = ["游戏中心", "浏览器", "每日新发现"]
+_ACTIVITY_POPUP_MARKERS = ["点击任意空白处关闭界面", "最新玩法", "查看详情"]
+_BATTLE_REQUIRED_MARKERS = ["好友", "取消"]
+_TEAM_MARKERS    = ["队长", "队员", "组队"]
 _POPUP_MARKERS   = ["确定", "关闭", "取消", "我知道了"]
 
 
@@ -53,16 +57,24 @@ def detect_with_texts(ctx: "RunnerContext") -> tuple[InstanceState, list[str]]:
     joined = "".join(texts)
     if any(m in joined for m in _DISCONNECTED_MARKERS):
         return InstanceState.DISCONNECTED, texts
-    if any(m in joined for m in _BATTLE_MARKERS):
+    if any(m in joined for m in _UPDATE_RESTART_MARKERS):
+        return InstanceState.UPDATE_RESTART, texts
+    if any(m in joined for m in _APP_LOADING_MARKERS):
+        return InstanceState.APP_LOADING, texts
+    if any(m in joined for m in _ACTIVITY_POPUP_MARKERS):
+        return InstanceState.ACTIVITY_POPUP, texts
+    if all(m in joined for m in _BATTLE_REQUIRED_MARKERS):
         return InstanceState.IN_BATTLE, texts
     if any(m in joined for m in _POPUP_MARKERS):
         return InstanceState.POPUP, texts
+    if all(m in joined for m in _MAIN_UI_REQUIRED_MARKERS):
+        return InstanceState.MAIN_UI, texts
     if any(m in joined for m in _TEAM_MARKERS):
         return InstanceState.IN_TEAM, texts
-    if any(m in joined for m in _MAIN_UI_MARKERS):
-        return InstanceState.MAIN_UI, texts
     if any(m in joined for m in _LOGIN_MARKERS):
         return InstanceState.LOGIN_SCREEN, texts
+    if "梦幻西游" in joined and any(m in joined for m in _ANDROID_HOME_MARKERS):
+        return InstanceState.ANDROID_HOME, texts
     return InstanceState.UNKNOWN, texts
 
 

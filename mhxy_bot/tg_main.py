@@ -211,6 +211,10 @@ class GameBot(TelegramBotBase):
         "in_team":      "👥",
         "popup":        "💬",
         "disconnected": "🔌",
+        "update_restart": "♻️",
+        "android_home": "🏠",
+        "app_loading":  "⏳",
+        "activity_popup": "📰",
         "login_screen": "🔐",
         "offline":      "💀",
         "unknown":      "❓",
@@ -225,7 +229,8 @@ class GameBot(TelegramBotBase):
         for r in results:
             groups[r["state"]].append(r["port"])
         order = ["main_ui", "in_battle", "in_team", "popup",
-                 "disconnected", "login_screen", "offline", "unknown", "stuck", "error"]
+                 "disconnected", "update_restart", "android_home", "app_loading",
+                 "activity_popup", "login_screen", "offline", "unknown", "stuck", "error"]
         lines = [f"<b>📊 实例状态 ({len(results)} 个)</b>\n"]
         for state in order:
             if state not in groups:

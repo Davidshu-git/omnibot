@@ -116,7 +116,11 @@ def _wait_not_battle(ctx: "RunnerContext", step: "TaskStep") -> dict:
         if state == InstanceState.IN_BATTLE:
             entered_battle = True
             break
-        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+        if state in (
+            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+            InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
+            InstanceState.ACTIVITY_POPUP,
+        ):
             raise ActionError(f"wait_not_battle abnormal state before battle: {state.value}")
         time.sleep(interval)
 
@@ -135,7 +139,11 @@ def _wait_not_battle(ctx: "RunnerContext", step: "TaskStep") -> dict:
         state = detect_screen_state(ctx)
         if state == InstanceState.IN_BATTLE:
             stable_not_battle = 0
-        elif state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+        elif state in (
+            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+            InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
+            InstanceState.ACTIVITY_POPUP,
+        ):
             raise ActionError(f"wait_not_battle abnormal state during battle: {state.value}")
         else:
             stable_not_battle += 1
@@ -179,7 +187,11 @@ def _detect_screen_state(ctx: "RunnerContext", step: "TaskStep") -> dict:
         return {"state": InstanceState.UNKNOWN.value}
 
     state = detect_screen_state(ctx)
-    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+    if state in (
+        InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+        InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
+        InstanceState.ACTIVITY_POPUP,
+    ):
         raise ActionError(f"screen state requires human action: {state.value}")
     return {"state": state.value}
 
