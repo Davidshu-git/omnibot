@@ -92,7 +92,16 @@ def attempt(ctx: "RunnerContext", step_id: str, attempt_num: int) -> bool:
 
     state = detect_screen_state(ctx)
 
-    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+    if state == InstanceState.DISCONNECTED:
+        ctx.info("recovery: disconnected, attempting auto-reconnect for step '%s'", step_id)
+        from mhxy_bot.runner.instance_recovery import try_reconnect
+        if try_reconnect(ctx):
+            ctx.info("recovery: reconnected, retrying step '%s'", step_id)
+            return True
+        mark_needs_human(ctx, f"reconnect failed after step '{step_id}' disconnect")
+        return False
+
+    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
         mark_needs_human(ctx, f"instance {state.value} after step '{step_id}' failure")
         return False
 
