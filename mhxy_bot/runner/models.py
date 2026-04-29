@@ -18,7 +18,6 @@ class InstanceState(str, Enum):
     APP_LOADING = "app_loading"
     ACTIVITY_POPUP = "activity_popup"
     MAIN_UI = "main_ui"
-    IN_TEAM = "in_team"
     IN_BATTLE = "in_battle"
     POPUP = "popup"
     STUCK = "stuck"
