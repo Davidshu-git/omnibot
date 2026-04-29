@@ -1,8 +1,13 @@
 {
   "id": "mijing",
   "name": "秘境降妖",
-  "description": "日常副本：每轮挑战一关，领取奖励后继续，重复 max_rounds 轮",
+  "description": "日常副本（单人）：每轮挑战一关，领取奖励后继续，重复 max_rounds 轮",
+  "mode": "single",
   "max_rounds": 3,
+  "preflight": [
+    {"id": "health_check",  "action": "app_health"},
+    {"id": "close_popups",  "action": "close_common_popups"}
+  ],
   "steps": [
     {
       "id": "open_activity",

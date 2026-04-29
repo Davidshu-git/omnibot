@@ -18,16 +18,6 @@ def load_instances(path: str | Path | None = None) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def get_group_ports(group_index: int, path: str | Path | None = None) -> list[str]:
-    """返回指定 group 的所有端口字符串（leader 优先，然后 members）。"""
-    data = load_instances(path)
-    groups = data.get("groups", [])
-    if group_index < 0 or group_index >= len(groups):
-        raise ValueError(f"group {group_index} 不存在（共 {len(groups)} 个 group）")
-    grp = groups[group_index]
-    return [str(grp["leader"]["port"])] + [str(m["port"]) for m in grp.get("members", [])]
-
-
 def get_all_ports(path: str | Path | None = None) -> list[str]:
     """返回所有实例端口字符串。"""
     data = load_instances(path)

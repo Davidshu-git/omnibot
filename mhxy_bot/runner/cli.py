@@ -1,9 +1,9 @@
-"""CLI：按 JSON 任务定义批量执行游戏自动化。
+"""CLI：按 JSON 任务定义逐个实例顺序执行游戏自动化。
 
 用法：
-    python -m mhxy_bot.runner.cli --task mijing --group 0 --dry-run
-    python -m mhxy_bot.runner.cli --task mijing --port 5557
-    python -m mhxy_bot.runner.cli --task mijing --group 1 --max-rounds 5
+    python -m mhxy_bot.runner.cli --task mijing --port 5557 --dry-run
+    python -m mhxy_bot.runner.cli --task mijing --port 5557 --max-rounds 3
+    python -m mhxy_bot.runner.cli --task mijing --all --max-rounds 3
 """
 from __future__ import annotations
 
@@ -58,8 +58,13 @@ def _preflight(ctx, port: str) -> tuple[bool, str]:
 
 
 def _print_plan(task_def, ports: list[str], max_rounds: int) -> None:
-    print(f"\n[DRY RUN] task={task_def.id}  name={task_def.name}  max_rounds={max_rounds}")
+    print(f"\n[DRY RUN] task={task_def.id}  name={task_def.name}  mode=single  max_rounds={max_rounds}")
     print(f"instances ({len(ports)}): {ports}")
+    preflight = task_def.meta.get("preflight", [])
+    if preflight:
+        print(f"preflight ({len(preflight)}):")
+        for p in preflight:
+            print(f"  [{p['id']}] {p['action']}")
     print(f"steps ({len(task_def.steps)}):")
     for s in task_def.steps:
         line = f"  [{s.id}] {s.action}"
@@ -100,10 +105,19 @@ def _run_instance(ctx, task_def, max_rounds: int, port: str) -> list[dict]:
             entry["failed_step"] = result.failed_step
         if result.message:
             entry["message"] = result.message
+        if result.step_results:
+            failed = [
+                {"step": sr.step_id, "message": sr.message}
+                for sr in result.step_results
+                if sr.message
+            ]
+            if failed:
+                entry["step_details"] = failed
         results.append(entry)
 
         if result.status in (TaskStatus.NEEDS_HUMAN, TaskStatus.FAILED, TaskStatus.STOPPED):
-            ctx.warning("port=%s round %d halted: %s", port, rnd, result.status.value)
+            ctx.warning("port=%s round %d halted: status=%s step=%s msg=%s",
+                        port, rnd, result.status.value, result.failed_step, result.message)
             break
 
     return results
@@ -112,18 +126,18 @@ def _run_instance(ctx, task_def, max_rounds: int, port: str) -> list[dict]:
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="python -m mhxy_bot.runner.cli",
-        description="mhxy_bot 任务执行器",
+        description="mhxy_bot 单人任务执行器（逐实例顺序执行）",
     )
     parser.add_argument("--task", required=True,
-                        help="任务 ID（data/mhxy/tasks/ 下的 JSON 文件名，不含 .json）")
-    parser.add_argument("--group", type=int, default=None,
-                        help="执行指定 group（0-based）的全部实例")
+                        help="任务 ID（mhxy_bot/tasks/ 下 JSON 文件名，不含 .json）")
     parser.add_argument("--port", type=str, default=None,
-                        help="仅执行单个端口（与 --group 互斥）")
+                        help="仅执行单个端口")
+    parser.add_argument("--all", dest="run_all", action="store_true",
+                        help="对 instances.json 中所有实例逐个顺序执行")
     parser.add_argument("--max-rounds", type=int, default=None,
                         help="最大轮数（覆盖任务 JSON 中的 max_rounds）")
     parser.add_argument("--dry-run", action="store_true",
-                        help="打印执行计划，不实际操作")
+                        help="打印执行计划，不实际调用 executor")
     parser.add_argument("--executor-url", default=None,
                         help="Windows 执行器 URL（默认读 MHXY_EXECUTOR_URL 环境变量）")
     parser.add_argument("--verbose", action="store_true")
@@ -143,18 +157,16 @@ def main(argv=None):
     max_rounds = args.max_rounds if args.max_rounds is not None else int(task_def.meta.get("max_rounds", 3))
 
     # 确定端口列表
-    if args.group is not None and args.port is not None:
-        print("ERROR: --group 和 --port 不能同时使用", file=sys.stderr)
+    if args.port and args.run_all:
+        print("ERROR: --port 和 --all 不能同时使用", file=sys.stderr)
+        sys.exit(1)
+    if not args.port and not args.run_all:
+        print("ERROR: 必须指定 --port <端口> 或 --all", file=sys.stderr)
         sys.exit(1)
 
-    from mhxy_bot.runner.task_loader import build_context, get_all_ports, get_group_ports, make_executor
+    from mhxy_bot.runner.task_loader import build_context, get_all_ports, make_executor
 
-    if args.port:
-        ports = [args.port]
-    elif args.group is not None:
-        ports = get_group_ports(args.group, _INSTANCES_PATH)
-    else:
-        ports = get_all_ports(_INSTANCES_PATH)
+    ports = [args.port] if args.port else get_all_ports(_INSTANCES_PATH)
 
     if args.dry_run:
         _print_plan(task_def, ports, max_rounds)
