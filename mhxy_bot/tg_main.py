@@ -94,6 +94,48 @@ class GameBot(TelegramBotBase):
         return OmniObserver(obs_session_id, self.agent_id, self.obs_dir)
 
     # ------------------------------------------------------------------
+    # Synchronous diagnostics (called via asyncio.to_thread)
+    # ------------------------------------------------------------------
+
+    def _instance_status_sync(self, ports: list[str]) -> list[dict]:
+        """Scan all ports and return {port, state} list. Blocks — run in thread."""
+        from mhxy_bot.runner.task_loader import build_context, make_executor
+        from mhxy_bot.runner.perception import detect_screen_state
+        executor = make_executor()
+        results = []
+        for port in ports:
+            ctx = build_context(port, executor)
+            try:
+                state = detect_screen_state(ctx).value
+            except Exception:
+                state = "error"
+            results.append({"port": port, "state": state})
+        return results
+
+    def _reconnect_sync(self, ports: list[str]) -> list[dict]:
+        """Try reconnect on DISCONNECTED ports; skip others. Blocks — run in thread."""
+        from mhxy_bot.runner.task_loader import build_context, make_executor
+        from mhxy_bot.runner.perception import detect_screen_state
+        from mhxy_bot.runner.models import InstanceState
+        from mhxy_bot.runner.instance_recovery import try_reconnect
+        executor = make_executor()
+        results = []
+        for port in ports:
+            ctx = build_context(port, executor)
+            state = detect_screen_state(ctx)
+            if state != InstanceState.DISCONNECTED:
+                results.append({"port": port, "action": "skipped", "state": state.value})
+                continue
+            ok = try_reconnect(ctx, timeout_sec=60)
+            final = detect_screen_state(ctx).value
+            results.append({
+                "port": port,
+                "action": "reconnected" if ok else "failed",
+                "final_state": final,
+            })
+        return results
+
+    # ------------------------------------------------------------------
     # Synchronous runner (called via asyncio.to_thread)
     # ------------------------------------------------------------------
 
@@ -150,6 +192,74 @@ class GameBot(TelegramBotBase):
     # ------------------------------------------------------------------
     # Result formatting
     # ------------------------------------------------------------------
+
+    _STATE_ICONS: dict[str, str] = {
+        "main_ui":      "✅",
+        "in_battle":    "⚔️",
+        "in_team":      "👥",
+        "popup":        "💬",
+        "disconnected": "🔌",
+        "login_screen": "🔐",
+        "offline":      "💀",
+        "unknown":      "❓",
+        "stuck":        "🔒",
+        "error":        "⚠️",
+    }
+
+    @classmethod
+    def _format_instance_status(cls, results: list[dict]) -> str:
+        from collections import defaultdict
+        groups: dict[str, list[str]] = defaultdict(list)
+        for r in results:
+            groups[r["state"]].append(r["port"])
+        order = ["main_ui", "in_battle", "in_team", "popup",
+                 "disconnected", "login_screen", "offline", "unknown", "stuck", "error"]
+        lines = [f"<b>📊 实例状态 ({len(results)} 个)</b>\n"]
+        for state in order:
+            if state not in groups:
+                continue
+            ports = groups[state]
+            icon = cls._STATE_ICONS.get(state, "❓")
+            lines.append(f"{icon} <b>{state}</b> ({len(ports)}): {' / '.join(ports)}")
+        for state in sorted(set(groups) - set(order)):
+            ports = groups[state]
+            lines.append(f"❓ <b>{state}</b> ({len(ports)}): {' / '.join(ports)}")
+        return "\n".join(lines)
+
+    @classmethod
+    def _format_reconnect_results(cls, results: list[dict]) -> str:
+        reconnected = [r for r in results if r["action"] == "reconnected"]
+        failed      = [r for r in results if r["action"] == "failed"]
+        skipped     = [r for r in results if r["action"] == "skipped"]
+
+        lines = ["<b>🔌 重连操作完成</b>\n"]
+
+        if not any(r["action"] != "skipped" for r in results):
+            lines.append("没有处于掉线状态的实例，无需重连。")
+        else:
+            if reconnected:
+                lines.append(f"<b>✅ 重连成功 ({len(reconnected)})</b>")
+                for r in reconnected:
+                    icon = cls._STATE_ICONS.get(r["final_state"], "❓")
+                    lines.append(f"  port {r['port']} → {icon} {r['final_state']}")
+            if failed:
+                lines.append(f"\n<b>❌ 重连失败 ({len(failed)})</b>（需手动介入）")
+                for r in failed:
+                    icon = cls._STATE_ICONS.get(r["final_state"], "❓")
+                    lines.append(f"  port {r['port']} → {icon} {r['final_state']}")
+
+        if skipped:
+            from collections import defaultdict
+            sg: dict[str, list[str]] = defaultdict(list)
+            for r in skipped:
+                sg[r["state"]].append(r["port"])
+            parts = []
+            for state, ports in sg.items():
+                icon = cls._STATE_ICONS.get(state, "❓")
+                parts.append(f"{icon}{state}×{len(ports)}")
+            lines.append(f"\n<i>跳过 {len(skipped)} 个非掉线实例: {', '.join(parts)}</i>")
+
+        return "\n".join(lines)
 
     @staticmethod
     def _format_task_results(results: list[dict]) -> str:
@@ -332,6 +442,50 @@ class GameBot(TelegramBotBase):
                 f"将在当前步骤完成后停止。"
             )
 
+    async def instance_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权")
+            return
+
+        from mhxy_bot.runner.task_loader import get_all_ports
+        ports = get_all_ports(_INSTANCES_PATH)
+        status_msg = await message.reply_text(f"🔍 正在扫描 {len(ports)} 个实例状态...")
+        results = await asyncio.to_thread(self._instance_status_sync, ports)
+        await status_msg.edit_text(
+            self._format_instance_status(results),
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def reconnect_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权")
+            return
+
+        if self._task_running:
+            await message.reply_text("⚠️ 已有任务正在执行，请等待完成或使用 /stop_task 停止。")
+            return
+
+        from mhxy_bot.runner.task_loader import get_all_ports
+        ports = get_all_ports(_INSTANCES_PATH)
+        status_msg = await message.reply_text(f"🔌 正在对 {len(ports)} 个实例执行重连...")
+        self._task_running = True
+        try:
+            results = await asyncio.to_thread(self._reconnect_sync, ports)
+        finally:
+            self._task_running = False
+        await status_msg.edit_text(
+            self._format_reconnect_results(results),
+            parse_mode=ParseMode.HTML,
+        )
+
     # ------------------------------------------------------------------
     # Existing overrides — unchanged
     # ------------------------------------------------------------------
@@ -350,6 +504,8 @@ class GameBot(TelegramBotBase):
             BotCommand("run_mijing", "🎮 执行秘境降妖（可选 port 参数）"),
             BotCommand("task_status", "📊 查看最近任务结果"),
             BotCommand("stop_task", "🛑 停止当前任务"),
+            BotCommand("instance_status", "📊 查看所有实例当前状态"),
+            BotCommand("reconnect", "🔌 重连所有掉线实例"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
@@ -436,6 +592,8 @@ class GameBot(TelegramBotBase):
         app.add_handler(CommandHandler("run_mijing", self.run_mijing_command))
         app.add_handler(CommandHandler("task_status", self.task_status_command))
         app.add_handler(CommandHandler("stop_task", self.stop_task_command))
+        app.add_handler(CommandHandler("instance_status", self.instance_status_command))
+        app.add_handler(CommandHandler("reconnect", self.reconnect_command))
 
     async def handle_custom_cmd(
         self,
