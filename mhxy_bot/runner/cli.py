@@ -1,0 +1,178 @@
+"""CLI：按 JSON 任务定义批量执行游戏自动化。
+
+用法：
+    python -m mhxy_bot.runner.cli --task mijing --group 0 --dry-run
+    python -m mhxy_bot.runner.cli --task mijing --port 5557
+    python -m mhxy_bot.runner.cli --task mijing --group 1 --max-rounds 5
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import sys
+from pathlib import Path
+
+_TASKS_DIR = Path(__file__).parent.parent / "tasks"
+_INSTANCES_PATH = Path(__file__).parent.parent.parent / "data" / "mhxy" / "config" / "instances.json"
+
+
+def _setup_logging(verbose: bool) -> None:
+    logging.basicConfig(
+        level=logging.DEBUG if verbose else logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+
+def _preflight(ctx, port: str) -> tuple[bool, str]:
+    """app_health → close_popups → detect_screen_state。
+
+    返回 (ok, reason)；False 表示跳过该实例。
+    """
+    from mhxy_bot.runner.models import InstanceState
+    from mhxy_bot.runner.perception import detect_screen_state
+
+    if ctx.dry_run:
+        ctx.info("[dry_run] preflight ok port=%s", port)
+        return True, ""
+
+    try:
+        health = ctx.executor.app_health(port)
+        if not health.get("healthy"):
+            return False, f"app not healthy: {health}"
+    except Exception as exc:
+        return False, f"app_health error: {exc}"
+
+    try:
+        ctx.executor.close_common_popups(port)
+    except Exception:
+        pass
+
+    state = detect_screen_state(ctx)
+    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
+        return False, f"instance is {state.value}, needs login"
+
+    ctx.info("preflight OK port=%s state=%s", port, state.value)
+    return True, ""
+
+
+def _print_plan(task_def, ports: list[str], max_rounds: int) -> None:
+    print(f"\n[DRY RUN] task={task_def.id}  name={task_def.name}  max_rounds={max_rounds}")
+    print(f"instances ({len(ports)}): {ports}")
+    print(f"steps ({len(task_def.steps)}):")
+    for s in task_def.steps:
+        line = f"  [{s.id}] {s.action}"
+        if s.element:
+            line += f"  element={s.element}"
+        if s.text_any:
+            line += f"  text_any={s.text_any}"
+        if s.timeout_sec != 30:
+            line += f"  timeout={s.timeout_sec}s"
+        line += f"  retries={s.retries}"
+        if s.verify_text_any:
+            line += f"  verify={s.verify_text_any}"
+        if s.verify_not_text_any:
+            line += f"  verify_not={s.verify_not_text_any}"
+        print(line)
+    print()
+
+
+def _run_instance(ctx, task_def, max_rounds: int, port: str) -> list[dict]:
+    """preflight + 最多 max_rounds 轮主任务，返回每轮结果 dict 列表。"""
+    from mhxy_bot.runner.engine import TaskEngine
+    from mhxy_bot.runner.models import TaskStatus
+
+    ok, reason = _preflight(ctx, port)
+    if not ok:
+        ctx.warning("port=%s preflight FAILED: %s — skipping", port, reason)
+        return [{"port": port, "round": 0, "status": "skipped", "reason": reason}]
+
+    engine = TaskEngine(ctx)
+    results: list[dict] = []
+
+    for rnd in range(1, max_rounds + 1):
+        ctx.info("port=%s  round %d/%d  starting", port, rnd, max_rounds)
+        result = engine.run(task_def)
+
+        entry: dict = {"port": port, "round": rnd, "status": result.status.value}
+        if result.failed_step:
+            entry["failed_step"] = result.failed_step
+        if result.message:
+            entry["message"] = result.message
+        results.append(entry)
+
+        if result.status in (TaskStatus.NEEDS_HUMAN, TaskStatus.FAILED, TaskStatus.STOPPED):
+            ctx.warning("port=%s round %d halted: %s", port, rnd, result.status.value)
+            break
+
+    return results
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(
+        prog="python -m mhxy_bot.runner.cli",
+        description="mhxy_bot 任务执行器",
+    )
+    parser.add_argument("--task", required=True,
+                        help="任务 ID（data/mhxy/tasks/ 下的 JSON 文件名，不含 .json）")
+    parser.add_argument("--group", type=int, default=None,
+                        help="执行指定 group（0-based）的全部实例")
+    parser.add_argument("--port", type=str, default=None,
+                        help="仅执行单个端口（与 --group 互斥）")
+    parser.add_argument("--max-rounds", type=int, default=None,
+                        help="最大轮数（覆盖任务 JSON 中的 max_rounds）")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="打印执行计划，不实际操作")
+    parser.add_argument("--executor-url", default=None,
+                        help="Windows 执行器 URL（默认读 MHXY_EXECUTOR_URL 环境变量）")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args(argv)
+
+    _setup_logging(args.verbose)
+
+    # 加载任务
+    task_path = _TASKS_DIR / f"{args.task}.json"
+    if not task_path.exists():
+        print(f"ERROR: 任务文件不存在: {task_path}", file=sys.stderr)
+        sys.exit(1)
+
+    from mhxy_bot.runner.models import TaskDefinition
+    task_def = TaskDefinition.load(task_path)
+
+    max_rounds = args.max_rounds if args.max_rounds is not None else int(task_def.meta.get("max_rounds", 3))
+
+    # 确定端口列表
+    if args.group is not None and args.port is not None:
+        print("ERROR: --group 和 --port 不能同时使用", file=sys.stderr)
+        sys.exit(1)
+
+    from mhxy_bot.runner.task_loader import build_context, get_all_ports, get_group_ports, make_executor
+
+    if args.port:
+        ports = [args.port]
+    elif args.group is not None:
+        ports = get_group_ports(args.group, _INSTANCES_PATH)
+    else:
+        ports = get_all_ports(_INSTANCES_PATH)
+
+    if args.dry_run:
+        _print_plan(task_def, ports, max_rounds)
+        return
+
+    executor = make_executor(args.executor_url)
+    all_results: list[dict] = []
+
+    for port in ports:
+        ctx = build_context(port, executor, dry_run=False)
+        port_results = _run_instance(ctx, task_def, max_rounds, port)
+        all_results.extend(port_results)
+
+    print(json.dumps(all_results, ensure_ascii=False, indent=2))
+
+    has_failure = any(r["status"] in ("failed", "needs_human") for r in all_results)
+    sys.exit(1 if has_failure else 0)
+
+
+if __name__ == "__main__":
+    main()

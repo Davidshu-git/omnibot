@@ -1,0 +1,41 @@
+{
+  "id": "mijing",
+  "name": "秘境降妖",
+  "description": "日常副本：每轮挑战一关，领取奖励后继续，重复 max_rounds 轮",
+  "max_rounds": 3,
+  "steps": [
+    {
+      "id": "open_activity",
+      "action": "tap_element",
+      "element": "活动",
+      "verify_text_any": ["活动", "秘境降妖"],
+      "retries": 2
+    },
+    {
+      "id": "enter_mijing",
+      "action": "tap_element",
+      "element": "秘境降妖",
+      "verify_text_any": ["秘境降妖", "继续", "挑战"],
+      "retries": 2
+    },
+    {
+      "id": "continue_stage",
+      "action": "tap_text",
+      "text_any": ["继续", "挑战", "进入"],
+      "verify_text_any": ["战斗", "自动", "回合", "奖励", "继续"],
+      "retries": 2
+    },
+    {
+      "id": "wait_battle",
+      "action": "wait_not_battle",
+      "timeout_sec": 240,
+      "retries": 1
+    },
+    {
+      "id": "claim_reward",
+      "action": "close_common_popups",
+      "verify_not_text_any": ["获得奖励", "确定"],
+      "retries": 2
+    }
+  ]
+}
