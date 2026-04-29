@@ -35,6 +35,8 @@ app = FastAPI(title="MuMu Executor", version="1.0")
 ADB_PATH = os.getenv("ADB_PATH", "adb")
 W, H = 1600, 900
 
+COMMON_POPUP_TEXTS = ["确定", "关闭", "取消", "稍后", "跳过", "我知道了", "继续", "服务器已经关闭"]
+
 # RapidOCR 单例，首次调用时初始化
 _ocr = None
 
@@ -75,6 +77,31 @@ def _screenshot_png(port: str) -> bytes:
     return r.stdout
 
 
+def _ocr_items(port: str) -> list[dict]:
+    """截图 + OCR，返回文字结果列表，每项含 text / center_x / center_y / confidence。"""
+    png = _screenshot_png(port)
+    arr = np.frombuffer(png, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise RuntimeError("图像解码失败")
+    ocr = _get_ocr()
+    result, _ = ocr(img)
+    items = []
+    if result:
+        for box, text, conf in result:
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            cx = float(sum(xs) / 4)
+            cy = float(sum(ys) / 4)
+            items.append({
+                "text": text,
+                "center_x": cx,
+                "center_y": cy,
+                "confidence": float(conf),
+            })
+    return items
+
+
 # ---------------------------------------------------------------------------
 # 请求/响应模型
 # ---------------------------------------------------------------------------
@@ -94,6 +121,24 @@ class BatchTapReq(BaseModel):
 
 class BatchBackReq(BaseModel):
     ports: list[str]
+
+class SwipeReq(BaseModel):
+    port: str
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    duration_ms: int = 300
+
+class TapTextReq(BaseModel):
+    port: str
+    text_candidates: list[str]
+
+class WaitTextReq(BaseModel):
+    port: str
+    text_candidates: list[str]
+    timeout_sec: int = 30
+    interval_sec: float = 1.5
 
 
 # ---------------------------------------------------------------------------
@@ -124,28 +169,7 @@ def screenshot(req: PortReq):
 def sense(req: PortReq):
     """截图 + OCR，返回文字和归一化坐标列表。"""
     try:
-        png = _screenshot_png(req.port)
-        arr = np.frombuffer(png, np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-        if img is None:
-            raise RuntimeError("图像解码失败")
-
-        ocr = _get_ocr()
-        result, _ = ocr(img)
-
-        items = []
-        if result:
-            for box, text, conf in result:
-                xs = [p[0] for p in box]
-                ys = [p[1] for p in box]
-                cx = float(sum(xs) / 4)
-                cy = float(sum(ys) / 4)
-                items.append({
-                    "text": text,
-                    "center_x": cx,
-                    "center_y": cy,
-                    "confidence": float(conf),
-                })
+        items = _ocr_items(req.port)
         return {"results": items, "count": len(items)}
     except Exception as e:
         log.error("sense error port=%s: %s", req.port, e)
@@ -206,6 +230,130 @@ def batch_back(req: BatchBackReq):
             results[port] = False
         time.sleep(0.3)
     return {"results": results}
+
+
+@app.post("/swipe")
+def swipe(req: SwipeReq):
+    """ADB 滑动手势。"""
+    try:
+        r = _adb(
+            req.port, "shell", "input", "swipe",
+            str(req.x1), str(req.y1), str(req.x2), str(req.y2), str(req.duration_ms),
+        )
+        ok = r.returncode == 0
+        time.sleep(req.duration_ms / 1000 + 0.2)
+        return {"success": ok, "port": req.port}
+    except Exception as e:
+        log.error("swipe error port=%s: %s", req.port, e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/tap_text")
+def tap_text(req: TapTextReq):
+    """截图 + OCR，找到第一个匹配文本后点击，返回点击坐标和匹配文本。"""
+    try:
+        items = _ocr_items(req.port)
+        for item in items:
+            if any(cand in item["text"] for cand in req.text_candidates):
+                px = int(item["center_x"])
+                py = int(item["center_y"])
+                r = _adb(req.port, "shell", "input", "tap", str(px), str(py))
+                if r.returncode != 0:
+                    raise RuntimeError(f"ADB tap 失败：{r.stderr.decode(errors='replace')}")
+                time.sleep(random.uniform(0.2, 0.4))
+                log.info("tap_text port=%s matched=%r px=%d py=%d", req.port, item["text"], px, py)
+                return {"found": True, "text": item["text"], "px": px, "py": py}
+        return {"found": False, "text": None, "px": None, "py": None}
+    except Exception as e:
+        log.error("tap_text error port=%s: %s", req.port, e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/wait_text")
+def wait_text(req: WaitTextReq):
+    """循环 OCR 直到任一候选文本出现或超时，返回是否命中、命中文本和坐标。"""
+    deadline = time.monotonic() + req.timeout_sec
+    try:
+        while time.monotonic() < deadline:
+            items = _ocr_items(req.port)
+            for item in items:
+                if any(cand in item["text"] for cand in req.text_candidates):
+                    log.info("wait_text port=%s matched=%r", req.port, item["text"])
+                    return {
+                        "found": True,
+                        "text": item["text"],
+                        "px": int(item["center_x"]),
+                        "py": int(item["center_y"]),
+                    }
+            time.sleep(req.interval_sec)
+        log.info("wait_text port=%s timeout after %ds", req.port, req.timeout_sec)
+        return {"found": False, "text": None, "px": None, "py": None}
+    except Exception as e:
+        log.error("wait_text error port=%s: %s", req.port, e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/close_common_popups")
+def close_common_popups(req: PortReq):
+    """识别并点击常见弹窗按钮，返回关闭了哪些弹窗。"""
+    try:
+        items = _ocr_items(req.port)
+        closed: list[dict] = []
+        for item in items:
+            if any(popup in item["text"] for popup in COMMON_POPUP_TEXTS):
+                px = int(item["center_x"])
+                py = int(item["center_y"])
+                r = _adb(req.port, "shell", "input", "tap", str(px), str(py))
+                if r.returncode == 0:
+                    closed.append({"text": item["text"], "px": px, "py": py})
+                    log.info("close_common_popups port=%s closed=%r", req.port, item["text"])
+                    time.sleep(random.uniform(0.3, 0.5))
+        return {"closed": closed, "count": len(closed)}
+    except Exception as e:
+        log.error("close_common_popups error port=%s: %s", req.port, e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/app_health")
+def app_health(req: PortReq):
+    """检查 ADB 连通性、截图和 OCR 是否可用，返回实例健康状态。"""
+    adb_ok = False
+    screenshot_ok = False
+    ocr_ok = False
+    details: dict[str, str] = {}
+
+    try:
+        r = _adb(req.port, "get-state", timeout=5)
+        adb_ok = r.returncode == 0 and b"device" in r.stdout
+        if not adb_ok:
+            details["adb"] = (r.stdout.decode(errors="replace").strip()
+                              or r.stderr.decode(errors="replace").strip())
+    except Exception as e:
+        details["adb"] = str(e)
+
+    if adb_ok:
+        try:
+            _screenshot_png(req.port)
+            screenshot_ok = True
+        except Exception as e:
+            details["screenshot"] = str(e)
+
+    if screenshot_ok:
+        try:
+            _get_ocr()
+            ocr_ok = True
+        except Exception as e:
+            details["ocr"] = str(e)
+
+    healthy = adb_ok and screenshot_ok and ocr_ok
+    return {
+        "healthy": healthy,
+        "port": req.port,
+        "adb": adb_ok,
+        "screenshot": screenshot_ok,
+        "ocr": ocr_ok,
+        "details": details,
+    }
 
 
 if __name__ == "__main__":
