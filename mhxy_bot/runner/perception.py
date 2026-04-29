@@ -24,6 +24,7 @@ DENYLIST: list[str] = [
 
 _MAIN_UI_MARKERS = ["背包", "地图", "任务", "商城", "设置"]
 _LOGIN_MARKERS   = ["登录", "账号登录", "游客登录"]
+_DISCONNECTED_MARKERS = ["服务器已经关闭", "连接已断开", "网络连接失败", "重新登录"]
 _BATTLE_MARKERS  = ["战斗", "回合", "行动", "攻击", "技能"]
 _TEAM_MARKERS    = ["队伍", "队长", "队员", "组队"]
 _POPUP_MARKERS   = ["确定", "关闭", "取消", "我知道了"]
@@ -43,7 +44,10 @@ def _texts(items: list[dict]) -> list[str]:
 
 
 def detect_screen_state(ctx: "RunnerContext") -> InstanceState:
-    """根据 OCR 文字推断当前屏幕状态。"""
+    """根据 OCR 文字推断当前屏幕状态。
+
+    断线类文本只作为状态信号，不参与可点击弹窗按钮识别。
+    """
     items = _sense(ctx)
     if not items:
         return InstanceState.OFFLINE
@@ -51,6 +55,8 @@ def detect_screen_state(ctx: "RunnerContext") -> InstanceState:
     texts = _texts(items)
     joined = "".join(texts)
 
+    if any(m in joined for m in _DISCONNECTED_MARKERS):
+        return InstanceState.DISCONNECTED
     if any(m in joined for m in _BATTLE_MARKERS):
         return InstanceState.IN_BATTLE
     if any(m in joined for m in _POPUP_MARKERS):

@@ -59,8 +59,8 @@ def return_to_main_ui(ctx: "RunnerContext", max_backs: int = 5) -> bool:
 
         if state == InstanceState.MAIN_UI:
             return True
-        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
-            ctx.warning("recovery: instance offline or at login, cannot auto-recover")
+        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+            ctx.warning("recovery: instance offline/login/disconnected, cannot auto-recover")
             return False
 
         close_common_popups(ctx)
@@ -92,8 +92,8 @@ def attempt(ctx: "RunnerContext", step_id: str, attempt_num: int) -> bool:
 
     state = detect_screen_state(ctx)
 
-    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
-        mark_needs_human(ctx, f"instance offline/at-login after step '{step_id}' failure")
+    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+        mark_needs_human(ctx, f"instance {state.value} after step '{step_id}' failure")
         return False
 
     if state == InstanceState.POPUP or closed:

@@ -10,7 +10,9 @@ if TYPE_CHECKING:
 
 # 返回值约定：成功返回 dict（可为空），失败抛出 ActionError
 class ActionError(Exception):
-    pass
+    def __init__(self, message: str, details: dict | None = None) -> None:
+        super().__init__(message)
+        self.details = details or {}
 
 
 # ---------------------------------------------------------------------------
@@ -81,21 +83,67 @@ def _wait_text(ctx: "RunnerContext", step: "TaskStep") -> dict:
 
 
 def _wait_not_battle(ctx: "RunnerContext", step: "TaskStep") -> dict:
-    """等待战斗结束（战斗关键词消失）。"""
-    from mhxy_bot.runner.perception import wait_until, detect_screen_state
+    """等待战斗从进入到结束。
+
+    两阶段语义：
+    1. 先等待进入战斗，或直接出现奖励/继续/确定等终态文本。
+    2. 如果已进入战斗，再等待战斗状态稳定消失或终态文本出现。
+    """
+    from mhxy_bot.runner.perception import detect_screen_state, has_text
     from mhxy_bot.runner.models import InstanceState
 
     if ctx.dry_run:
         ctx.info("[dry_run] wait_not_battle timeout=%s", step.timeout_sec)
         return {}
 
-    def not_in_battle(c: "RunnerContext") -> bool:
-        return detect_screen_state(c) != InstanceState.IN_BATTLE
+    # Keep defaults strict. Text like "继续"/"挑战"/"秘境降妖" can also appear
+    # before battle starts, so treating it as an early terminal signal would
+    # let this step complete while the fight is still loading.
+    terminal_texts = step.text_any or step.extra.get("terminal_text_any") or [
+        "获得奖励", "奖励", "战斗胜利", "通关", "下一关", "确定"
+    ]
+    interval = float(step.extra.get("interval_sec", 1.5))
+    enter_timeout = int(step.extra.get("enter_timeout_sec", min(60, step.timeout_sec)))
 
-    ok = wait_until(ctx, not_in_battle, timeout_sec=step.timeout_sec)
-    if not ok:
-        raise ActionError(f"wait_not_battle 超时 ({step.timeout_sec}s)，仍在战斗中")
-    return {}
+    entered_battle = False
+    first_deadline = time.monotonic() + enter_timeout
+    while time.monotonic() < first_deadline:
+        if ctx.stop_requested:
+            raise ActionError("wait_not_battle stopped before battle entry")
+        if has_text(ctx, terminal_texts):
+            return {"entered_battle": False, "terminal": True}
+        state = detect_screen_state(ctx)
+        if state == InstanceState.IN_BATTLE:
+            entered_battle = True
+            break
+        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+            raise ActionError(f"wait_not_battle abnormal state before battle: {state.value}")
+        time.sleep(interval)
+
+    if not entered_battle:
+        raise ActionError(
+            f"wait_not_battle 未在 {enter_timeout}s 内进入战斗或出现终态文本 {terminal_texts}"
+        )
+
+    deadline = time.monotonic() + max(1, step.timeout_sec - enter_timeout)
+    stable_not_battle = 0
+    while time.monotonic() < deadline:
+        if ctx.stop_requested:
+            raise ActionError("wait_not_battle stopped while waiting for battle end")
+        if has_text(ctx, terminal_texts):
+            return {"entered_battle": True, "terminal": True}
+        state = detect_screen_state(ctx)
+        if state == InstanceState.IN_BATTLE:
+            stable_not_battle = 0
+        elif state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+            raise ActionError(f"wait_not_battle abnormal state during battle: {state.value}")
+        else:
+            stable_not_battle += 1
+            if stable_not_battle >= 2:
+                return {"entered_battle": True, "terminal": False, "state": state.value}
+        time.sleep(interval)
+
+    raise ActionError(f"wait_not_battle 超时 ({step.timeout_sec}s)，战斗未确认结束")
 
 
 def _close_common_popups(ctx: "RunnerContext", step: "TaskStep") -> dict:
@@ -105,6 +153,35 @@ def _close_common_popups(ctx: "RunnerContext", step: "TaskStep") -> dict:
         return {}
     result = ctx.executor.close_common_popups(ctx.port)
     return {"closed": result.get("count", 0)}
+
+
+def _app_health(ctx: "RunnerContext", step: "TaskStep") -> dict:
+    """Run structured instance diagnosis and fail when human action is needed."""
+    from mhxy_bot.runner.instance_recovery import diagnose_instance
+
+    diagnosis = diagnose_instance(ctx)
+    detail = diagnosis.as_dict()
+    if diagnosis.needs_human:
+        raise ActionError(
+            f"instance diagnosis failed: {diagnosis.code.value} ({diagnosis.message})",
+            {"diagnosis": detail},
+        )
+    return {"diagnosis": detail}
+
+
+def _detect_screen_state(ctx: "RunnerContext", step: "TaskStep") -> dict:
+    """Detect current screen state and reject login/disconnect/offline states."""
+    from mhxy_bot.runner.models import InstanceState
+    from mhxy_bot.runner.perception import detect_screen_state
+
+    if ctx.dry_run:
+        ctx.info("[dry_run] detect_screen_state")
+        return {"state": InstanceState.UNKNOWN.value}
+
+    state = detect_screen_state(ctx)
+    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED):
+        raise ActionError(f"screen state requires human action: {state.value}")
+    return {"state": state.value}
 
 
 def _press_back(ctx: "RunnerContext", step: "TaskStep") -> dict:
@@ -132,6 +209,8 @@ def _sleep(ctx: "RunnerContext", step: "TaskStep") -> dict:
 # ---------------------------------------------------------------------------
 
 _ACTION_MAP = {
+    "app_health":          _app_health,
+    "detect_screen_state": _detect_screen_state,
     "tap_element":         _tap_element,
     "tap_text":            _tap_text,
     "wait_text":           _wait_text,

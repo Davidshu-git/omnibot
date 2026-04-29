@@ -25,46 +25,13 @@ def _setup_logging(verbose: bool) -> None:
     )
 
 
-def _preflight(ctx, port: str) -> tuple[bool, str]:
-    """app_health → close_popups → detect_screen_state。
-
-    返回 (ok, reason)；False 表示跳过该实例。
-    """
-    from mhxy_bot.runner.models import InstanceState
-    from mhxy_bot.runner.perception import detect_screen_state
-
-    if ctx.dry_run:
-        ctx.info("[dry_run] preflight ok port=%s", port)
-        return True, ""
-
-    try:
-        health = ctx.executor.app_health(port)
-        if not health.get("healthy"):
-            return False, f"app not healthy: {health}"
-    except Exception as exc:
-        return False, f"app_health error: {exc}"
-
-    try:
-        ctx.executor.close_common_popups(port)
-    except Exception:
-        pass
-
-    state = detect_screen_state(ctx)
-    if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
-        return False, f"instance is {state.value}, needs login"
-
-    ctx.info("preflight OK port=%s state=%s", port, state.value)
-    return True, ""
-
-
 def _print_plan(task_def, ports: list[str], max_rounds: int) -> None:
     print(f"\n[DRY RUN] task={task_def.id}  name={task_def.name}  mode=single  max_rounds={max_rounds}")
     print(f"instances ({len(ports)}): {ports}")
-    preflight = task_def.meta.get("preflight", [])
-    if preflight:
-        print(f"preflight ({len(preflight)}):")
-        for p in preflight:
-            print(f"  [{p['id']}] {p['action']}")
+    if task_def.preflight:
+        print(f"preflight ({len(task_def.preflight)}):")
+        for p in task_def.preflight:
+            print(f"  [{p.id}] {p.action}  retries={p.retries}")
     print(f"steps ({len(task_def.steps)}):")
     for s in task_def.steps:
         line = f"  [{s.id}] {s.action}"
@@ -84,14 +51,9 @@ def _print_plan(task_def, ports: list[str], max_rounds: int) -> None:
 
 
 def _run_instance(ctx, task_def, max_rounds: int, port: str) -> list[dict]:
-    """preflight + 最多 max_rounds 轮主任务，返回每轮结果 dict 列表。"""
+    """最多 max_rounds 轮主任务，preflight 由 TaskEngine 按任务定义执行。"""
     from mhxy_bot.runner.engine import TaskEngine
     from mhxy_bot.runner.models import TaskStatus
-
-    ok, reason = _preflight(ctx, port)
-    if not ok:
-        ctx.warning("port=%s preflight FAILED: %s — skipping", port, reason)
-        return [{"port": port, "round": 0, "status": "skipped", "reason": reason}]
 
     engine = TaskEngine(ctx)
     results: list[dict] = []

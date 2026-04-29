@@ -5,8 +5,9 @@
   "mode": "single",
   "max_rounds": 3,
   "preflight": [
-    {"id": "health_check",  "action": "app_health"},
-    {"id": "close_popups",  "action": "close_common_popups"}
+    {"id": "health_check",  "action": "app_health", "retries": 0},
+    {"id": "close_popups",  "action": "close_common_popups", "retries": 0},
+    {"id": "screen_state",  "action": "detect_screen_state", "retries": 0}
   ],
   "steps": [
     {

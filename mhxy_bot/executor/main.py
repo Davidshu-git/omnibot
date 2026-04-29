@@ -35,7 +35,8 @@ app = FastAPI(title="MuMu Executor", version="1.0")
 ADB_PATH = os.getenv("ADB_PATH", "adb")
 W, H = 1600, 900
 
-COMMON_POPUP_TEXTS = ["确定", "关闭", "取消", "稍后", "跳过", "我知道了", "继续", "服务器已经关闭"]
+COMMON_POPUP_TEXTS = ["确定", "关闭", "取消", "稍后", "跳过", "我知道了", "继续"]
+DISCONNECTED_STATUS_TEXTS = ["服务器已经关闭", "连接已断开", "网络连接失败", "重新登录"]
 
 # RapidOCR 单例，首次调用时初始化
 _ocr = None
@@ -295,7 +296,11 @@ def wait_text(req: WaitTextReq):
 
 @app.post("/close_common_popups")
 def close_common_popups(req: PortReq):
-    """识别并点击常见弹窗按钮，返回关闭了哪些弹窗。"""
+    """识别并点击常见弹窗按钮，返回关闭了哪些弹窗。
+
+    只点击明确按钮型文本；断线/服务器关闭类文本作为状态信号处理，
+    不在这里点击，避免误触。
+    """
     try:
         items = _ocr_items(req.port)
         closed: list[dict] = []

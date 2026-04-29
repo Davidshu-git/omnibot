@@ -12,11 +12,21 @@ class InstanceState(str, Enum):
     UNKNOWN = "unknown"
     OFFLINE = "offline"
     LOGIN_SCREEN = "login_screen"
+    DISCONNECTED = "disconnected"
     MAIN_UI = "main_ui"
     IN_TEAM = "in_team"
     IN_BATTLE = "in_battle"
     POPUP = "popup"
     STUCK = "stuck"
+
+
+class InstanceIssue(str, Enum):
+    ADB_OFFLINE = "adb_offline"
+    SCREENSHOT_FAILED = "screenshot_failed"
+    OCR_FAILED = "ocr_failed"
+    LOGIN_SCREEN = "login_screen"
+    DISCONNECTED = "disconnected"
+    UNKNOWN_OK = "unknown_ok"
 
 
 class TaskStatus(str, Enum):
@@ -75,18 +85,21 @@ class TaskDefinition:
     id: str
     name: str
     steps: list[TaskStep]
+    preflight: list[TaskStep] = field(default_factory=list)
     description: str = ""
     meta: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "TaskDefinition":
+        preflight = [TaskStep.from_dict(s) for s in d.get("preflight", [])]
         steps = [TaskStep.from_dict(s) for s in d.get("steps", [])]
         return cls(
             id=d["id"],
             name=d.get("name", d["id"]),
             description=d.get("description", ""),
+            preflight=preflight,
             steps=steps,
-            meta={k: v for k, v in d.items() if k not in {"id", "name", "description", "steps"}},
+            meta={k: v for k, v in d.items() if k not in {"id", "name", "description", "preflight", "steps"}},
         )
 
     @classmethod
@@ -101,6 +114,24 @@ class StepResult:
     status: StepStatus
     message: str = ""
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class InstanceDiagnosis:
+    code: InstanceIssue
+    state: InstanceState
+    needs_human: bool = False
+    message: str = ""
+    details: dict[str, Any] = field(default_factory=dict)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "code": self.code.value,
+            "state": self.state.value,
+            "needs_human": self.needs_human,
+            "message": self.message,
+            "details": self.details,
+        }
 
 
 @dataclass

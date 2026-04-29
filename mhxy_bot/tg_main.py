@@ -123,34 +123,9 @@ class GameBot(TelegramBotBase):
         return all_results
 
     def _run_port_sync(self, ctx, port: str, task_def, max_rounds: int) -> list[dict]:
-        """preflight → max_rounds rounds for one port."""
+        """Run max_rounds for one port; TaskEngine owns task preflight."""
         from mhxy_bot.runner.engine import TaskEngine
-        from mhxy_bot.runner.models import TaskStatus, InstanceState
-        from mhxy_bot.runner.perception import detect_screen_state
-
-        # preflight: app_health
-        try:
-            health = ctx.executor.app_health(port)
-            if not health.get("healthy"):
-                ctx.warning("port=%s preflight not healthy: %s", port, health)
-                return [{"port": port, "round": 0, "status": "skipped",
-                         "reason": f"app not healthy: {health.get('details', '')}"}]
-        except Exception as exc:
-            return [{"port": port, "round": 0, "status": "skipped",
-                     "reason": f"app_health error: {exc}"}]
-
-        # preflight: clear popups
-        try:
-            ctx.executor.close_common_popups(port)
-        except Exception:
-            pass
-
-        # preflight: screen state
-        state = detect_screen_state(ctx)
-        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
-            return [{"port": port, "round": 0, "status": "skipped",
-                     "reason": f"instance is {state.value}, needs login"}]
-        ctx.info("preflight OK port=%s state=%s", port, state.value)
+        from mhxy_bot.runner.models import TaskStatus
 
         # main rounds
         engine = TaskEngine(ctx)

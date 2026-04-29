@@ -48,47 +48,11 @@ class TaskEngine:
         ctx.info("task started: %s (%s) port=%s", task.id, task.name, ctx.port)
         events.task_started(ctx, task.id, task.name)
 
-        for step in task.steps:
-            if ctx.stop_requested:
-                ctx.info("stop_requested, halting task %s at step %s", task.id, step.id)
-                result = TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.STOPPED,
-                    failed_step=step.id,
-                    message="stop_requested",
-                    step_results=step_results,
-                )
-                events.task_failed(ctx, task.id, step.id, "stopped", _elapsed_ms(t0))
-                return result
-
-            sr = self._run_step(task.id, step)
-            step_results.append(sr)
-
-            if sr.status == StepStatus.FAILED:
-                msg = sr.message
-                elapsed = _elapsed_ms(t0)
-                ctx.error("task FAILED at step '%s': %s", step.id, msg)
-                events.task_failed(ctx, task.id, step.id, msg, elapsed)
-                return TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.FAILED,
-                    failed_step=step.id,
-                    message=msg,
-                    step_results=step_results,
-                )
-
-            if sr.status == StepStatus.SKIPPED and sr.details.get("needs_human"):
-                msg = sr.message
-                elapsed = _elapsed_ms(t0)
-                ctx.error("task NEEDS_HUMAN at step '%s': %s", step.id, msg)
-                events.task_needs_human(ctx, task.id, msg)
-                return TaskResult(
-                    task_id=task.id,
-                    status=TaskStatus.NEEDS_HUMAN,
-                    failed_step=step.id,
-                    message=msg,
-                    step_results=step_results,
-                )
+        for phase, steps in (("preflight", task.preflight), ("steps", task.steps)):
+            for step in steps:
+                result = self._run_task_step(task, step, phase, step_results, t0)
+                if result is not None:
+                    return result
 
         elapsed = _elapsed_ms(t0)
         ctx.info("task completed: %s in %.0fms", task.id, elapsed)
@@ -98,6 +62,64 @@ class TaskEngine:
             status=TaskStatus.COMPLETED,
             step_results=step_results,
         )
+
+    def _run_task_step(
+        self,
+        task: TaskDefinition,
+        step: "TaskStep",
+        phase: str,
+        step_results: list[StepResult],
+        task_started_at: float,
+    ) -> TaskResult | None:
+        """Run one preflight/main step; return TaskResult when task must stop."""
+        ctx = self.ctx
+
+        if phase == "preflight":
+            ctx.info("preflight step [%s] action=%s", step.id, step.action)
+
+        if ctx.stop_requested:
+            ctx.info("stop_requested, halting task %s at %s step %s", task.id, phase, step.id)
+            result = TaskResult(
+                task_id=task.id,
+                status=TaskStatus.STOPPED,
+                failed_step=step.id,
+                message="stop_requested",
+                step_results=step_results,
+            )
+            events.task_failed(ctx, task.id, step.id, "stopped", _elapsed_ms(task_started_at))
+            return result
+
+        sr = self._run_step(task.id, step)
+        sr.details.setdefault("phase", phase)
+        step_results.append(sr)
+
+        if sr.status == StepStatus.FAILED:
+            msg = sr.message
+            elapsed = _elapsed_ms(task_started_at)
+            ctx.error("task FAILED at %s step '%s': %s", phase, step.id, msg)
+            events.task_failed(ctx, task.id, step.id, msg, elapsed)
+            return TaskResult(
+                task_id=task.id,
+                status=TaskStatus.FAILED,
+                failed_step=step.id,
+                message=msg,
+                step_results=step_results,
+            )
+
+        if sr.status == StepStatus.SKIPPED and sr.details.get("needs_human"):
+            msg = sr.message
+            elapsed = _elapsed_ms(task_started_at)
+            ctx.error("task NEEDS_HUMAN at %s step '%s': %s", phase, step.id, msg)
+            events.task_needs_human(ctx, task.id, msg)
+            return TaskResult(
+                task_id=task.id,
+                status=TaskStatus.NEEDS_HUMAN,
+                failed_step=step.id,
+                message=msg,
+                step_results=step_results,
+            )
+
+        return None
 
     def run_file(self, path: str | Path) -> TaskResult:
         return self.run(TaskDefinition.load(path))
@@ -127,12 +149,14 @@ class TaskEngine:
         # 执行 + 重试
         max_attempts = 1 + max(0, step.retries)
         last_error = ""
+        last_error_details: dict = {}
         for attempt in range(1, max_attempts + 1):
             t0 = time.monotonic()
             try:
                 detail = execute(ctx, step)
             except ActionError as exc:
                 last_error = str(exc)
+                last_error_details = getattr(exc, "details", {}) or {}
                 ctx.warning("step [%s] attempt %d/%d failed: %s",
                             step.id, attempt, max_attempts, last_error)
                 events.step_failed(ctx, task_id, step, last_error, attempt)
@@ -144,7 +168,7 @@ class TaskEngine:
                             step_id=step.id,
                             status=StepStatus.SKIPPED,
                             message=f"recovery gave up: {last_error}",
-                            details={"needs_human": True},
+                            details={"needs_human": True, **last_error_details},
                         )
                 continue
 
@@ -175,12 +199,15 @@ class TaskEngine:
             step_id=step.id,
             status=StepStatus.SKIPPED,
             message=msg,
-            details={"needs_human": True},
+            details={"needs_human": True, **last_error_details},
         )
 
     def _verify(self, step: "TaskStep") -> str:
         """验证后置条件。返回空串表示通过，否则返回错误描述。"""
         ctx = self.ctx
+
+        if ctx.dry_run:
+            return ""
 
         if step.verify_text_any:
             from mhxy_bot.runner.perception import has_text
