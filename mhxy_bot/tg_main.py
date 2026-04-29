@@ -2,14 +2,18 @@
 """OmniMHXY Telegram entrypoint."""
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import logging
+import threading
+from datetime import date
 from pathlib import Path
 
 from dotenv import load_dotenv
 from telegram import BotCommand, InlineKeyboardButton, Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes
 
 from core.logging_setup import setup_logging
 from core.model_switch_handler import _build_model_keyboard, _build_model_text, register_model_switch
@@ -29,6 +33,9 @@ load_dotenv()
 OBS_DIR = (Path(__file__).parent.parent / "data" / "mhxy" / "observability" / "sessions").resolve()
 OBS_DIR.mkdir(parents=True, exist_ok=True)
 
+_TASKS_DIR = Path(__file__).parent / "tasks"
+_INSTANCES_PATH = Path(__file__).parent.parent / "data" / "mhxy" / "config" / "instances.json"
+
 setup_logging("./logs", "mhxy")
 logger = logging.getLogger(__name__)
 
@@ -47,6 +54,313 @@ if not ALLOWED_USER_IDS:
 class GameBot(TelegramBotBase):
     """OmniMHXY Telegram Bot."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._last_task_results: list[dict] = []
+        self._task_running: bool = False
+        self._active_ctxs: list = []
+        self._active_ctxs_lock = threading.Lock()
+
+    # ------------------------------------------------------------------
+    # Task state helpers
+    # ------------------------------------------------------------------
+
+    def _register_ctx(self, ctx) -> None:
+        with self._active_ctxs_lock:
+            self._active_ctxs.append(ctx)
+
+    def _unregister_ctx(self, ctx) -> None:
+        with self._active_ctxs_lock:
+            try:
+                self._active_ctxs.remove(ctx)
+            except ValueError:
+                pass
+
+    def _request_stop(self) -> int:
+        with self._active_ctxs_lock:
+            count = len(self._active_ctxs)
+            for c in self._active_ctxs:
+                c.stop_requested = True
+            return count
+
+    def _make_task_observer(self, user_id: int):
+        """Observer using the same session file as the regular agent messages."""
+        if self.obs_dir is None or not self.agent_id:
+            return None
+        from core.observability import OmniObserver
+        agent_slug = self.agent_id.replace("-", "_")
+        today = date.today().strftime("%Y%m%d")
+        obs_session_id = f"tg_session_{agent_slug}_{user_id}_{today}"
+        return OmniObserver(obs_session_id, self.agent_id, self.obs_dir)
+
+    # ------------------------------------------------------------------
+    # Synchronous runner (called via asyncio.to_thread)
+    # ------------------------------------------------------------------
+
+    def _run_task_sync(
+        self,
+        ports: list[str],
+        task_def,
+        max_rounds: int,
+        observer,
+    ) -> list[dict]:
+        """Execute task for all ports sequentially. Blocks — must run in thread."""
+        from mhxy_bot.runner.task_loader import build_context, make_executor
+        executor = make_executor()
+        all_results: list[dict] = []
+
+        for port in ports:
+            ctx = build_context(port, executor, observer=observer)
+            self._register_ctx(ctx)
+            try:
+                port_results = self._run_port_sync(ctx, port, task_def, max_rounds)
+                all_results.extend(port_results)
+            finally:
+                self._unregister_ctx(ctx)
+            if ctx.stop_requested:
+                break
+
+        return all_results
+
+    def _run_port_sync(self, ctx, port: str, task_def, max_rounds: int) -> list[dict]:
+        """preflight → max_rounds rounds for one port."""
+        from mhxy_bot.runner.engine import TaskEngine
+        from mhxy_bot.runner.models import TaskStatus, InstanceState
+        from mhxy_bot.runner.perception import detect_screen_state
+
+        # preflight: app_health
+        try:
+            health = ctx.executor.app_health(port)
+            if not health.get("healthy"):
+                ctx.warning("port=%s preflight not healthy: %s", port, health)
+                return [{"port": port, "round": 0, "status": "skipped",
+                         "reason": f"app not healthy: {health.get('details', '')}"}]
+        except Exception as exc:
+            return [{"port": port, "round": 0, "status": "skipped",
+                     "reason": f"app_health error: {exc}"}]
+
+        # preflight: clear popups
+        try:
+            ctx.executor.close_common_popups(port)
+        except Exception:
+            pass
+
+        # preflight: screen state
+        state = detect_screen_state(ctx)
+        if state in (InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN):
+            return [{"port": port, "round": 0, "status": "skipped",
+                     "reason": f"instance is {state.value}, needs login"}]
+        ctx.info("preflight OK port=%s state=%s", port, state.value)
+
+        # main rounds
+        engine = TaskEngine(ctx)
+        results: list[dict] = []
+
+        for rnd in range(1, max_rounds + 1):
+            ctx.info("port=%s  round %d/%d  starting", port, rnd, max_rounds)
+            result = engine.run(task_def)
+
+            entry: dict = {"port": port, "round": rnd, "status": result.status.value}
+            if result.failed_step:
+                entry["failed_step"] = result.failed_step
+            if result.message:
+                entry["message"] = result.message
+            results.append(entry)
+
+            if result.status in (TaskStatus.NEEDS_HUMAN, TaskStatus.FAILED, TaskStatus.STOPPED):
+                break
+
+        return results
+
+    # ------------------------------------------------------------------
+    # Result formatting
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _format_task_results(results: list[dict]) -> str:
+        if not results:
+            return "⚠️ 没有可执行的实例。"
+        lines: list[str] = []
+        for r in results:
+            port = r.get("port", "?")
+            status = r.get("status", "?")
+            rnd = r.get("round", 0)
+            msg = r.get("message", "")
+            step = r.get("failed_step", "")
+
+            if status == "skipped":
+                reason = r.get("reason", "")
+                lines.append(f"⚠️ <b>port {port}</b> — 跳过（{reason}）")
+            elif status == "completed":
+                lines.append(f"✅ <b>port {port}</b> 第 {rnd} 轮 — 完成")
+            elif status == "needs_human":
+                if "denylist" in msg:
+                    lines.append(
+                        f"🚨 <b>port {port}</b> 第 {rnd} 轮 — "
+                        f"<b>触发敏感界面，需人工确认！</b>\n"
+                        f"   <code>{msg}</code>"
+                    )
+                else:
+                    lines.append(
+                        f"👨‍🔧 <b>port {port}</b> 第 {rnd} 轮 — 需要人工介入\n"
+                        f"   <code>{msg}</code>"
+                    )
+            elif status == "failed":
+                lines.append(
+                    f"❌ <b>port {port}</b> 第 {rnd} 轮 — "
+                    f"失败（step={step}）\n"
+                    f"   <code>{msg}</code>"
+                )
+            elif status == "stopped":
+                lines.append(f"🛑 <b>port {port}</b> 第 {rnd} 轮 — 已停止")
+            else:
+                lines.append(f"<b>port {port}</b> 第 {rnd} 轮 — {status}")
+
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Task command handlers
+    # ------------------------------------------------------------------
+
+    async def tasks_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权")
+            return
+
+        tasks: list[dict] = []
+        for f in sorted(_TASKS_DIR.glob("*.json")):
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+                tasks.append({
+                    "id": data.get("id", f.stem),
+                    "name": data.get("name", f.stem),
+                    "mode": data.get("mode", "single"),
+                    "max_rounds": data.get("max_rounds", 3),
+                })
+            except Exception:
+                tasks.append({"id": f.stem, "name": f.stem, "mode": "?", "max_rounds": "?"})
+
+        if not tasks:
+            await message.reply_text("暂无可用任务。")
+            return
+
+        lines = ["<b>🎮 可用任务列表</b>\n"]
+        for t in tasks:
+            lines.append(
+                f"• <code>{t['id']}</code> — {t['name']}  "
+                f"（{t['mode']}，最多 {t['max_rounds']} 轮）"
+            )
+        lines.append("\n用法：<code>/run_mijing</code> 或 <code>/run_mijing 5557</code>")
+        await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+    async def run_mijing_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权")
+            return
+
+        if self._task_running:
+            await message.reply_text(
+                "⚠️ 已有任务正在执行，请等待完成或使用 /stop_task 停止。"
+            )
+            return
+
+        args = context.args or []
+        port = args[0].strip() if args else None
+
+        task_path = _TASKS_DIR / "mijing.json"
+        if not task_path.exists():
+            await message.reply_text("❌ 找不到 mhxy_bot/tasks/mijing.json")
+            return
+
+        from mhxy_bot.runner.models import TaskDefinition
+        from mhxy_bot.runner.task_loader import get_all_ports
+        task_def = TaskDefinition.load(task_path)
+        max_rounds = int(task_def.meta.get("max_rounds", 3))
+        ports = [port] if port else get_all_ports(_INSTANCES_PATH)
+        port_desc = f"port {port}" if port else f"全部 {len(ports)} 个实例"
+
+        observer = self._make_task_observer(user.id)
+        await message.reply_text(
+            f"🚀 <b>秘境降妖</b> 开始执行\n"
+            f"目标：{port_desc}，每实例最多 {max_rounds} 轮",
+            parse_mode=ParseMode.HTML,
+        )
+
+        self._task_running = True
+        try:
+            results = await asyncio.to_thread(
+                self._run_task_sync, ports, task_def, max_rounds, observer
+            )
+        finally:
+            self._task_running = False
+
+        self._last_task_results = results
+
+        summary = self._format_task_results(results)
+        has_denylist = any("denylist" in r.get("message", "") for r in results)
+        header = (
+            "🚨 <b>秘境降妖 — 触发敏感界面，需要人工确认！</b>"
+            if has_denylist
+            else "📋 <b>秘境降妖 执行完毕</b>"
+        )
+        await message.reply_text(
+            f"{header}\n\n{summary}",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def task_status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权")
+            return
+
+        if self._task_running:
+            await message.reply_text("⏳ 任务正在执行中...")
+            return
+
+        if not self._last_task_results:
+            await message.reply_text("暂无任务记录，请先执行 /run_mijing。")
+            return
+
+        summary = self._format_task_results(self._last_task_results)
+        await message.reply_text(
+            f"<b>📊 最近一次任务结果</b>\n\n{summary}",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def stop_task_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        user = update.effective_user
+        message = update.message
+        if user is None or message is None:
+            return
+        if not self._is_authorized(user.id):
+            await message.reply_text("⛔ 未授权")
+            return
+
+        count = self._request_stop()
+        if count == 0:
+            await message.reply_text("当前没有正在执行的任务。")
+        else:
+            await message.reply_text(
+                f"🛑 已发送停止信号（{count} 个活跃上下文），"
+                f"将在当前步骤完成后停止。"
+            )
+
+    # ------------------------------------------------------------------
+    # Existing overrides — unchanged
+    # ------------------------------------------------------------------
+
     def get_bot_name(self) -> str:
         return "OmniMHXY"
 
@@ -57,6 +371,10 @@ class GameBot(TelegramBotBase):
             BotCommand("model", "🤖 切换 LLM 模型"),
             BotCommand("vlmodel", "👁️ 切换视觉模型"),
             BotCommand("new", "🗑️ 清空对话历史"),
+            BotCommand("tasks", "📋 列出可用自动化任务"),
+            BotCommand("run_mijing", "🎮 执行秘境降妖（可选 port 参数）"),
+            BotCommand("task_status", "📊 查看最近任务结果"),
+            BotCommand("stop_task", "🛑 停止当前任务"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
@@ -68,6 +386,10 @@ class GameBot(TelegramBotBase):
             [
                 InlineKeyboardButton("📸 截图当前屏幕", callback_data="cmd_screenshot"),
                 InlineKeyboardButton("👁️ OCR 识别屏幕", callback_data="cmd_sense"),
+            ],
+            [
+                InlineKeyboardButton("🎮 执行秘境降妖", callback_data="cmd_run_mijing"),
+                InlineKeyboardButton("📊 最近任务状态", callback_data="cmd_task_status"),
             ],
             [
                 InlineKeyboardButton("📚 查看游戏知识", callback_data="cmd_game_kb"),
@@ -86,9 +408,11 @@ class GameBot(TelegramBotBase):
     def get_extra_status_text(self) -> str:
         cfg = registry.current()
         vl_cfg = vl_registry.current()
+        running = "⏳ 任务执行中" if self._task_running else "💤 空闲"
         return (
             f"🤖 当前模型：<b>{cfg.display_name}</b>\n"
-            f"👁️ 视觉模型：<b>{vl_cfg.display_name}</b>"
+            f"👁️ 视觉模型：<b>{vl_cfg.display_name}</b>\n"
+            f"🎮 任务状态：{running}"
         )
 
     def get_tool_status_map(self) -> dict[str, str]:
@@ -133,6 +457,10 @@ class GameBot(TelegramBotBase):
             callback_prefix="switch_vl_model",
             title="👁️ 视觉模型管理",
         )
+        app.add_handler(CommandHandler("tasks", self.tasks_command))
+        app.add_handler(CommandHandler("run_mijing", self.run_mijing_command))
+        app.add_handler(CommandHandler("task_status", self.task_status_command))
+        app.add_handler(CommandHandler("stop_task", self.stop_task_command))
 
     async def handle_custom_cmd(
         self,
@@ -152,6 +480,26 @@ class GameBot(TelegramBotBase):
             return "请先查看实例列表。如果用户没有指定端口，就询问要 OCR 识别哪个端口；如果能判断默认端口，则调用 sense_screen 识别。"
         if cmd == "cmd_game_kb":
             return "列出游戏知识库中现在有哪些话题可以读取。"
+        if cmd == "cmd_run_mijing":
+            if query.message:
+                await query.message.reply_text(
+                    "🚀 开始执行秘境降妖（全部实例）...\n"
+                    "请使用 /run_mijing 命令触发（按钮触发暂不支持后台等待）。"
+                )
+            return ""
+        if cmd == "cmd_task_status":
+            if query.message:
+                if self._task_running:
+                    await query.message.reply_text("⏳ 任务正在执行中...")
+                elif not self._last_task_results:
+                    await query.message.reply_text("暂无任务记录。")
+                else:
+                    summary = self._format_task_results(self._last_task_results)
+                    await query.message.reply_text(
+                        f"<b>📊 最近一次任务结果</b>\n\n{summary}",
+                        parse_mode=ParseMode.HTML,
+                    )
+            return ""
         if cmd == "model_menu":
             if query.message:
                 await query.message.reply_text(
@@ -162,6 +510,7 @@ class GameBot(TelegramBotBase):
             return ""
         logger.warning(f"未知按钮指令：{cmd}")
         return ""
+
 
 def main() -> None:
     bot = GameBot(
