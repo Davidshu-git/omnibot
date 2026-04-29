@@ -43,31 +43,36 @@ def _texts(items: list[dict]) -> list[str]:
     return [it["text"] for it in items]
 
 
+def detect_with_texts(ctx: "RunnerContext") -> tuple[InstanceState, list[str]]:
+    """一次 OCR 调用，同时返回屏幕状态和文字列表。"""
+    items = _sense(ctx)
+    texts = _texts(items)
+    if not items:
+        return InstanceState.OFFLINE, texts
+
+    joined = "".join(texts)
+    if any(m in joined for m in _DISCONNECTED_MARKERS):
+        return InstanceState.DISCONNECTED, texts
+    if any(m in joined for m in _BATTLE_MARKERS):
+        return InstanceState.IN_BATTLE, texts
+    if any(m in joined for m in _POPUP_MARKERS):
+        return InstanceState.POPUP, texts
+    if any(m in joined for m in _TEAM_MARKERS):
+        return InstanceState.IN_TEAM, texts
+    if any(m in joined for m in _MAIN_UI_MARKERS):
+        return InstanceState.MAIN_UI, texts
+    if any(m in joined for m in _LOGIN_MARKERS):
+        return InstanceState.LOGIN_SCREEN, texts
+    return InstanceState.UNKNOWN, texts
+
+
 def detect_screen_state(ctx: "RunnerContext") -> InstanceState:
     """根据 OCR 文字推断当前屏幕状态。
 
     断线类文本只作为状态信号，不参与可点击弹窗按钮识别。
     """
-    items = _sense(ctx)
-    if not items:
-        return InstanceState.OFFLINE
-
-    texts = _texts(items)
-    joined = "".join(texts)
-
-    if any(m in joined for m in _DISCONNECTED_MARKERS):
-        return InstanceState.DISCONNECTED
-    if any(m in joined for m in _BATTLE_MARKERS):
-        return InstanceState.IN_BATTLE
-    if any(m in joined for m in _POPUP_MARKERS):
-        return InstanceState.POPUP
-    if any(m in joined for m in _TEAM_MARKERS):
-        return InstanceState.IN_TEAM
-    if any(m in joined for m in _MAIN_UI_MARKERS):
-        return InstanceState.MAIN_UI
-    if any(m in joined for m in _LOGIN_MARKERS):
-        return InstanceState.LOGIN_SCREEN
-    return InstanceState.UNKNOWN
+    state, _ = detect_with_texts(ctx)
+    return state
 
 
 def has_text(ctx: "RunnerContext", candidates: list[str]) -> bool:

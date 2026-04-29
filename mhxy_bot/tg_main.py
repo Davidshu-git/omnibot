@@ -97,37 +97,49 @@ class GameBot(TelegramBotBase):
     # Synchronous diagnostics (called via asyncio.to_thread)
     # ------------------------------------------------------------------
 
-    def _instance_status_sync(self, ports: list[str]) -> list[dict]:
+    def _instance_status_sync(self, ports: list[str], observer=None) -> list[dict]:
         """Scan all ports and return {port, state} list. Blocks — run in thread."""
         from mhxy_bot.runner.task_loader import build_context, make_executor
-        from mhxy_bot.runner.perception import detect_screen_state
+        from mhxy_bot.runner.perception import detect_with_texts
+        from mhxy_bot.runner import events
         executor = make_executor()
+        if observer:
+            events.scan_started(build_context("*", executor, observer=observer),
+                                "instance_status", ports)
         results = []
         for port in ports:
-            ctx = build_context(port, executor)
+            ctx = build_context(port, executor, observer=observer)
             try:
-                state = detect_screen_state(ctx).value
+                state, texts = detect_with_texts(ctx)
+                state_val = state.value
             except Exception:
-                state = "error"
-            results.append({"port": port, "state": state})
+                state_val, texts = "error", []
+            events.instance_status_port(ctx, state_val, texts)
+            results.append({"port": port, "state": state_val})
         return results
 
-    def _reconnect_sync(self, ports: list[str]) -> list[dict]:
+    def _reconnect_sync(self, ports: list[str], observer=None) -> list[dict]:
         """Try reconnect on DISCONNECTED ports; skip others. Blocks — run in thread."""
         from mhxy_bot.runner.task_loader import build_context, make_executor
         from mhxy_bot.runner.perception import detect_screen_state
         from mhxy_bot.runner.models import InstanceState
         from mhxy_bot.runner.instance_recovery import try_reconnect
+        from mhxy_bot.runner import events
         executor = make_executor()
+        if observer:
+            events.scan_started(build_context("*", executor, observer=observer),
+                                "reconnect", ports)
         results = []
         for port in ports:
-            ctx = build_context(port, executor)
+            ctx = build_context(port, executor, observer=observer)
             state = detect_screen_state(ctx)
             if state != InstanceState.DISCONNECTED:
+                events.reconnect_port(ctx, state.value, None, state.value)
                 results.append({"port": port, "action": "skipped", "state": state.value})
                 continue
             ok = try_reconnect(ctx, timeout_sec=60)
             final = detect_screen_state(ctx).value
+            events.reconnect_port(ctx, state.value, ok, final)
             results.append({
                 "port": port,
                 "action": "reconnected" if ok else "failed",
@@ -452,9 +464,12 @@ class GameBot(TelegramBotBase):
             return
 
         from mhxy_bot.runner.task_loader import get_all_ports
-        ports = get_all_ports(_INSTANCES_PATH)
-        status_msg = await message.reply_text(f"🔍 正在扫描 {len(ports)} 个实例状态...")
-        results = await asyncio.to_thread(self._instance_status_sync, ports)
+        args = context.args or []
+        ports = [args[0].strip()] if args else get_all_ports(_INSTANCES_PATH)
+        desc = f"port {ports[0]}" if len(ports) == 1 else f"{len(ports)} 个实例"
+        observer = self._make_task_observer(user.id)
+        status_msg = await message.reply_text(f"🔍 正在扫描 {desc}...")
+        results = await asyncio.to_thread(self._instance_status_sync, ports, observer)
         await status_msg.edit_text(
             self._format_instance_status(results),
             parse_mode=ParseMode.HTML,
@@ -474,11 +489,14 @@ class GameBot(TelegramBotBase):
             return
 
         from mhxy_bot.runner.task_loader import get_all_ports
-        ports = get_all_ports(_INSTANCES_PATH)
-        status_msg = await message.reply_text(f"🔌 正在对 {len(ports)} 个实例执行重连...")
+        args = context.args or []
+        ports = [args[0].strip()] if args else get_all_ports(_INSTANCES_PATH)
+        desc = f"port {ports[0]}" if len(ports) == 1 else f"{len(ports)} 个实例"
+        observer = self._make_task_observer(user.id)
+        status_msg = await message.reply_text(f"🔌 正在重连 {desc}...")
         self._task_running = True
         try:
-            results = await asyncio.to_thread(self._reconnect_sync, ports)
+            results = await asyncio.to_thread(self._reconnect_sync, ports, observer)
         finally:
             self._task_running = False
         await status_msg.edit_text(
@@ -496,16 +514,10 @@ class GameBot(TelegramBotBase):
     def get_bot_commands(self) -> list[BotCommand]:
         return [
             BotCommand("start", "🏠 唤醒主控台"),
-            BotCommand("status", "🤖 查询当前模型"),
+            BotCommand("status", "🤖 查询当前状态"),
             BotCommand("model", "🤖 切换 LLM 模型"),
             BotCommand("vlmodel", "👁️ 切换视觉模型"),
             BotCommand("new", "🗑️ 清空对话历史"),
-            BotCommand("tasks", "📋 列出可用自动化任务"),
-            BotCommand("run_mijing", "🎮 执行秘境降妖（可选 port 参数）"),
-            BotCommand("task_status", "📊 查看最近任务结果"),
-            BotCommand("stop_task", "🛑 停止当前任务"),
-            BotCommand("instance_status", "📊 查看所有实例当前状态"),
-            BotCommand("reconnect", "🔌 重连所有掉线实例"),
         ]
 
     def get_dashboard_keyboard(self) -> list[list[InlineKeyboardButton]]:
@@ -517,6 +529,10 @@ class GameBot(TelegramBotBase):
             [
                 InlineKeyboardButton("📸 截图当前屏幕", callback_data="cmd_screenshot"),
                 InlineKeyboardButton("👁️ OCR 识别屏幕", callback_data="cmd_sense"),
+            ],
+            [
+                InlineKeyboardButton("📊 实例状态", callback_data="cmd_instance_status"),
+                InlineKeyboardButton("🔌 掉线重连", callback_data="cmd_reconnect"),
             ],
             [
                 InlineKeyboardButton("🎮 执行秘境降妖", callback_data="cmd_run_mijing"),
@@ -613,6 +629,37 @@ class GameBot(TelegramBotBase):
             return "请先查看实例列表。如果用户没有指定端口，就询问要 OCR 识别哪个端口；如果能判断默认端口，则调用 sense_screen 识别。"
         if cmd == "cmd_game_kb":
             return "列出游戏知识库中现在有哪些话题可以读取。"
+        if cmd == "cmd_instance_status":
+            if query.message:
+                from mhxy_bot.runner.task_loader import get_all_ports
+                ports = get_all_ports(_INSTANCES_PATH)
+                observer = self._make_task_observer(user_id)
+                status_msg = await query.message.reply_text(f"🔍 正在扫描 {len(ports)} 个实例状态...")
+                results = await asyncio.to_thread(self._instance_status_sync, ports, observer)
+                await status_msg.edit_text(
+                    self._format_instance_status(results),
+                    parse_mode=ParseMode.HTML,
+                )
+            return ""
+        if cmd == "cmd_reconnect":
+            if query.message:
+                if self._task_running:
+                    await query.message.reply_text("⚠️ 已有任务正在执行，请等待完成。")
+                else:
+                    from mhxy_bot.runner.task_loader import get_all_ports
+                    ports = get_all_ports(_INSTANCES_PATH)
+                    observer = self._make_task_observer(user_id)
+                    status_msg = await query.message.reply_text(f"🔌 正在重连掉线实例...")
+                    self._task_running = True
+                    try:
+                        results = await asyncio.to_thread(self._reconnect_sync, ports, observer)
+                    finally:
+                        self._task_running = False
+                    await status_msg.edit_text(
+                        self._format_reconnect_results(results),
+                        parse_mode=ParseMode.HTML,
+                    )
+            return ""
         if cmd == "cmd_run_mijing":
             if query.message:
                 await query.message.reply_text(

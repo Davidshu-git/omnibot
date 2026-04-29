@@ -84,3 +84,29 @@ def denylist_triggered(ctx: "RunnerContext", task_id: str, step_id: str,
         "task_id": task_id, "step_id": step_id,
         "matched": matched, "port": ctx.port,
     })
+
+
+def scan_started(ctx: "RunnerContext", operation: str, ports: list[str]) -> None:
+    """Marks the beginning of a diagnostic scan operation (trace boundary)."""
+    _emit(ctx, "scan_started", {
+        "operation": operation, "ports": ports, "port": ctx.port,
+    })
+
+
+def instance_status_port(ctx: "RunnerContext", state: str,
+                         texts: list[str] | None = None) -> None:
+    _emit(ctx, "instance_status", {
+        "state": state, "port": ctx.port,
+        "ocr_texts": texts or [],
+    })
+
+
+def reconnect_port(ctx: "RunnerContext", initial_state: str,
+                   success: bool | None, final_state: str) -> None:
+    """success=None means skipped (port was not disconnected)."""
+    _emit(ctx, "reconnect_result", {
+        "initial_state": initial_state,
+        "success": success,
+        "final_state": final_state,
+        "port": ctx.port,
+    })
