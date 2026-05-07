@@ -40,7 +40,7 @@ _handler_file = RotatingFileHandler(
 )
 _handler_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 
-logging.basicConfig(level=logging.INFO, handlers=[_handler_stderr, _handler_file])
+logging.basicConfig(level=logging.INFO, handlers=[_handler_stderr, _handler_file], force=True)
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
