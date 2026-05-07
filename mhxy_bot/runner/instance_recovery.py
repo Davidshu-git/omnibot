@@ -50,6 +50,7 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
         return True
 
     reconnect_actions = ["重新登录", "确定"]
+    center_tapped = False  # 过场动画点击一次即可
 
     from mhxy_bot.runner.perception import detect_with_texts
 
@@ -90,6 +91,22 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
             try:
                 if not _tap_from_items(ctx, items, ["取消", "关闭", "我知道了"]):
                     ctx.executor.back(ctx.port)
+            except Exception:
+                pass
+        elif state == InstanceState.APP_LOADING:
+            if not center_tapped:
+                try:
+                    ctx.executor.tap(ctx.port, 800, 450)
+                    ctx.info("reconnect: tap center to skip transition animation")
+                    center_tapped = True
+                except Exception:
+                    pass
+        elif len(items) <= 2 and not center_tapped:
+            # UNKNOWN 且几乎认不到字 → 很可能是过场动画
+            try:
+                ctx.executor.tap(ctx.port, 800, 450)
+                ctx.info("reconnect: tap center (low-text unknown screen)")
+                center_tapped = True
             except Exception:
                 pass
         time.sleep(3.0)
