@@ -79,13 +79,23 @@ def _screenshot_png(port: str) -> bytes:
     return r.stdout
 
 
+# OCR 结果缓存：{(port,): (timestamp, items)}，TTL 500ms
+_ocr_cache: dict[str, tuple[float, list[dict]]] = {}
+
+
 def _ocr_items(port: str) -> list[dict]:
     """截图 + OCR，返回文字结果列表，每项含 text / center_x / center_y / confidence。"""
+    now = time.monotonic()
+    cached = _ocr_cache.get(port)
+    if cached and now - cached[0] < 0.5:
+        return cached[1]
+
     png = _screenshot_png(port)
     arr = np.frombuffer(png, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         raise RuntimeError("图像解码失败")
+    img = cv2.resize(img, (800, 450))
     ocr = _get_ocr()
     result, _ = ocr(img)
     items = []
@@ -93,14 +103,15 @@ def _ocr_items(port: str) -> list[dict]:
         for box, text, conf in result:
             xs = [p[0] for p in box]
             ys = [p[1] for p in box]
-            cx = float(sum(xs) / 4)
-            cy = float(sum(ys) / 4)
+            cx = float(sum(xs) / 4) * 2
+            cy = float(sum(ys) / 4) * 2
             items.append({
                 "text": text,
                 "center_x": cx,
                 "center_y": cy,
                 "confidence": float(conf),
             })
+    _ocr_cache[port] = (now, items)
     return items
 
 
