@@ -135,6 +135,8 @@ class GameBot(TelegramBotBase):
         from mhxy_bot.runner.instance_recovery import try_reconnect
         from mhxy_bot.runner import events
         executor = make_executor()
+        _reconnectable = {InstanceState.DISCONNECTED, InstanceState.LOGIN_SCREEN,
+                          InstanceState.ANDROID_HOME}
         if observer:
             scan_ctx = build_context("*", executor, observer=observer, trace_id=trace_id)
             events.scan_started(scan_ctx, "reconnect", ports)
@@ -142,7 +144,7 @@ class GameBot(TelegramBotBase):
         for port in ports:
             ctx = build_context(port, executor, observer=observer, trace_id=trace_id)
             state = detect_screen_state(ctx)
-            if state != InstanceState.DISCONNECTED:
+            if state not in _reconnectable:
                 events.reconnect_port(ctx, state.value, None, state.value)
                 results.append({"port": port, "action": "skipped", "state": state.value})
                 continue
