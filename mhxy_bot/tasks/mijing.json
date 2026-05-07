@@ -1,46 +1,71 @@
 {
   "id": "mijing",
   "name": "秘境降妖",
-  "description": "日常副本（单人）：每轮挑战一关，领取奖励后继续，重复 max_rounds 轮",
+  "description": "日常副本：进入副本后25关自动连锁，第18/24/25关需点击「进入战斗」，打完通关后离开",
   "mode": "single",
-  "max_rounds": 3,
+  "max_rounds": 1,
   "preflight": [
-    {"id": "health_check",  "action": "app_health", "retries": 0},
+    {"id": "health_check",  "action": "app_health",          "retries": 0},
     {"id": "close_popups",  "action": "close_common_popups", "retries": 0},
     {"id": "screen_state",  "action": "detect_screen_state", "retries": 0}
   ],
   "steps": [
     {
       "id": "open_activity",
-      "action": "tap_element",
-      "element": "活动",
-      "verify_text_any": ["活动", "秘境降妖"],
+      "action": "tap_text",
+      "text_any": ["活动"],
+      "verify_text_any": ["日常活动", "秘境降妖", "捉鬼任务"],
       "retries": 2
     },
     {
       "id": "enter_mijing",
-      "action": "tap_element",
-      "element": "秘境降妖",
-      "verify_text_any": ["秘境降妖", "继续", "挑战"],
+      "action": "tap_text_near",
+      "text_any": ["参加"],
+      "extra": {"anchor": "秘境降妖"},
+      "verify_text_any": ["请选择要做的事", "秘境降妖", "东海湾蜃境"],
       "retries": 2
     },
     {
-      "id": "continue_stage",
+      "id": "select_mijing",
       "action": "tap_text",
-      "text_any": ["继续", "挑战", "进入"],
-      "verify_text_any": ["战斗", "自动", "回合", "奖励", "继续"],
+      "text_any": ["秘境降妖"],
+      "verify_text_any": ["继续", "剩余挑战次数", "秘境积分"],
       "retries": 2
     },
     {
-      "id": "wait_battle",
-      "action": "wait_not_battle",
-      "timeout_sec": 240,
+      "id": "start_round",
+      "action": "tap_text",
+      "text_any": ["继续"],
+      "verify_text_any": ["第", "关", "地图", "离开"],
+      "retries": 2
+    },
+    {
+      "id": "tap_boss",
+      "action": "tap_text",
+      "text_any": ["猛如虎", "憨如羊", "美如花", "敏如猴"],
+      "timeout_sec": 10,
+      "retries": 2
+    },
+    {
+      "id": "run_battles",
+      "action": "wait_and_tap_loop",
+      "extra": {
+        "tap_texts": ["进入战斗"],
+        "terminal_texts": ["通关"],
+        "interval_sec": 3.0
+      },
+      "timeout_sec": 1800,
       "retries": 1
+    },
+    {
+      "id": "exit_dungeon",
+      "action": "tap_text",
+      "text_any": ["离开"],
+      "retries": 2
     },
     {
       "id": "claim_reward",
       "action": "close_common_popups",
-      "verify_not_text_any": ["获得奖励", "确定"],
       "retries": 2
     }
   ]

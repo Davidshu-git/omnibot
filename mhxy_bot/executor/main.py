@@ -15,6 +15,7 @@ import base64
 import logging
 import os
 import random
+from pathlib import Path
 import subprocess
 import time
 from typing import Optional
@@ -25,7 +26,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
@@ -134,6 +135,12 @@ class SwipeReq(BaseModel):
 class TapTextReq(BaseModel):
     port: str
     text_candidates: list[str]
+
+class TapTextNearReq(BaseModel):
+    port: str
+    anchor_candidates: list[str]   # 定位行的锚点文字（如"秘境降妖"）
+    text_candidates: list[str]     # 要点击的目标文字（如"参加"）
+    prefer_right: bool = True      # 优先选 x > 锚点的项
 
 class WaitTextReq(BaseModel):
     port: str
@@ -267,6 +274,52 @@ def tap_text(req: TapTextReq):
         return {"found": False, "text": None, "px": None, "py": None}
     except Exception as e:
         log.error("tap_text error port=%s: %s", req.port, e)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/tap_text_near")
+def tap_text_near(req: TapTextNearReq):
+    """截图 + OCR，找到与锚点同行的目标文字并点击。
+
+    先找锚点文字确定行的 center_y，再找所有匹配目标文字中
+    y 距离最近（且 prefer_right 时 x > 锚点）的那个点击。
+    """
+    try:
+        items = _ocr_items(req.port)
+
+        anchor = next(
+            (it for it in items if any(c in it["text"] for c in req.anchor_candidates)),
+            None,
+        )
+        if anchor is None:
+            return {"found": False, "reason": "anchor_not_found", "text": None, "px": None, "py": None}
+
+        anchor_x, anchor_y = anchor["center_x"], anchor["center_y"]
+
+        candidates = [
+            it for it in items
+            if any(c in it["text"] for c in req.text_candidates)
+        ]
+        if req.prefer_right:
+            right = [it for it in candidates if it["center_x"] > anchor_x]
+            if right:
+                candidates = right
+
+        if not candidates:
+            return {"found": False, "reason": "target_not_found", "text": None, "px": None, "py": None}
+
+        target = min(candidates, key=lambda it: abs(it["center_y"] - anchor_y))
+        px = int(target["center_x"])
+        py = int(target["center_y"])
+        r = _adb(req.port, "shell", "input", "tap", str(px), str(py))
+        if r.returncode != 0:
+            raise RuntimeError(f"ADB tap 失败：{r.stderr.decode(errors='replace')}")
+        time.sleep(random.uniform(0.2, 0.4))
+        log.info("tap_text_near port=%s anchor=%r matched=%r px=%d py=%d",
+                 req.port, anchor["text"], target["text"], px, py)
+        return {"found": True, "text": target["text"], "px": px, "py": py}
+    except Exception as e:
+        log.error("tap_text_near error port=%s: %s", req.port, e)
         raise HTTPException(500, str(e))
 
 

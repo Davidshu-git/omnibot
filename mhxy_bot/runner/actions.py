@@ -62,6 +62,39 @@ def _tap_text(ctx: "RunnerContext", step: "TaskStep") -> dict:
     return {"matched": result.get("text"), "px": result.get("px"), "py": result.get("py")}
 
 
+def _tap_text_near(ctx: "RunnerContext", step: "TaskStep") -> dict:
+    """OCR 找与锚点同行的目标文字并点击。
+
+    step.extra 字段：
+      anchor      : str  — 锚点文字（如"秘境降妖"）
+      anchor_any  : list — 锚点候选列表（与 anchor 二选一）
+      prefer_right: bool — 优先选 x > 锚点的项（默认 true）
+    step.text / step.text_any — 目标文字
+    """
+    if ctx.dry_run:
+        ctx.info("[dry_run] tap_text_near anchor=%s targets=%s",
+                 step.extra.get("anchor") or step.extra.get("anchor_any"),
+                 step.text_any or [step.text])
+        return {}
+
+    anchor = step.extra.get("anchor_any") or (
+        [step.extra["anchor"]] if step.extra.get("anchor") else None
+    )
+    if not anchor:
+        raise ActionError("tap_text_near 需要 extra.anchor 或 extra.anchor_any")
+
+    candidates = step.text_any or ([step.text] if step.text else [])
+    if not candidates:
+        raise ActionError("tap_text_near 需要 text 或 text_any 字段")
+
+    prefer_right = step.extra.get("prefer_right", True)
+    result = ctx.executor.tap_text_near(ctx.port, anchor, candidates, prefer_right=prefer_right)
+    if not result.get("found"):
+        reason = result.get("reason", "unknown")
+        raise ActionError(f"tap_text_near 未找到目标（{reason}）anchor={anchor} targets={candidates}")
+    return {"matched": result.get("text"), "px": result.get("px"), "py": result.get("py")}
+
+
 def _wait_text(ctx: "RunnerContext", step: "TaskStep") -> dict:
     """等待文本出现。text 或 text_any 必填一个。"""
     if ctx.dry_run:
@@ -216,6 +249,55 @@ def _sleep(ctx: "RunnerContext", step: "TaskStep") -> dict:
     return {"duration_sec": duration}
 
 
+def _wait_and_tap_loop(ctx: "RunnerContext", step: "TaskStep") -> dict:
+    """循环 OCR：出现 tap_texts 时点击，出现 terminal_texts 时返回。
+
+    step.extra 字段：
+      tap_texts      : list[str] — 出现时自动点击的文字（如"进入战斗"）
+      terminal_texts : list[str] — 出现时终止并返回的文字（如"通关"）
+      interval_sec   : float    — 每次 OCR 间隔（默认 3.0）
+    step.timeout_sec — 总超时
+    """
+    if ctx.dry_run:
+        ctx.info("[dry_run] wait_and_tap_loop tap=%s terminal=%s",
+                 step.extra.get("tap_texts"), step.extra.get("terminal_texts"))
+        return {}
+
+    tap_texts = step.extra.get("tap_texts", [])
+    terminal_texts = step.extra.get("terminal_texts", step.text_any or [])
+    interval = float(step.extra.get("interval_sec", 3.0))
+
+    if not terminal_texts:
+        raise ActionError("wait_and_tap_loop 需要 extra.terminal_texts 或 text_any")
+
+    deadline = time.monotonic() + step.timeout_sec
+    while time.monotonic() < deadline:
+        if ctx.stop_requested:
+            raise ActionError("wait_and_tap_loop stopped")
+
+        items = ctx.executor.sense(ctx.port)
+
+        for item in items:
+            if any(t in item["text"] for t in terminal_texts):
+                ctx.info("wait_and_tap_loop terminal=%r", item["text"])
+                return {"terminal": item["text"]}
+
+        tapped = False
+        for item in items:
+            if any(t in item["text"] for t in tap_texts):
+                px, py = int(item["center_x"]), int(item["center_y"])
+                ctx.executor.tap(ctx.port, px, py)
+                ctx.info("wait_and_tap_loop tapped=%r px=%d py=%d", item["text"], px, py)
+                time.sleep(1.5)
+                tapped = True
+                break
+
+        if not tapped:
+            time.sleep(interval)
+
+    raise ActionError(f"wait_and_tap_loop timeout after {step.timeout_sec}s")
+
+
 # ---------------------------------------------------------------------------
 # 分发表
 # ---------------------------------------------------------------------------
@@ -225,8 +307,10 @@ _ACTION_MAP = {
     "detect_screen_state": _detect_screen_state,
     "tap_element":         _tap_element,
     "tap_text":            _tap_text,
+    "tap_text_near":       _tap_text_near,
     "wait_text":           _wait_text,
     "wait_not_battle":     _wait_not_battle,
+    "wait_and_tap_loop":   _wait_and_tap_loop,
     "close_common_popups": _close_common_popups,
     "press_back":          _press_back,
     "sleep":               _sleep,

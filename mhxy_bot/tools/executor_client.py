@@ -69,6 +69,21 @@ class ExecutorClient:
         """
         return self._post("/tap_text", port=port, text_candidates=text_candidates)
 
+    def tap_text_near(self, port: str, anchor_candidates: list[str],
+                      text_candidates: list[str], prefer_right: bool = True) -> dict:
+        """找到与锚点同行的目标文字并点击。
+
+        返回：
+            {"found": bool, "text": str | None, "px": int | None, "py": int | None}
+        """
+        return self._post(
+            "/tap_text_near",
+            port=port,
+            anchor_candidates=anchor_candidates,
+            text_candidates=text_candidates,
+            prefer_right=prefer_right,
+        )
+
     def wait_text(self, port: str, text_candidates: list[str],
                   timeout_sec: int = 30, interval_sec: float = 1.5) -> dict:
         """循环 OCR 等待任一候选文本出现。
