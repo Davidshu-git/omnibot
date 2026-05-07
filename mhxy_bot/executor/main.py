@@ -198,7 +198,8 @@ class WaitTextReq(BaseModel):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "adb": ADB_PATH}
+    log.info("health check")
+    return {"status": "ok", "adb": ADB_PATH, "log_handlers": len(log.handlers)}
 
 
 @app.post("/screenshot")
