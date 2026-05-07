@@ -17,13 +17,12 @@ import os
 import random
 from pathlib import Path
 import subprocess
-import threading
 import time
 from typing import Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 from logging.handlers import RotatingFileHandler
@@ -50,30 +49,6 @@ log.addHandler(_handler_stderr)
 log.addHandler(_handler_file)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
-
-# 请求统计：每 5 分钟写入日志
-_req_lock = threading.Lock()
-_req_stats: dict[str, int] = {"total": 0, "error": 0}
-_req_last_log = time.monotonic()
-_REQ_LOG_INTERVAL = 300  # 5 分钟
-
-
-@app.middleware("http")
-async def _stats_middleware(request: Request, call_next):
-    response = await call_next(request)
-    status = response.status_code
-    now = time.monotonic()
-    with _req_lock:
-        _req_stats["total"] += 1
-        if status >= 400:
-            _req_stats["error"] += 1
-        if now - _req_last_log >= _REQ_LOG_INTERVAL:
-            log.info("req_stats total=%d errors=%d interval=%.0fs",
-                     _req_stats["total"], _req_stats["error"], now - _req_last_log)
-            _req_stats["total"] = 0
-            _req_stats["error"] = 0
-            _req_last_log = now
-    return response
 
 
 @app.on_event("startup")
