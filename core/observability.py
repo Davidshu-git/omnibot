@@ -359,6 +359,13 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
         self._tool_start_times[lc_run_id] = time.perf_counter()
         self._tool_names[lc_run_id] = tool_name
 
+        # 将当前 trace_id 注入 VL 调用上下文，确保工具内的 VL 调用可追溯
+        try:
+            from mhxy_bot.game_core.cloud_vision import set_trace_id
+            set_trace_id(self._trace_id)
+        except Exception:
+            pass
+
         # LangChain passes tool input as Python repr string; try multiple parse strategies
         arguments: Any = None
         try:

@@ -12,11 +12,14 @@ def _emit(ctx: "RunnerContext", event_type: str, payload: dict[str, Any]) -> Non
     """向 observer 写入一条 runner 事件；无 observer 时写 INFO log。"""
     if ctx.observer is not None:
         try:
-            ctx.observer.write_raw_event({
+            rec = {
                 "type": event_type,
                 "timestamp": _now_iso(),
                 **payload,
-            })
+            }
+            if ctx.trace_id:
+                rec.setdefault("trace_id", ctx.trace_id)
+            ctx.observer.write_raw_event(rec)
         except Exception as exc:
             ctx.warning("event write failed (%s): %s", event_type, exc)
     else:

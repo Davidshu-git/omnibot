@@ -36,11 +36,13 @@ def build_context(
     *,
     dry_run: bool = False,
     observer=None,
+    trace_id: str | None = None,
     extra: dict | None = None,
 ) -> RunnerContext:
     return RunnerContext(
         executor=executor,
         port=str(port),
+        trace_id=trace_id,
         observer=observer,
         dry_run=dry_run,
         extra=extra or {},

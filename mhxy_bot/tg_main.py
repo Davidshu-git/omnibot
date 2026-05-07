@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import logging
+import os
 import threading
+import time
 from datetime import date
 from pathlib import Path
 
@@ -93,22 +94,29 @@ class GameBot(TelegramBotBase):
         obs_session_id = f"tg_session_{agent_slug}_{user_id}_{today}"
         return OmniObserver(obs_session_id, self.agent_id, self.obs_dir)
 
+    def _gen_trace_id(self, user_id: int, prefix: str = "cmd") -> str:
+        agent_slug = (self.agent_id or "mhxy").replace("-", "_")
+        today = date.today().strftime("%Y%m%d")
+        session_id = f"tg_session_{agent_slug}_{user_id}_{today}"
+        return f"{session_id}:{prefix}:{int(time.time() * 1000)}"
+
     # ------------------------------------------------------------------
     # Synchronous diagnostics (called via asyncio.to_thread)
     # ------------------------------------------------------------------
 
-    def _instance_status_sync(self, ports: list[str], observer=None) -> list[dict]:
+    def _instance_status_sync(self, ports: list[str], observer=None,
+                              trace_id: str | None = None) -> list[dict]:
         """Scan all ports and return {port, state} list. Blocks — run in thread."""
         from mhxy_bot.runner.task_loader import build_context, make_executor
         from mhxy_bot.runner.perception import detect_with_texts
         from mhxy_bot.runner import events
         executor = make_executor()
         if observer:
-            events.scan_started(build_context("*", executor, observer=observer),
-                                "instance_status", ports)
+            scan_ctx = build_context("*", executor, observer=observer, trace_id=trace_id)
+            events.scan_started(scan_ctx, "instance_status", ports)
         results = []
         for port in ports:
-            ctx = build_context(port, executor, observer=observer)
+            ctx = build_context(port, executor, observer=observer, trace_id=trace_id)
             try:
                 state, texts, _ = detect_with_texts(ctx)
                 state_val = state.value
@@ -118,7 +126,8 @@ class GameBot(TelegramBotBase):
             results.append({"port": port, "state": state_val})
         return results
 
-    def _reconnect_sync(self, ports: list[str], observer=None) -> list[dict]:
+    def _reconnect_sync(self, ports: list[str], observer=None,
+                        trace_id: str | None = None) -> list[dict]:
         """Try reconnect on DISCONNECTED ports; skip others. Blocks — run in thread."""
         from mhxy_bot.runner.task_loader import build_context, make_executor
         from mhxy_bot.runner.perception import detect_screen_state
@@ -127,11 +136,11 @@ class GameBot(TelegramBotBase):
         from mhxy_bot.runner import events
         executor = make_executor()
         if observer:
-            events.scan_started(build_context("*", executor, observer=observer),
-                                "reconnect", ports)
+            scan_ctx = build_context("*", executor, observer=observer, trace_id=trace_id)
+            events.scan_started(scan_ctx, "reconnect", ports)
         results = []
         for port in ports:
-            ctx = build_context(port, executor, observer=observer)
+            ctx = build_context(port, executor, observer=observer, trace_id=trace_id)
             state = detect_screen_state(ctx)
             if state != InstanceState.DISCONNECTED:
                 events.reconnect_port(ctx, state.value, None, state.value)
@@ -157,14 +166,18 @@ class GameBot(TelegramBotBase):
         task_def,
         max_rounds: int,
         observer,
+        trace_id: str | None = None,
     ) -> list[dict]:
         """Execute task for all ports sequentially. Blocks — must run in thread."""
         from mhxy_bot.runner.task_loader import build_context, make_executor
+        from mhxy_bot.game_core.cloud_vision import set_trace_id
         executor = make_executor()
         all_results: list[dict] = []
 
         for port in ports:
-            ctx = build_context(port, executor, observer=observer)
+            ctx = build_context(port, executor, observer=observer, trace_id=trace_id)
+            if trace_id:
+                set_trace_id(trace_id)
             self._register_ctx(ctx)
             try:
                 port_results = self._run_port_sync(ctx, port, task_def, max_rounds)
@@ -389,6 +402,7 @@ class GameBot(TelegramBotBase):
         ports = [port] if port else get_all_ports(_INSTANCES_PATH)
         port_desc = f"port {port}" if port else f"全部 {len(ports)} 个实例"
 
+        trace_id = self._gen_trace_id(user.id, "mijing")
         observer = self._make_task_observer(user.id)
         await message.reply_text(
             f"🚀 <b>秘境降妖</b> 开始执行\n"
@@ -399,7 +413,7 @@ class GameBot(TelegramBotBase):
         self._task_running = True
         try:
             results = await asyncio.to_thread(
-                self._run_task_sync, ports, task_def, max_rounds, observer
+                self._run_task_sync, ports, task_def, max_rounds, observer, trace_id
             )
         finally:
             self._task_running = False
@@ -472,9 +486,10 @@ class GameBot(TelegramBotBase):
         args = context.args or []
         ports = [args[0].strip()] if args else get_all_ports(_INSTANCES_PATH)
         desc = f"port {ports[0]}" if len(ports) == 1 else f"{len(ports)} 个实例"
+        trace_id = self._gen_trace_id(user.id, "instance_status")
         observer = self._make_task_observer(user.id)
         status_msg = await message.reply_text(f"🔍 正在扫描 {desc}...")
-        results = await asyncio.to_thread(self._instance_status_sync, ports, observer)
+        results = await asyncio.to_thread(self._instance_status_sync, ports, observer, trace_id)
         await status_msg.edit_text(
             self._format_instance_status(results),
             parse_mode=ParseMode.HTML,
@@ -497,11 +512,12 @@ class GameBot(TelegramBotBase):
         args = context.args or []
         ports = [args[0].strip()] if args else get_all_ports(_INSTANCES_PATH)
         desc = f"port {ports[0]}" if len(ports) == 1 else f"{len(ports)} 个实例"
+        trace_id = self._gen_trace_id(user.id, "reconnect")
         observer = self._make_task_observer(user.id)
         status_msg = await message.reply_text(f"🔌 正在重连 {desc}...")
         self._task_running = True
         try:
-            results = await asyncio.to_thread(self._reconnect_sync, ports, observer)
+            results = await asyncio.to_thread(self._reconnect_sync, ports, observer, trace_id)
         finally:
             self._task_running = False
         await status_msg.edit_text(
@@ -638,9 +654,10 @@ class GameBot(TelegramBotBase):
             if query.message:
                 from mhxy_bot.runner.task_loader import get_all_ports
                 ports = get_all_ports(_INSTANCES_PATH)
+                trace_id = self._gen_trace_id(user_id, "instance_status")
                 observer = self._make_task_observer(user_id)
                 status_msg = await query.message.reply_text(f"🔍 正在扫描 {len(ports)} 个实例状态...")
-                results = await asyncio.to_thread(self._instance_status_sync, ports, observer)
+                results = await asyncio.to_thread(self._instance_status_sync, ports, observer, trace_id)
                 await status_msg.edit_text(
                     self._format_instance_status(results),
                     parse_mode=ParseMode.HTML,
@@ -653,11 +670,12 @@ class GameBot(TelegramBotBase):
                 else:
                     from mhxy_bot.runner.task_loader import get_all_ports
                     ports = get_all_ports(_INSTANCES_PATH)
+                    trace_id = self._gen_trace_id(user_id, "reconnect")
                     observer = self._make_task_observer(user_id)
                     status_msg = await query.message.reply_text(f"🔌 正在重连掉线实例...")
                     self._task_running = True
                     try:
-                        results = await asyncio.to_thread(self._reconnect_sync, ports, observer)
+                        results = await asyncio.to_thread(self._reconnect_sync, ports, observer, trace_id)
                     finally:
                         self._task_running = False
                     await status_msg.edit_text(

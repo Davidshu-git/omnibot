@@ -23,6 +23,7 @@ class RunnerContext:
     """
     executor: ExecutorClient
     port: str
+    trace_id: str | None = None
     observer: Any | None = None
     logger: logging.Logger = field(
         default_factory=lambda: logging.getLogger("mhxy_bot.runner")

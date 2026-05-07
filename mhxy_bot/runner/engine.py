@@ -43,7 +43,7 @@ class TaskEngine:
         """执行完整任务，返回 TaskResult。"""
         ctx = self.ctx
         t0 = time.monotonic()
-        task_run_id = f"{task.id}:{ctx.port}:{int(time.time() * 1000)}"
+        task_run_id = ctx.trace_id or f"{task.id}:{ctx.port}:{int(time.time() * 1000)}"
         step_results: list[StepResult] = []
 
         ctx.info("task started: %s (%s) port=%s", task.id, task.name, ctx.port)

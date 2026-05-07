@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 # 使用 contextvars 而非 threading.local()，以支持 LangChain 的 run_in_executor 场景
 import contextvars
 _current_log_callback: contextvars.ContextVar = contextvars.ContextVar("vl_log_callback", default=None)
+_current_trace_id: contextvars.ContextVar = contextvars.ContextVar("vl_trace_id", default=None)
 
 
 def set_log_callback(callback) -> None:
@@ -29,6 +30,16 @@ def set_log_callback(callback) -> None:
 def get_log_callback():
     """获取当前上下文的日志回调 handler。"""
     return _current_log_callback.get()
+
+
+def set_trace_id(trace_id: str | None) -> None:
+    """设置当前上下文的 trace_id（VL 调用时写入 model_call 事件）。"""
+    _current_trace_id.set(trace_id)
+
+
+def get_trace_id() -> str | None:
+    """获取当前上下文的 trace_id。"""
+    return _current_trace_id.get()
 
 
 def _log_vl_call(
@@ -48,11 +59,13 @@ def _log_vl_call(
     if not log_callback or not hasattr(log_callback, '_write_log'):
         return
 
+    trace_id = get_trace_id()
     try:
         entry = {
             "type": "model_call",
             "timestamp": log_callback._now() if hasattr(log_callback, '_now') else "",
             "model": model,
+            "provider": "dashscope",
             "input_tokens": (usage or {}).get("input_tokens", 0),
             "output_tokens": (usage or {}).get("output_tokens", 0),
             "cache_read_tokens": (usage or {}).get("cache_read_tokens"),
@@ -62,6 +75,8 @@ def _log_vl_call(
             "stop_reason": "error" if error else "",
             "error_message": error,
         }
+        if trace_id:
+            entry["trace_id"] = trace_id
         if prompt:
             entry["prompt"] = prompt[:5000]
         if raw_output:
