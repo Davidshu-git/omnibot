@@ -17,12 +17,13 @@ import os
 import random
 from pathlib import Path
 import subprocess
+import threading
 import time
 from typing import Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
 from logging.handlers import RotatingFileHandler
@@ -49,6 +50,35 @@ log.addHandler(_handler_stderr)
 log.addHandler(_handler_file)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
+
+# 请求统计：每分钟计数 + 5 分钟写入日志
+_req_lock = threading.Lock()
+_req_stats: dict[str, int] = {"total": 0, "error": 0}
+_req_last_log = time.monotonic()
+_REQ_LOG_INTERVAL = 300  # 5 分钟
+
+
+@app.middleware("http")
+async def _stats_middleware(request: Request, call_next):
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    except Exception:
+        raise
+    finally:
+        now = time.monotonic()
+        with _req_lock:
+            _req_stats["total"] += 1
+            if status >= 400:
+                _req_stats["error"] += 1
+            if now - _req_last_log >= _REQ_LOG_INTERVAL:
+                log.info("req_stats total=%d errors=%d interval=%.0fs",
+                         _req_stats["total"], _req_stats["error"], now - _req_last_log)
+                _req_stats["total"] = 0
+                _req_stats["error"] = 0
+                _req_last_log = now
 
 
 @app.on_event("startup")
@@ -95,7 +125,16 @@ def _port_to_addr(port: str) -> str:
 
 def _adb(port: str, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     cmd = [ADB_PATH, "-s", _port_to_addr(port)] + list(args)
-    return subprocess.run(cmd, capture_output=True, timeout=timeout)
+    try:
+        r = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        log.warning("adb timeout port=%s cmd=%s timeout=%ds", port, " ".join(args), timeout)
+        raise
+    if r.returncode != 0:
+        log.warning("adb fail port=%s cmd=%s rc=%d stderr=%s",
+                     port, " ".join(args), r.returncode,
+                     r.stderr.decode(errors="replace").strip()[:200])
+    return r
 
 
 def _screenshot_png(port: str) -> bytes:
@@ -448,6 +487,8 @@ def app_health(req: PortReq):
             details["ocr"] = str(e)
 
     healthy = adb_ok and screenshot_ok and ocr_ok
+    log.info("app_health port=%s healthy=%s adb=%s screenshot=%s ocr=%s",
+             req.port, healthy, adb_ok, screenshot_ok, ocr_ok)
     return {
         "healthy": healthy,
         "port": req.port,
