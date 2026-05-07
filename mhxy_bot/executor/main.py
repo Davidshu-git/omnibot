@@ -17,6 +17,7 @@ import os
 import random
 from pathlib import Path
 import subprocess
+import threading
 import time
 from typing import Optional
 
@@ -24,6 +25,9 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
 from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
@@ -49,6 +53,32 @@ log.addHandler(_handler_stderr)
 log.addHandler(_handler_file)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
+
+# 请求统计：每 5 分钟写入日志（用 dict 避免闭包赋值问题）
+_req_lock = threading.Lock()
+_req_state = {"total": 0, "error": 0, "last_log": time.monotonic()}
+_REQ_LOG_INTERVAL = 300
+
+
+class _StatsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        now = time.monotonic()
+        with _req_lock:
+            _req_state["total"] += 1
+            if response.status_code >= 400:
+                _req_state["error"] += 1
+            if now - _req_state["last_log"] >= _REQ_LOG_INTERVAL:
+                log.info("req_stats total=%d errors=%d interval=%.0fs",
+                         _req_state["total"], _req_state["error"],
+                         now - _req_state["last_log"])
+                _req_state["total"] = 0
+                _req_state["error"] = 0
+                _req_state["last_log"] = now
+        return response
+
+
+app.add_middleware(_StatsMiddleware)
 
 
 @app.on_event("startup")
