@@ -46,33 +46,33 @@ def _texts(items: list[dict]) -> list[str]:
     return [it["text"] for it in items]
 
 
-def detect_with_texts(ctx: "RunnerContext") -> tuple[InstanceState, list[str]]:
-    """一次 OCR 调用，同时返回屏幕状态和文字列表。"""
+def detect_with_texts(ctx: "RunnerContext") -> tuple[InstanceState, list[str], list[dict]]:
+    """一次 OCR 调用，同时返回屏幕状态、文字列表和原始 OCR items（含坐标）。"""
     items = _sense(ctx)
     texts = _texts(items)
     if not items:
-        return InstanceState.OFFLINE, texts
+        return InstanceState.OFFLINE, texts, items
 
     joined = "".join(texts)
     if any(m in joined for m in _DISCONNECTED_MARKERS):
-        return InstanceState.DISCONNECTED, texts
+        return InstanceState.DISCONNECTED, texts, items
     if any(m in joined for m in _UPDATE_RESTART_MARKERS):
-        return InstanceState.UPDATE_RESTART, texts
+        return InstanceState.UPDATE_RESTART, texts, items
     if any(m in joined for m in _APP_LOADING_MARKERS):
-        return InstanceState.APP_LOADING, texts
+        return InstanceState.APP_LOADING, texts, items
     if any(m in joined for m in _ACTIVITY_POPUP_MARKERS):
-        return InstanceState.ACTIVITY_POPUP, texts
+        return InstanceState.ACTIVITY_POPUP, texts, items
     if all(m in joined for m in _BATTLE_REQUIRED_MARKERS):
-        return InstanceState.IN_BATTLE, texts
+        return InstanceState.IN_BATTLE, texts, items
     if any(m in joined for m in _POPUP_MARKERS):
-        return InstanceState.POPUP, texts
+        return InstanceState.POPUP, texts, items
     if all(m in joined for m in _MAIN_UI_REQUIRED_MARKERS):
-        return InstanceState.MAIN_UI, texts
+        return InstanceState.MAIN_UI, texts, items
     if any(m in joined for m in _LOGIN_MARKERS):
-        return InstanceState.LOGIN_SCREEN, texts
+        return InstanceState.LOGIN_SCREEN, texts, items
     if "梦幻西游" in joined and any(m in joined for m in _ANDROID_HOME_MARKERS):
-        return InstanceState.ANDROID_HOME, texts
-    return InstanceState.UNKNOWN, texts
+        return InstanceState.ANDROID_HOME, texts, items
+    return InstanceState.UNKNOWN, texts, items
 
 
 def detect_screen_state(ctx: "RunnerContext") -> InstanceState:
@@ -80,7 +80,7 @@ def detect_screen_state(ctx: "RunnerContext") -> InstanceState:
 
     断线类文本只作为状态信号，不参与可点击弹窗按钮识别。
     """
-    state, _ = detect_with_texts(ctx)
+    state, _, _ = detect_with_texts(ctx)
     return state
 
 

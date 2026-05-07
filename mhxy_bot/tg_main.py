@@ -110,7 +110,7 @@ class GameBot(TelegramBotBase):
         for port in ports:
             ctx = build_context(port, executor, observer=observer)
             try:
-                state, texts = detect_with_texts(ctx)
+                state, texts, _ = detect_with_texts(ctx)
                 state_val = state.value
             except Exception:
                 state_val, texts = "error", []

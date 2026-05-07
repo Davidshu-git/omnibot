@@ -20,18 +20,23 @@ if TYPE_CHECKING:
     from mhxy_bot.runner.context import RunnerContext
 
 
-def _tap_exact_text(ctx: "RunnerContext", candidates: list[str]) -> bool:
-    """Tap OCR text only when the recognized text exactly matches a candidate."""
-    items = ctx.executor.sense(ctx.port)
+def _tap_from_items(ctx: "RunnerContext", items: list[dict], candidates: list[str]) -> bool:
+    """在已有 OCR items 中模糊匹配候选文字并点击（一次 OCR 复用）。"""
     for candidate in candidates:
         for item in items:
-            if str(item.get("text", "")).strip() == candidate:
+            if candidate in str(item.get("text", "")):
                 return bool(ctx.executor.tap(
                     ctx.port,
                     int(item["center_x"]),
                     int(item["center_y"]),
                 ))
     return False
+
+
+def _tap_text(ctx: "RunnerContext", candidates: list[str]) -> bool:
+    """OCR + 模糊匹配候选文字并点击（独立 sense 调用，用于无预取 items 的场景）。"""
+    items = ctx.executor.sense(ctx.port)
+    return _tap_from_items(ctx, items, candidates)
 
 
 def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
@@ -46,35 +51,34 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
 
     reconnect_actions = ["重新登录", "确定"]
 
-    from mhxy_bot.runner.perception import detect_screen_state
+    from mhxy_bot.runner.perception import detect_with_texts
 
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
-        state = detect_screen_state(ctx)
+        state, _, items = detect_with_texts(ctx)          # 一次 OCR
         ctx.info("reconnect: waiting... state=%s", state.value)
         if state == InstanceState.MAIN_UI:
             ctx.info("reconnect: success, back to main UI")
             return True
         if state == InstanceState.DISCONNECTED:
-            # Dialog may have reappeared after animation; tap again.
             try:
-                if not _tap_exact_text(ctx, reconnect_actions):
+                if not _tap_from_items(ctx, items, reconnect_actions):
                     ctx.warning("reconnect: disconnect action button not found")
             except Exception:
                 pass
         elif state == InstanceState.UPDATE_RESTART:
             try:
-                _tap_exact_text(ctx, ["确定"])
+                _tap_from_items(ctx, items, ["确定"])
             except Exception:
                 pass
         elif state == InstanceState.ANDROID_HOME:
             try:
-                _tap_exact_text(ctx, ["梦幻西游"])
+                _tap_from_items(ctx, items, ["梦幻西游"])
             except Exception:
                 pass
         elif state == InstanceState.LOGIN_SCREEN:
             try:
-                _tap_exact_text(ctx, ["登录游戏"])
+                _tap_from_items(ctx, items, ["登录游戏"])
             except Exception:
                 pass
         elif state == InstanceState.ACTIVITY_POPUP:
@@ -84,7 +88,7 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
                 pass
         elif state == InstanceState.POPUP:
             try:
-                if not _tap_exact_text(ctx, ["取消", "关闭", "我知道了"]):
+                if not _tap_from_items(ctx, items, ["取消", "关闭", "我知道了"]):
                     ctx.executor.back(ctx.port)
             except Exception:
                 pass
