@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
 LOG_DIR = Path(__file__).parent
-LOG_FILE = LOG_DIR / "executor.log"
+LOG_FILE = str(LOG_DIR / "executor.log")
 
 _log_fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
 
@@ -42,7 +42,6 @@ _handler_file = RotatingFileHandler(
 )
 _handler_file.setFormatter(_log_fmt)
 
-# 独立 logger，不受 uvicorn log_config 覆盖
 log = logging.getLogger("executor")
 log.setLevel(logging.INFO)
 log.propagate = False
@@ -50,6 +49,15 @@ log.addHandler(_handler_stderr)
 log.addHandler(_handler_file)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
+
+
+@app.on_event("startup")
+async def _startup():
+    """确保 logger 在 uvicorn 初始化后仍有效（uvicorn 的 dictConfig 可能覆盖）。"""
+    if not log.handlers:
+        log.addHandler(_handler_stderr)
+        log.addHandler(_handler_file)
+    log.info("executor started, log_file=%s", LOG_FILE)
 
 ADB_PATH = os.getenv("ADB_PATH", "adb")
 W, H = 1600, 900
