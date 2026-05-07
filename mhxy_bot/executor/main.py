@@ -25,10 +25,22 @@ import numpy as np
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from logging.handlers import RotatingFileHandler
 from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+LOG_DIR = Path(__file__).parent
+LOG_FILE = LOG_DIR / "executor.log"
+
+_handler_stderr = logging.StreamHandler()
+_handler_stderr.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+
+_handler_file = RotatingFileHandler(
+    LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
+)
+_handler_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+
+logging.basicConfig(level=logging.INFO, handlers=[_handler_stderr, _handler_file])
 log = logging.getLogger(__name__)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
@@ -85,12 +97,15 @@ _ocr_cache: dict[str, tuple[float, list[dict]]] = {}
 
 def _ocr_items(port: str) -> list[dict]:
     """截图 + OCR，返回文字结果列表，每项含 text / center_x / center_y / confidence。"""
-    now = time.monotonic()
+    t0 = time.monotonic()
     cached = _ocr_cache.get(port)
-    if cached and now - cached[0] < 0.5:
+    if cached and t0 - cached[0] < 0.5:
+        log.debug("ocr cache hit port=%s", port)
         return cached[1]
 
+    t1 = time.monotonic()
     png = _screenshot_png(port)
+    t2 = time.monotonic()
     arr = np.frombuffer(png, np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
@@ -98,6 +113,7 @@ def _ocr_items(port: str) -> list[dict]:
     img = cv2.resize(img, (800, 450))
     ocr = _get_ocr()
     result, _ = ocr(img)
+    t3 = time.monotonic()
     items = []
     if result:
         for box, text, conf in result:
@@ -111,7 +127,9 @@ def _ocr_items(port: str) -> list[dict]:
                 "center_y": cy,
                 "confidence": float(conf),
             })
-    _ocr_cache[port] = (now, items)
+    _ocr_cache[port] = (t0, items)
+    log.info("ocr port=%s text_count=%d screenshot=%.2fs ocr=%.2fs total=%.2fs",
+             port, len(items), t2 - t1, t3 - t2, t3 - t0)
     return items
 
 
