@@ -163,7 +163,7 @@ def _ocr_items(port: str) -> list[dict]:
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
         raise RuntimeError("图像解码失败")
-    img = cv2.resize(img, (800, 450))
+    img = cv2.resize(img, (1200, 675))
     ocr = _get_ocr()
     result, _ = ocr(img)
     t3 = time.monotonic()
@@ -172,8 +172,8 @@ def _ocr_items(port: str) -> list[dict]:
         for box, text, conf in result:
             xs = [p[0] for p in box]
             ys = [p[1] for p in box]
-            cx = float(sum(xs) / 4) * 2
-            cy = float(sum(ys) / 4) * 2
+            cx = float(sum(xs) / 4) * 4 / 3
+            cy = float(sum(ys) / 4) * 4 / 3
             items.append({
                 "text": text,
                 "center_x": cx,
