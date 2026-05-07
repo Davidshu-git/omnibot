@@ -32,16 +32,22 @@ load_dotenv(dotenv_path=Path(__file__).parent / ".env")
 LOG_DIR = Path(__file__).parent
 LOG_FILE = LOG_DIR / "executor.log"
 
+_log_fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
+
 _handler_stderr = logging.StreamHandler()
-_handler_stderr.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_handler_stderr.setFormatter(_log_fmt)
 
 _handler_file = RotatingFileHandler(
     LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
 )
-_handler_file.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_handler_file.setFormatter(_log_fmt)
 
-logging.basicConfig(level=logging.INFO, handlers=[_handler_stderr, _handler_file], force=True)
-log = logging.getLogger(__name__)
+# 独立 logger，不受 uvicorn log_config 覆盖
+log = logging.getLogger("executor")
+log.setLevel(logging.INFO)
+log.propagate = False
+log.addHandler(_handler_stderr)
+log.addHandler(_handler_file)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
 
