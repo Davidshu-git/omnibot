@@ -42,7 +42,7 @@ def _sense(ctx: "RunnerContext") -> list[dict]:
             from mhxy_bot.runner import events
             events.executor_perf(
                 ctx, "sense", timing,
-                len(resp.get("results", [])), ctx.port,
+                len(resp.get("results", [])),
             )
         return resp.get("results", [])
     except Exception as exc:
