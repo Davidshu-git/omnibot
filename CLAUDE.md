@@ -25,12 +25,22 @@ pip install -r requirements.txt
 .venv/bin/python -m stock_bot.daily_job          # 盘后调度器（等待 15:30）
 .venv/bin/python -m stock_bot.daily_job --test   # 立即执行一次（测试模式）
 
-# Docker
+# Docker - Bot 服务
 docker build -f Dockerfile.base -t omnibot-base:latest .   # 首次 / 依赖变更
-docker compose up -d --build                                # 启动所有服务
+docker compose up -d --build                                # 启动所有 bot 服务
 docker compose logs -f                                      # 查看全量日志
 docker compose logs ehs-tg-bot --tail=50                    # 查看单个服务日志
 docker compose restart stock-tg-bot                         # 重启单个服务
+
+# Docker - obs 可观测性平台（独立 compose，在 obs/ 目录下操作）
+docker compose -f obs/docker-compose.yml up -d --build     # 启动 obs
+docker compose -f obs/docker-compose.yml logs api -f        # 查看 API 日志
+docker compose -f obs/docker-compose.yml restart api        # 重启 API
+
+# 手动触发摄取
+curl -X POST http://localhost:8000/api/ingest/mhxy
+curl -X POST http://localhost:8000/api/ingest/stock-bot
+curl -X POST http://localhost:8000/api/ingest/ehs-bot
 ```
 
 ---
@@ -128,7 +138,12 @@ omnibot/
 │   ├── stock/{memory,knowledge_base,embeddings,agent_workspace}/
 │   └── ehs/{memory,knowledge_base,embeddings,agent_workspace}/
 │
-└── jobs/{status,logs}/      # 研报子进程任务状态与日志
+├── jobs/{status,logs}/      # 研报子进程任务状态与日志
+│
+└── obs/                     # 可观测性平台（独立 Docker Compose）
+    ├── api/                 # FastAPI + SQLAlchemy + PostgreSQL
+    ├── web/                 # Next.js 统计看板（端口 3100）
+    └── docker-compose.yml   # 三容器：obs-api-1 / obs-web-1 / obs-db-1
 ```
 
 ### 模块职责
@@ -155,7 +170,7 @@ omnibot/
 - `setup_job_queue(app)` — 注册定时任务（如价格预警轮询）
 - `handle_custom_cmd(cmd, query, user_id, context, update)` — Inline Keyboard 按钮分发
 
-**Observability 接入方式**：`TelegramBotBase.__init__` 传入 `obs_dir: Path` 和 `agent_id: str`，框架自动在每次 `execute_agent_task` 中创建 `OmniObserver` 并挂载 `OmnibotObsCallbackHandler`。`obs_provider` 参数（默认 `"dashscope"`）透传给 handler，记录到 JSONL 的 `provider` 字段。JSONL 文件由 agent-observability 项目周期性摄取入 PostgreSQL。
+**Observability 接入方式**：`TelegramBotBase.__init__` 传入 `obs_dir: Path` 和 `agent_id: str`，框架自动在每次 `execute_agent_task` 中创建 `OmniObserver` 并挂载 `OmnibotObsCallbackHandler`。`obs_provider` 参数（默认 `"dashscope"`）透传给 handler，记录到 JSONL 的 `provider` 字段。JSONL 文件由 `obs/` 模块周期性摄取入 PostgreSQL（`obs/api/app/adapters/omnibot_jsonl.py` 与此文件存在字段契约，改字段名须同步更新 adapter）。
 
 **`broadcast_to_telegram` 为模块级独立函数**（非类方法）：daily_job 子进程需要调用它，不能依赖类实例。签名为 `broadcast_to_telegram(text, bot_token, allowed_user_ids, sandbox_dir)`。
 
@@ -198,7 +213,9 @@ LLM 输出
 ```
 Agent 推理全程通过 `AsyncTelegramCallbackHandler` 实时上报工具调用状态，配合 `keep_typing_action()` 心跳维持"正在输入"状态。
 
-### Docker 三服务架构
+### Docker 服务架构
+
+**Bot 服务**（根目录 `docker-compose.yml`）：
 
 | 服务 | 容器名 | 命令 |
 |------|--------|------|
@@ -206,7 +223,15 @@ Agent 推理全程通过 `AsyncTelegramCallbackHandler` 实时上报工具调用
 | `stock-tg-bot` | `v2-omnistock-tg-bot` | `python -m stock_bot.tg_main` |
 | `ehs-tg-bot` | `v2-omniehs-tg-bot` | `python -m ehs_bot.tg_main` |
 
-各服务独立挂载 `data/{bot}/` 子目录，数据完全隔离。`.env` 通过 bind mount 注入（不打入镜像）。
+**obs 服务**（`obs/docker-compose.yml`，独立部署）：
+
+| 服务 | 容器名 | 端口 |
+|------|--------|------|
+| `api` | `obs-api-1` | 8000 |
+| `web` | `obs-web-1` | 3100 |
+| `db` | `obs-db-1` | 5433 |
+
+各 bot 服务独立挂载 `data/{bot}/` 子目录，数据完全隔离。obs 以只读方式挂载各 bot 的 observability 目录。`.env` 通过 bind mount 注入（不打入镜像）。
 
 ### LLM 配置
 

@@ -1,0 +1,887 @@
+"""
+Query API + ingest triggers.
+
+All responses are based on the unified schema; no source-specific fields leak here.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func, select, distinct, String
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.base import get_db, AsyncSessionLocal
+from app.db.models import Agent, DataSource, Event, Project, Session
+from app.config import settings
+
+router = APIRouter(prefix="/api")
+
+
+def _parse_dt(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
+
+# ---------------------------------------------------------------------------
+# Pay-per-use model cost config (元 / 百万 tokens)
+# ---------------------------------------------------------------------------
+
+_COST_CONFIG: dict[str, dict[str, float]] = {
+    "deepseek-v4-flash": {
+        "input_per_m":     1.0,
+        "cache_hit_per_m": 0.02,
+        "output_per_m":    2.0,
+    },
+    "qwen3-vl-plus": {
+        "input_per_m":     1.0,
+        "cache_hit_per_m": 0.0,
+        "output_per_m":    10.0,
+    },
+    "qwen3-vl-flash": {
+        "input_per_m":     0.15,
+        "cache_hit_per_m": 0.0,
+        "output_per_m":    1.5,
+    },
+}
+
+
+def _calc_cost(
+    model: str,
+    input_tokens: int,
+    cache_read_tokens: int,
+    output_tokens: int,
+) -> float | None:
+    cfg = _COST_CONFIG.get(model)
+    if cfg is None:
+        return None
+    non_cached = max(0, input_tokens - cache_read_tokens)
+    return (
+        non_cached          * cfg["input_per_m"]     / 1_000_000
+        + cache_read_tokens * cfg["cache_hit_per_m"] / 1_000_000
+        + output_tokens     * cfg["output_per_m"]    / 1_000_000
+    )
+
+
+# SSE 订阅者队列
+_sse_subscribers: list[asyncio.Queue] = []
+
+
+def _broadcast_event(event: str):
+    for q in _sse_subscribers:
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+
+def _broadcast_ingest():
+    """ingest 完成后广播通知所有 SSE 订阅者。"""
+    _broadcast_event("ingest")
+
+
+async def notify_executor_status_changed() -> dict:
+    """executor status file changed; notify SSE subscribers to refresh it."""
+    _broadcast_event("executor_status")
+    return {"event": "executor_status"}
+
+
+@router.get("/stream")
+async def sse_stream():
+    """SSE 端点：日志有更新时推送 ingest 事件，前端订阅后自动刷新。"""
+    q: asyncio.Queue = asyncio.Queue(maxsize=10)
+    _sse_subscribers.append(q)
+
+    async def event_generator():
+        try:
+            yield "data: connected\n\n"
+            while True:
+                try:
+                    msg = await asyncio.wait_for(q.get(), timeout=25)
+                    yield f"data: {msg}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # 保活
+        finally:
+            try:
+                _sse_subscribers.remove(q)
+            except ValueError:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Projects
+# ---------------------------------------------------------------------------
+
+@router.get("/projects")
+async def list_projects(db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Project).where(Project.is_active == True))
+    projects = result.scalars().all()
+    return [
+        {
+            "id": p.id,
+            "display_name": p.display_name,
+            "source_type": p.source_type,
+            "created_at": p.created_at,
+        }
+        for p in projects
+    ]
+
+
+@router.get("/projects/{project_id}/agents")
+async def list_agents(project_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Agent).where(Agent.project_id == project_id)
+    )
+    agents = result.scalars().all()
+    return [
+        {
+            "id": a.id,
+            "name": a.name,
+            "display_name": a.display_name,
+            "kind": a.kind,
+        }
+        for a in agents
+    ]
+
+
+# ---------------------------------------------------------------------------
+# External service status
+# ---------------------------------------------------------------------------
+
+@router.get("/external/mhxy-executor/status")
+async def mhxy_executor_status():
+    path = Path(settings.mhxy_executor_status_file)
+    if not path.exists():
+        return {
+            "service": "mhxy_windows_executor",
+            "status": "unknown",
+            "stale": True,
+            "error": f"status file not found: {path}",
+        }
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return {
+            "service": "mhxy_windows_executor",
+            "status": "unknown",
+            "stale": True,
+            "error": f"status file unreadable: {exc}",
+        }
+
+    checked_at = _parse_dt(data.get("checked_at"))
+    interval = int(data.get("interval_sec") or 60)
+    stale_after = max(interval * 3, 180)
+    age_sec = None
+    stale = True
+    if checked_at:
+        age_sec = int((datetime.now(timezone.utc) - checked_at.astimezone(timezone.utc)).total_seconds())
+        stale = age_sec > stale_after
+
+    if stale and data.get("status") == "healthy":
+        data = {**data, "status": "stale"}
+    data["stale"] = stale
+    data["age_sec"] = age_sec
+    data["status_file"] = str(path)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Sessions
+# ---------------------------------------------------------------------------
+
+@router.get("/sessions")
+async def list_sessions(
+    project_id: Optional[str] = Query(None),
+    agent_id: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0),
+    db: AsyncSession = Depends(get_db),
+):
+    # Sort by most recent event timestamp (last-active semantics).
+    # Uses a correlated subquery on events(session_id, timestamp) index — no migration needed.
+    # If sessions table grows large (>10k), consider adding a last_event_at column instead.
+    from sqlalchemy import func, select as sa_select, nulls_last
+    last_event_subq = (
+        sa_select(func.max(Event.timestamp))
+        .where(Event.session_id == Session.id)
+        .correlate(Session)
+        .scalar_subquery()
+    )
+    q = select(Session).order_by(nulls_last(last_event_subq.desc()))
+    if project_id:
+        q = q.where(Session.project_id == project_id)
+    if agent_id:
+        q = q.where(Session.agent_id == agent_id)
+    if since:
+        q = q.where(Session.started_at >= since)
+    if until:
+        q = q.where(Session.started_at <= until)
+    q = q.limit(limit).offset(offset)
+
+    result = await db.execute(q)
+    sessions = result.scalars().all()
+    return [
+        {
+            "id": s.id,
+            "project_id": s.project_id,
+            "agent_id": s.agent_id,
+            "started_at": s.started_at,
+            "ended_at": s.ended_at,
+            "status": s.status,
+        }
+        for s in sessions
+    ]
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(session_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(Session).where(Session.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        "id": session.id,
+        "project_id": session.project_id,
+        "agent_id": session.agent_id,
+        "started_at": session.started_at,
+        "ended_at": session.ended_at,
+        "status": session.status,
+        "metadata": session.metadata_,
+    }
+
+
+@router.get("/sessions/{session_id}/timeline")
+async def session_timeline(
+    session_id: str,
+    limit: int = Query(200, le=500),
+    offset: int = Query(0),
+    db: AsyncSession = Depends(get_db),
+):
+    events_result = await db.execute(
+        select(Event)
+        .where(Event.session_id == session_id)
+        .order_by(Event.timestamp.desc(), Event.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rounds_result = await db.execute(
+        select(Event.trace_id, func.count().label("rounds"))
+        .where(Event.session_id == session_id, Event.event_type == "model_call", Event.trace_id.isnot(None))
+        .group_by(Event.trace_id)
+    )
+    events = events_result.scalars().all()
+    rounds_by_trace = {row.trace_id: row.rounds for row in rounds_result}
+    return {
+        "events": [
+            {
+                "event_id": e.event_id,
+                "event_type": e.event_type,
+                "timestamp": e.timestamp,
+                "trace_id": e.trace_id,
+                "run_id": e.run_id,
+                "payload": e.payload_json,
+                "extra": e.extra,
+            }
+            for e in events
+        ],
+        "rounds_by_trace": rounds_by_trace,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Traces
+# ---------------------------------------------------------------------------
+
+@router.get("/traces/{trace_id}")
+async def get_trace(trace_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(Event)
+        .where(Event.trace_id == trace_id)
+        .order_by(Event.timestamp, Event.id)
+    )
+    events = result.scalars().all()
+    if not events:
+        raise HTTPException(status_code=404, detail="Trace not found")
+    total_cost: float | None = None
+    for e in events:
+        if e.event_type == "model_call" and e.payload_json:
+            c = _calc_cost(
+                e.payload_json.get("model") or "",
+                e.payload_json.get("input_tokens") or 0,
+                e.payload_json.get("cache_read_tokens") or 0,
+                e.payload_json.get("output_tokens") or 0,
+            )
+            if c is not None:
+                total_cost = (total_cost or 0.0) + c
+    return {
+        "trace_id": trace_id,
+        "total_cost": total_cost,
+        "events": [
+            {
+                "event_id": e.event_id,
+                "event_type": e.event_type,
+                "timestamp": e.timestamp,
+                "session_id": e.session_id,
+                "project_id": e.project_id,
+                "trace_id": e.trace_id,
+                "run_id": e.run_id,
+                "payload": e.payload_json,
+            }
+            for e in events
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Stats — tokens
+# ---------------------------------------------------------------------------
+
+@router.get("/stats/tokens/overview")
+async def tokens_overview(
+    project_id: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    q = select(
+        func.sum(Event.payload_json["input_tokens"].as_integer()).label("input_tokens"),
+        func.sum(Event.payload_json["output_tokens"].as_integer()).label("output_tokens"),
+        func.sum(Event.payload_json["cache_read_tokens"].as_integer()).label("cache_read_tokens"),
+        func.count().label("calls"),
+    ).where(Event.event_type == "model_call")
+    if project_id:
+        q = q.where(Event.project_id == project_id)
+    if since:
+        q = q.where(Event.timestamp >= since)
+    if until:
+        q = q.where(Event.timestamp <= until)
+    result = await db.execute(q)
+    row = result.one()
+    return {
+        "input_tokens": row.input_tokens or 0,
+        "output_tokens": row.output_tokens or 0,
+        "cache_read_tokens": row.cache_read_tokens or 0,
+        "calls": row.calls,
+    }
+
+
+@router.get("/stats/tokens/daily")
+async def tokens_daily(
+    project_id: Optional[str] = Query(None),
+    days: int = Query(14),
+    db: AsyncSession = Depends(get_db),
+):
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    day_col = func.date(Event.timestamp).label("date")
+    base_filter = [Event.event_type == "model_call", Event.timestamp >= since]
+    if project_id:
+        base_filter.append(Event.project_id == project_id)
+
+    # Token totals per day
+    q = (
+        select(
+            day_col,
+            func.sum(Event.payload_json["input_tokens"].as_integer()).label("input_tokens"),
+            func.sum(Event.payload_json["output_tokens"].as_integer()).label("output_tokens"),
+            func.count().label("calls"),
+        )
+        .where(*base_filter)
+        .group_by(func.date(Event.timestamp))
+        .order_by(func.date(Event.timestamp).desc())
+    )
+    result = await db.execute(q)
+    rows = result.all()
+
+    # Cost per day via (date, model) breakdown
+    model_col = Event.payload_json["model"].as_string().label("model")
+    cost_q = (
+        select(
+            func.date(Event.timestamp).label("date"),
+            model_col,
+            func.sum(Event.payload_json["input_tokens"].as_integer()).label("inp"),
+            func.sum(Event.payload_json["cache_read_tokens"].as_integer()).label("cache"),
+            func.sum(Event.payload_json["output_tokens"].as_integer()).label("out"),
+        )
+        .where(*base_filter)
+        .group_by(func.date(Event.timestamp), model_col)
+    )
+    cost_result = await db.execute(cost_q)
+    cost_by_date: dict[str, float] = {}
+    model_costs_by_date: dict[str, dict[str, float]] = {}
+    model_tokens_by_date: dict[str, dict[str, int]] = {}
+    for cr in cost_result.all():
+        date_str = str(cr.date)
+        model = cr.model or "unknown"
+        total_tok = (cr.inp or 0) + (cr.out or 0)
+        model_tokens_by_date.setdefault(date_str, {})[model] = total_tok
+        c = _calc_cost(model, cr.inp or 0, cr.cache or 0, cr.out or 0)
+        if c is not None:
+            cost_by_date[date_str] = (cost_by_date.get(date_str) or 0.0) + c
+            model_costs_by_date.setdefault(date_str, {})[model] = c
+
+    return [
+        {
+            "date": str(r.date),
+            "input_tokens": r.input_tokens or 0,
+            "output_tokens": r.output_tokens or 0,
+            "calls": r.calls,
+            "cost": cost_by_date.get(str(r.date)),
+            "model_costs": [
+                {"model": m, "cost": c}
+                for m, c in (model_costs_by_date.get(str(r.date)) or {}).items()
+            ],
+            "model_tokens": [
+                {"model": m, "total_tokens": t}
+                for m, t in (model_tokens_by_date.get(str(r.date)) or {}).items()
+            ],
+        }
+        for r in rows
+    ]
+
+
+@router.get("/stats/tokens/by-model")
+async def tokens_by_model(
+    project_id: Optional[str] = Query(None),
+    since: Optional[datetime] = Query(None),
+    until: Optional[datetime] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    model_col = Event.payload_json["model"].as_string().label("model")
+    q = (
+        select(
+            model_col,
+            func.sum(Event.payload_json["input_tokens"].as_integer()).label("input_tokens"),
+            func.sum(Event.payload_json["output_tokens"].as_integer()).label("output_tokens"),
+            func.sum(Event.payload_json["cache_read_tokens"].as_integer()).label("cache_read_tokens"),
+            func.count().label("calls"),
+        )
+        .where(Event.event_type == "model_call")
+        .group_by(model_col)
+        .order_by(func.sum(Event.payload_json["input_tokens"].as_integer() + Event.payload_json["output_tokens"].as_integer()).desc())
+    )
+    if project_id:
+        q = q.where(Event.project_id == project_id)
+    if since:
+        q = q.where(Event.timestamp >= since)
+    if until:
+        q = q.where(Event.timestamp <= until)
+    result = await db.execute(q)
+    rows = []
+    for r in result.all():
+        model = r.model or "unknown"
+        inp = r.input_tokens or 0
+        out = r.output_tokens or 0
+        cache = r.cache_read_tokens or 0
+        rows.append({
+            "model": model,
+            "input_tokens": inp,
+            "output_tokens": out,
+            "cache_read_tokens": cache,
+            "calls": r.calls,
+            "cost": _calc_cost(model, inp, cache, out),
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Stats — tools
+# ---------------------------------------------------------------------------
+
+@router.get("/stats/tools")
+async def tools_stats(
+    project_id: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    tool_col = Event.payload_json["tool_name"].as_string().label("tool_name")
+    q = (
+        select(tool_col, func.count().label("calls"))
+        .where(Event.event_type == "tool_call")
+        .group_by(tool_col)
+        .order_by(func.count().desc())
+    )
+    if project_id:
+        q = q.where(Event.project_id == project_id)
+    result = await db.execute(q)
+    return [{"tool_name": r.tool_name, "calls": r.calls} for r in result.all()]
+
+
+# ---------------------------------------------------------------------------
+# Think
+# ---------------------------------------------------------------------------
+
+@router.get("/think")
+async def list_think(
+    project_id: Optional[str] = Query(None),
+    session_id: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    q = (
+        select(Event)
+        .where(Event.event_type == "thought")
+        .order_by(Event.timestamp.desc())
+        .limit(limit)
+    )
+    if project_id:
+        q = q.where(Event.project_id == project_id)
+    if session_id:
+        q = q.where(Event.session_id == session_id)
+    result = await db.execute(q)
+    events = result.scalars().all()
+    return [
+        {
+            "event_id": e.event_id,
+            "session_id": e.session_id,
+            "timestamp": e.timestamp,
+            "payload": e.payload_json,
+        }
+        for e in events
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Generic JSONL ingest — shared by all JSONL-based data sources
+# ---------------------------------------------------------------------------
+
+async def run_jsonl_ingest(
+    *,
+    project_id: str,
+    source_type: str,
+    display_name: str,
+    log_dir: str,
+    adapter,
+    agents: list[dict],  # list of {id, name, display_name, kind}
+    force: bool = False,
+) -> dict:
+    """
+    Incremental JSONL ingest for any adapter that implements the discover/scan/load interface.
+    Uses data_sources.last_sync_cursor (file mtime map) to skip unchanged files.
+    Idempotent — event-level deduplication via ON CONFLICT DO NOTHING.
+    """
+    import json as _json
+    from datetime import timezone
+    from sqlalchemy import update as sa_update
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from app.ingestion.service import ingest_batch, upsert_session
+    from app.db.models import DataSource
+
+    async with AsyncSessionLocal() as db:
+        await _ensure_project(db, project_id, display_name, source_type)
+        for ag in agents:
+            await _ensure_agent(db, ag["id"], project_id, ag["name"], ag["display_name"], ag["kind"])
+
+        await db.execute(
+            pg_insert(DataSource).values(
+                project_id=project_id,
+                source_type=source_type,
+                display_name=display_name,
+                enabled=True,
+                config_json={"log_dir": log_dir},
+            ).on_conflict_do_nothing()
+        )
+        await db.commit()
+
+        ds_result = await db.execute(
+            select(DataSource)
+            .where(DataSource.project_id == project_id, DataSource.source_type == source_type)
+            .order_by(DataSource.id.desc())
+            .limit(1)
+        )
+        ds = ds_result.scalars().first()
+
+        cursor: dict[str, str] = {}
+        if ds and ds.last_sync_cursor and not force:
+            try:
+                cursor = _json.loads(ds.last_sync_cursor)
+            except Exception:
+                cursor = {}
+
+        total = {"raw_inserted": 0, "raw_updated": 0, "events_inserted": 0, "events_skipped": 0}
+        sources_scanned = sources_skipped = 0
+        new_cursor: dict[str, str] = {}
+
+        sources = adapter.discover_sources()
+        for source in sources:
+            mtime = str(os.path.getmtime(source.path))
+            new_cursor[source.path] = mtime
+
+            if not force and cursor.get(source.path) == mtime:
+                sources_skipped += 1
+                continue
+
+            sources_scanned += 1
+            for session_ref in adapter.scan_sessions(source):
+                # Determine agent_id: use session metadata if available, else first agent
+                session_agent_id = (
+                    session_ref.metadata.get("agent_id")
+                    or (agents[0]["id"] if agents else None)
+                )
+                await upsert_session(
+                    db,
+                    session_id=session_ref.session_id,
+                    project_id=project_id,
+                    agent_id=session_agent_id,
+                    external_session_id=session_ref.session_id,
+                )
+
+                raw_blobs, events = adapter.load_events(session_ref)
+
+                for ev in events:
+                    if ev.event_type.value == "session_started":
+                        await upsert_session(
+                            db,
+                            session_id=session_ref.session_id,
+                            project_id=project_id,
+                            agent_id=session_agent_id,
+                            external_session_id=session_ref.session_id,
+                            started_at=ev.timestamp,
+                        )
+                        break
+
+                counts = await ingest_batch(db, raw_blobs=raw_blobs, events=events)
+                for k in total:
+                    total[k] += counts[k]
+
+        if ds is not None:
+            await db.execute(
+                sa_update(DataSource).where(DataSource.id == ds.id).values(
+                    last_sync_cursor=_json.dumps(new_cursor),
+                    last_sync_at=datetime.now(timezone.utc),
+                    last_error=None,
+                )
+            )
+            await db.commit()
+
+    result = {
+        "sources_total": len(sources),
+        "sources_scanned": sources_scanned,
+        "sources_skipped": sources_skipped,
+        **total,
+    }
+    if total.get("events_inserted", 0) > 0:
+        _broadcast_ingest()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Per-source ingest wrappers — used by HTTP endpoints and startup/watcher
+# ---------------------------------------------------------------------------
+
+async def run_mhxy_ingest(force: bool = False) -> dict:
+    from app.adapters.mhxy_jsonl import MhxyJsonlAdapter
+    log_dir = os.getenv("MHXY_LOG_DIR", "/logs/mhxy/sessions")
+    return await run_jsonl_ingest(
+        project_id="mhxy",
+        source_type="mhxy_jsonl",
+        display_name="梦幻西游 Bot JSONL logs",
+        log_dir=log_dir,
+        adapter=MhxyJsonlAdapter(log_dir=log_dir),
+        agents=[{"id": "game-bot", "name": "game-bot", "display_name": "游戏操控 Bot", "kind": "bot"}],
+        force=force,
+    )
+
+
+async def run_stock_bot_ingest(force: bool = False) -> dict:
+    from app.adapters.omnibot_jsonl import OmnibotJsonlAdapter
+    stock_dir = os.getenv("OMNIBOT_STOCK_LOG_DIR", "/logs/omnibot/stock/sessions")
+    return await run_jsonl_ingest(
+        project_id="stock-bot",
+        source_type="omnibot_jsonl",
+        display_name="OmniStock 量化助理",
+        log_dir=stock_dir,
+        adapter=OmnibotJsonlAdapter(log_dir=stock_dir, project_id="stock-bot"),
+        agents=[{"id": "stock-bot", "name": "stock-bot", "display_name": "OmniStock 量化助理", "kind": "assistant"}],
+        force=force,
+    )
+
+
+async def run_ehs_bot_ingest(force: bool = False) -> dict:
+    from app.adapters.omnibot_jsonl import OmnibotJsonlAdapter
+    ehs_dir = os.getenv("OMNIBOT_EHS_LOG_DIR", "/logs/omnibot/ehs/sessions")
+    return await run_jsonl_ingest(
+        project_id="ehs-bot",
+        source_type="omnibot_jsonl",
+        display_name="OmniEHS 安全合规助理",
+        log_dir=ehs_dir,
+        adapter=OmnibotJsonlAdapter(log_dir=ehs_dir, project_id="ehs-bot"),
+        agents=[{"id": "ehs-bot", "name": "ehs-bot", "display_name": "OmniEHS 安全合规助理", "kind": "assistant"}],
+        force=force,
+    )
+
+
+async def run_omnibot_ingest(force: bool = False) -> dict:
+    r1 = await run_stock_bot_ingest(force=force)
+    r2 = await run_ehs_bot_ingest(force=force)
+    merged = {}
+    for key in ("sources_total", "sources_scanned", "sources_skipped",
+                "raw_inserted", "raw_updated", "events_inserted", "events_skipped"):
+        merged[key] = r1.get(key, 0) + r2.get(key, 0)
+    return merged
+
+
+# ---------------------------------------------------------------------------
+# HTTP ingest endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/ingest/mhxy")
+async def ingest_mhxy(
+    force: bool = Query(False, description="Force full re-scan even if file unchanged"),
+):
+    result = await run_mhxy_ingest(force=force)
+    return {"status": "ok", **result}
+
+
+@router.post("/ingest/stock-bot")
+async def ingest_stock_bot(force: bool = Query(False)):
+    result = await run_stock_bot_ingest(force=force)
+    return {"status": "ok", **result}
+
+
+@router.post("/ingest/ehs-bot")
+async def ingest_ehs_bot(force: bool = Query(False)):
+    result = await run_ehs_bot_ingest(force=force)
+    return {"status": "ok", **result}
+
+
+@router.post("/ingest/omnibot")
+async def ingest_omnibot(force: bool = Query(False)):
+    result = await run_omnibot_ingest(force=force)
+    return {"status": "ok", **result}
+
+
+# ---------------------------------------------------------------------------
+# Stats — overview (per-project summary for the dashboard)
+# ---------------------------------------------------------------------------
+
+@router.get("/stats/overview")
+async def stats_overview(db: AsyncSession = Depends(get_db)):
+    """
+    Returns a per-project summary: session count, today's sessions,
+    token totals, last session time.
+    """
+    from datetime import datetime, timezone, timedelta
+    CST = timezone(timedelta(hours=8))
+    today = datetime.now(CST).date()
+    today_start_utc = datetime.combine(today, datetime.min.time()).replace(tzinfo=CST).astimezone(timezone.utc)
+    today_end_utc = today_start_utc + timedelta(days=1)
+
+    projects_result = await db.execute(select(Project).where(Project.is_active == True))
+    projects = projects_result.scalars().all()
+    if not projects:
+        return []
+
+    project_ids = [p.id for p in projects]
+
+    # Batch 1: session counts + last_session per project
+    session_agg_r = await db.execute(
+        select(
+            Session.project_id,
+            func.count().label("total_sessions"),
+            func.count().filter(
+                Session.started_at >= today_start_utc,
+                Session.started_at < today_end_utc,
+            ).label("today_sessions"),
+            func.max(Session.started_at).label("last_session_at"),
+        )
+        .where(Session.project_id.in_(project_ids))
+        .group_by(Session.project_id)
+    )
+    session_stats = {r.project_id: r for r in session_agg_r.all()}
+
+    # Batch 2: token totals + today_calls per project
+    event_agg_r = await db.execute(
+        select(
+            Event.project_id,
+            func.sum(Event.payload_json["input_tokens"].as_integer()).label("input_tokens"),
+            func.sum(Event.payload_json["output_tokens"].as_integer()).label("output_tokens"),
+            func.count().filter(
+                Event.timestamp >= today_start_utc,
+                Event.timestamp < today_end_utc,
+            ).label("today_calls"),
+        )
+        .where(
+            Event.event_type == "model_call",
+            Event.project_id.in_(project_ids),
+        )
+        .group_by(Event.project_id)
+    )
+    event_stats = {r.project_id: r for r in event_agg_r.all()}
+
+    # Batch 3: per-model cost breakdown per project
+    model_col = Event.payload_json["model"].as_string().label("model")
+    cost_agg_r = await db.execute(
+        select(
+            Event.project_id,
+            model_col,
+            func.sum(Event.payload_json["input_tokens"].as_integer()).label("inp"),
+            func.sum(Event.payload_json["output_tokens"].as_integer()).label("out"),
+            func.sum(Event.payload_json["cache_read_tokens"].as_integer()).label("cache"),
+        )
+        .where(
+            Event.event_type == "model_call",
+            Event.project_id.in_(project_ids),
+        )
+        .group_by(Event.project_id, model_col)
+    )
+    cost_by_project: dict[str, float] = {}
+    for r in cost_agg_r.all():
+        c = _calc_cost(r.model or "", r.inp or 0, r.cache or 0, r.out or 0)
+        if c is not None:
+            cost_by_project[r.project_id] = (cost_by_project.get(r.project_id) or 0.0) + c
+
+    output = []
+    for p in projects:
+        ss = session_stats.get(p.id)
+        es = event_stats.get(p.id)
+        output.append({
+            "project_id": p.id,
+            "display_name": p.display_name,
+            "total_sessions": ss.total_sessions if ss else 0,
+            "today_sessions": ss.today_sessions if ss else 0,
+            "today_calls": es.today_calls if es else 0,
+            "last_session_at": ss.last_session_at if ss else None,
+            "total_input_tokens": es.input_tokens or 0 if es else 0,
+            "total_output_tokens": es.output_tokens or 0 if es else 0,
+            "total_cost": cost_by_project.get(p.id),
+        })
+
+    return output
+
+
+async def _ensure_project(db: AsyncSession, pid: str, display_name: str, source_type: str):
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    stmt = pg_insert(Project).values(
+        id=pid, display_name=display_name, source_type=source_type
+    ).on_conflict_do_nothing(index_elements=["id"])
+    await db.execute(stmt)
+    await db.commit()
+
+
+async def _ensure_agent(
+    db: AsyncSession, aid: str, project_id: str, name: str, display_name: str, kind: str
+):
+    from sqlalchemy.dialects.postgresql import insert as pg_insert
+    stmt = pg_insert(Agent).values(
+        id=aid, project_id=project_id, name=name, display_name=display_name, kind=kind
+    ).on_conflict_do_nothing(index_elements=["id"])
+    await db.execute(stmt)
+    await db.commit()

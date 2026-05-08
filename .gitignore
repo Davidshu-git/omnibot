@@ -9,3 +9,8 @@ jobs/
 .DS_Store
 .claude/
 logs/
+
+# obs/web
+obs/web/node_modules/
+obs/web/.next/
+obs/web/.env*
