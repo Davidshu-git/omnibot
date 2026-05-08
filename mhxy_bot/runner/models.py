@@ -20,7 +20,6 @@ class InstanceState(str, Enum):
     MAIN_UI = "main_ui"
     IN_BATTLE = "in_battle"
     POPUP = "popup"
-    STUCK = "stuck"
 
 
 class InstanceIssue(str, Enum):

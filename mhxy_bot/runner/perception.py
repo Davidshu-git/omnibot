@@ -28,9 +28,9 @@ _DISCONNECTED_MARKERS = ["服务器已经关闭", "连接已断开", "网络连�
 _UPDATE_RESTART_MARKERS = ["游戏更新完成", "重新启动后生效", "确定按钮将退出游戏"]
 _APP_LOADING_MARKERS = ["开始检查文件完整性", "重载资源中", "检查更新", "加载中", "下载中"]
 _ANDROID_HOME_MARKERS = ["游戏中心", "浏览器", "每日新发现"]
-_ACTIVITY_POPUP_MARKERS = ["点击任意空白处关闭界面", "最新玩法", "查看详情"]
+_ACTIVITY_POPUP_MARKERS = ["点击任意空白处关闭界面"]
 _BATTLE_REQUIRED_MARKERS = ["好友", "取消"]
-_POPUP_MARKERS   = ["确定", "关闭", "取消", "我知道了"]
+_POPUP_MARKERS   = ["确定"]
 
 
 def _sense(ctx: "RunnerContext") -> list[dict]:

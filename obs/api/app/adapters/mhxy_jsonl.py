@@ -56,7 +56,7 @@ _RUNNER_EVENT_TYPES = frozenset({
     "task_started", "task_completed", "task_failed", "task_needs_human",
     "task_step_started", "task_step_completed", "task_step_failed",
     "task_denylist_triggered", "instance_status", "reconnect_result",
-    "executor_perf",
+    "reconnect_step", "executor_perf",
 })
 
 

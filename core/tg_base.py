@@ -26,7 +26,14 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from core.observability import OmniObserver, OmnibotObsCallbackHandler, extract_think_blocks, strip_think_blocks
+from core.observability import (
+    OmniObserver,
+    OmnibotObsCallbackHandler,
+    extract_think_blocks,
+    push_current_observer,
+    reset_current_observer,
+    strip_think_blocks,
+)
 
 import markdown
 from filelock import FileLock
@@ -827,17 +834,21 @@ class TelegramBotBase:
             if obs is not None:
                 callbacks.append(OmnibotObsCallbackHandler(obs, trace_id, provider=self.obs_provider))
 
-            response = await self.agent.ainvoke(
-                {
-                    "input": user_msg,
-                    "user_profile": self.get_user_profile_fn(),
-                    "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
-                },
-                config={
-                    "configurable": {"session_id": memory_session_id},
-                    "callbacks": callbacks,
-                },
-            )
+            obs_token = push_current_observer(obs)
+            try:
+                response = await self.agent.ainvoke(
+                    {
+                        "input": user_msg,
+                        "user_profile": self.get_user_profile_fn(),
+                        "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
+                    },
+                    config={
+                        "configurable": {"session_id": memory_session_id},
+                        "callbacks": callbacks,
+                    },
+                )
+            finally:
+                reset_current_observer(obs_token)
 
             reply_text = response['output']
 

@@ -101,71 +101,108 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90, steps: list[str] 
         ctx.info("[dry_run] try_reconnect skipped")
         return True
 
-    reconnect_actions = ["重新登录", "确定"]
-    center_tapped = False  # 过场动画点击一次即可
-
+    from mhxy_bot.runner import events
     from mhxy_bot.runner.perception import detect_with_texts
 
+    reconnect_actions = ["重新登录", "确定"]
+    center_tapped = False
+
     deadline = time.monotonic() + timeout_sec
+    loop_round = 0
     while time.monotonic() < deadline:
-        state, _, items = detect_with_texts(ctx)          # 一次 OCR
+        loop_round += 1
+        state, _, items = detect_with_texts(ctx)
         ctx.info("reconnect: waiting... state=%s", state.value)
+        events.reconnect_step(ctx, state.value, "detect", detail=f"loop #{loop_round}")
+
         if state == InstanceState.MAIN_UI:
             ctx.info("reconnect: success, back to main UI")
+            events.reconnect_step(ctx, state.value, "success", detail="回到主界面")
             if steps is not None:
                 steps.append("自动恢复成功，回到主界面")
             return True
         if state == InstanceState.GAME_DISCONNECTED:
             try:
-                if not _tap_from_items(ctx, items, reconnect_actions):
+                ok = _tap_from_items(ctx, items, reconnect_actions)
+                if ok:
+                    events.reconnect_step(ctx, state.value, "tap",
+                        detail=f"点击断开连接按钮")
+                else:
                     ctx.warning("reconnect: disconnect action button not found")
-            except Exception:
-                pass
+                    events.reconnect_step(ctx, state.value, "tap_failed",
+                        success=False, detail="未找到重连按钮")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "tap_error",
+                    success=False, detail=str(exc))
         elif state == InstanceState.UPDATE_RESTART:
             try:
                 _tap_from_items(ctx, items, ["确定"])
-            except Exception:
-                pass
+                events.reconnect_step(ctx, state.value, "tap",
+                    detail="点击更新确认按钮")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "tap_error",
+                    success=False, detail=str(exc))
         elif state == InstanceState.ANDROID_HOME:
             try:
                 _tap_from_items(ctx, items, ["梦幻西游"])
-            except Exception:
-                pass
+                events.reconnect_step(ctx, state.value, "tap",
+                    detail="点击梦幻西游图标")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "tap_error",
+                    success=False, detail=str(exc))
         elif state == InstanceState.LOGIN_SCREEN:
             try:
                 _tap_from_items(ctx, items, ["登录游戏"])
-            except Exception:
-                pass
+                events.reconnect_step(ctx, state.value, "tap",
+                    detail="点击登录游戏按钮")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "tap_error",
+                    success=False, detail=str(exc))
         elif state == InstanceState.ACTIVITY_POPUP:
             try:
                 ctx.executor.back(ctx.port)
-            except Exception:
-                pass
+                events.reconnect_step(ctx, state.value, "back",
+                    detail="按返回键关闭活动弹窗")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "back_error",
+                    success=False, detail=str(exc))
         elif state == InstanceState.POPUP:
             try:
-                if not _tap_from_items(ctx, items, ["取消", "关闭", "我知道了"]):
+                ok = _tap_from_items(ctx, items, ["取消", "关闭", "我知道了"])
+                if not ok:
                     ctx.executor.back(ctx.port)
-            except Exception:
-                pass
+                events.reconnect_step(ctx, state.value,
+                    "tap" if ok else "back",
+                    detail="关闭弹窗")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "tap_error",
+                    success=False, detail=str(exc))
         elif state == InstanceState.APP_LOADING:
             if not center_tapped:
                 try:
                     ctx.executor.tap(ctx.port, 800, 450)
                     ctx.info("reconnect: tap center to skip transition animation")
                     center_tapped = True
-                except Exception:
-                    pass
+                    events.reconnect_step(ctx, state.value, "tap_center",
+                        detail="点击屏幕中心跳过加载动画")
+                except Exception as exc:
+                    events.reconnect_step(ctx, state.value, "tap_error",
+                        success=False, detail=str(exc))
         elif len(items) <= 2 and not center_tapped:
-            # UNKNOWN 且几乎认不到字 → 很可能是过场动画
             try:
                 ctx.executor.tap(ctx.port, 800, 450)
                 ctx.info("reconnect: tap center (low-text unknown screen)")
                 center_tapped = True
-            except Exception:
-                pass
+                events.reconnect_step(ctx, state.value, "tap_center",
+                    detail="点击屏幕中心（低文本未知界面）")
+            except Exception as exc:
+                events.reconnect_step(ctx, state.value, "tap_error",
+                    success=False, detail=str(exc))
         time.sleep(3.0)
 
     ctx.warning("reconnect: timeout after %ds", timeout_sec)
+    events.reconnect_step(ctx, "timeout", "timeout",
+        success=False, detail=f"超过 {timeout_sec}s 未完成重连")
     if steps is not None:
         steps.append(f"自动恢复失败或超时（{timeout_sec}s）")
     return False
@@ -302,7 +339,7 @@ def diagnose_instance(ctx: "RunnerContext", attempt_reconnect: bool = False) -> 
                 _cap_steps()
                 return InstanceDiagnosis(
                     code=InstanceIssue.GAME_DISCONNECTED,
-                    state=InstanceState.DISCONNECTED,
+                    state=InstanceState.GAME_DISCONNECTED,
                     needs_human=True,
                     message="game disconnected; reconnect not attempted",
                     steps=steps,
@@ -324,7 +361,7 @@ def diagnose_instance(ctx: "RunnerContext", attempt_reconnect: bool = False) -> 
             _cap_steps()
             return InstanceDiagnosis(
                 code=InstanceIssue.GAME_DISCONNECTED,
-                state=InstanceState.DISCONNECTED,
+                state=InstanceState.GAME_DISCONNECTED,
                 needs_human=True,
                 message="game disconnected and auto-reconnect failed",
                 steps=steps,

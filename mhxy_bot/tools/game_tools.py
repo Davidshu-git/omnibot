@@ -86,9 +86,11 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             单实例时返回完整诊断报告；多实例时返回汇总状态表。
         """
         try:
-            from core.observability import attach_tool_meta
+            from core.observability import attach_tool_meta, get_current_observer
             from mhxy_bot.runner.context import RunnerContext
             from mhxy_bot.runner.instance_recovery import diagnose_instance
+
+            observer = get_current_observer()
 
             if port.strip():
                 port_list = [p.strip() for p in port.split(",") if p.strip()]
@@ -100,7 +102,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
 
             if len(port_list) == 1:
                 port_str = _port_to_str(port_list[0])
-                ctx = RunnerContext(executor=executor, port=port_str)
+                ctx = RunnerContext(executor=executor, port=port_str, observer=observer)
                 diag = diagnose_instance(ctx)
                 d = diag.as_dict()
                 attach_tool_meta({
@@ -137,7 +139,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             for p in port_list:
                 port_str = _port_to_str(p)
                 try:
-                    ctx = RunnerContext(executor=executor, port=port_str)
+                    ctx = RunnerContext(executor=executor, port=port_str, observer=observer)
                     diag = diagnose_instance(ctx)
                     d = diag.as_dict()
                 except Exception as e:
@@ -183,9 +185,11 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             单实例时返回详细结果；多实例时返回汇总（成功 / 失败 / 跳过统计 + 各实例结果）。
         """
         try:
-            from core.observability import attach_tool_meta
+            from core.observability import attach_tool_meta, get_current_observer
             from mhxy_bot.runner.context import RunnerContext
             from mhxy_bot.runner.instance_recovery import reconnect_one_port
+
+            observer = get_current_observer()
 
             if ports.strip():
                 port_list = [p.strip() for p in ports.split(",") if p.strip()]
@@ -206,7 +210,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             # 单端口：返回详细结果
             if len(port_list) == 1:
                 port_str = _port_to_str(port_list[0])
-                ctx = RunnerContext(executor=executor, port=port_str)
+                ctx = RunnerContext(executor=executor, port=port_str, observer=observer)
                 outcome = reconnect_one_port(ctx, timeout_sec=60)
                 attach_tool_meta({
                     "kind": "reconnect",
@@ -237,7 +241,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             for p in port_list:
                 port_str = _port_to_str(p)
                 try:
-                    ctx = RunnerContext(executor=executor, port=port_str)
+                    ctx = RunnerContext(executor=executor, port=port_str, observer=observer)
                     outcome = reconnect_one_port(ctx, timeout_sec=60)
                 except Exception as exc:
                     outcome = {"action": "failed", "initial_state": "error",

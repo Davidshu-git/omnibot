@@ -15,6 +15,7 @@ import json
 import logging
 import re
 import time
+from contextvars import ContextVar, Token
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -27,6 +28,23 @@ from langchain_core.outputs import LLMResult
 from langchain_core.runnables.config import var_child_runnable_config
 
 _META_BYTE_LIMIT = 4096
+
+# 当前 agent.ainvoke 上下文中的 OmniObserver。由 execute_agent_task 在调用 LLM
+# 前 push、调用结束后 reset。LangChain 在 to_thread / task spawn 时会复制
+# contextvars，所以工具体内通过 get_current_observer() 即可拿到。
+_current_observer: ContextVar["OmniObserver | None"] = ContextVar(
+    "omnibot_current_observer", default=None
+)
+
+
+def push_current_observer(obs: "OmniObserver | None") -> Token:
+    """绑定当前 invoke 上下文的 observer，返回 token 供 reset 使用。"""
+    return _current_observer.set(obs)
+
+
+def reset_current_observer(token: Token) -> None:
+    """与 push_current_observer 配对，恢复上一层 observer。"""
+    _current_observer.reset(token)
 
 
 def _now_iso() -> str:
@@ -259,6 +277,40 @@ def attach_tool_meta(meta: dict) -> bool:
 
     target._set_pending_meta(meta)
     return True
+
+
+def get_current_observer() -> "OmniObserver | None":
+    """从当前 agent invoke 上下文获取 observer。
+
+    优先读 `_current_observer`（由 execute_agent_task 在 invoke 前 push）；
+    退而求其次再尝试从 LangChain 的 var_child_runnable_config 找 callback 反查
+    （AgentExecutor 同步分发路径下该 ContextVar 通常未设，所以是兜底）。
+    """
+    direct = _current_observer.get()
+    if direct is not None:
+        return direct
+
+    cfg = var_child_runnable_config.get()
+    if not cfg:
+        return None
+    cbs = cfg.get("callbacks")
+    if cbs is None:
+        return None
+
+    if hasattr(cbs, "handlers"):
+        handlers = list(cbs.handlers) + list(getattr(cbs, "inheritable_handlers", []))
+    elif isinstance(cbs, list):
+        handlers = list(cbs)
+    else:
+        return None
+
+    target = next(
+        (h for h in handlers if isinstance(h, OmnibotObsCallbackHandler)),
+        None,
+    )
+    if target is None:
+        return None
+    return target._obs
 
 
 # ---------------------------------------------------------------------------

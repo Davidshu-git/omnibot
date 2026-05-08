@@ -220,6 +220,18 @@ def instance_status_port(ctx: "RunnerContext", state: str,
     })
 
 
+def reconnect_step(ctx: "RunnerContext", state: str, action: str, *,
+                   success: bool = True, detail: str | None = None) -> None:
+    """记录 try_reconnect 循环内每一步的操作和状态。"""
+    _emit(ctx, "reconnect_step", {
+        "state": state,
+        "action": action,
+        "success": success,
+        "detail": detail,
+        "port": ctx.port,
+    })
+
+
 def reconnect_port(ctx: "RunnerContext", initial_state: str,
                    success: bool | None, final_state: str) -> None:
     """success=None means skipped (port was not disconnected)."""

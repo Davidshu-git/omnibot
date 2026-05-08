@@ -37,6 +37,7 @@ const TASK_EVENT_ICONS: Record<string, string> = {
   task_step_failed:       "✗",
   task_denylist_triggered:"🚨",
   instance_status:        "📊",
+  reconnect_step:         "🔄",
   reconnect_result:       "🔌",
   executor_perf:          "⏱",
   executor_request:       "🪟",
@@ -111,9 +112,10 @@ function JsonBlock({ value }: { value: unknown }) {
 // ── event detail ──────────────────────────────────────────────────────────────
 
 function EventDetail({ event }: { event: NormalizedEvent }) {
-  const [expanded, setExpanded] = useState(false);
   const p = event.payload as Record<string, unknown>;
   const t = event.event_type;
+  const initiallyExpanded = t === "task_event" && p.type === "executor_perf";
+  const [expanded, setExpanded] = useState(initiallyExpanded);
 
   if (t === "message") {
     const role = p.role as string;
@@ -362,11 +364,14 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
 
     const stateColor = (s: string) =>
       s === "main_ui" ? "var(--green)"
-      : s === "disconnected" ? "var(--red)"
+      : s === "game_disconnected" ? "var(--red)"
+      : s === "timeout" ? "var(--red)"
       : s === "login_screen" ? "var(--amber)"
       : s === "update_restart" ? "var(--orange)"
       : s === "android_home" ? "var(--blue)"
       : s === "app_loading" ? "var(--teal)"
+      : s === "activity_popup" ? "var(--purple)"
+      : s === "popup" ? "var(--purple)"
       : "var(--text-dim)";
 
     return (
@@ -423,6 +428,18 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
               }}>
                 {expanded ? "▲ 收起" : `▼ OCR(${ocrTexts.length})`}
               </button>
+            )}
+          </>}
+
+          {subtype === "reconnect_step" && <>
+            <span style={{ color: stateColor(p.state as string), fontFamily: "var(--font-mono)" }}>{p.state as string}</span>
+            <span style={{ color: "var(--text-dim)" }}>·</span>
+            <span style={{ color: "var(--orange)", fontFamily: "var(--font-mono)" }}>{p.action as string}</span>
+            {p.success === false && <span style={{ color: "var(--red)" }}>✗</span>}
+            {p.detail != null && (
+              <span style={{ color: "var(--text-muted)", fontSize: 11 }}>
+                {String(p.detail).slice(0, 60)}
+              </span>
             )}
           </>}
 
@@ -547,6 +564,148 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
   );
 }
 
+// ── event row & task-event group ──────────────────────────────────────────────
+
+function EventRow({ event: e, anchorId, roundsByTrace, traceComplete }: {
+  event: NormalizedEvent;
+  anchorId: string | undefined;
+  roundsByTrace: Record<string, number>;
+  traceComplete: Set<string>;
+}) {
+  const color = EVENT_COLORS[e.event_type] ?? "var(--text-dim)";
+  const isError = e.event_type === "error";
+  const isThought = e.event_type === "thought";
+  return (
+    <div
+      id={anchorId}
+      style={{
+        display: "flex",
+        gap: "0.75rem",
+        marginBottom: "0.4rem",
+        marginLeft: isThought ? "1.5rem" : 0,
+        paddingLeft: "0.75rem",
+        paddingTop: isError ? 4 : 0,
+        paddingBottom: isError ? 4 : 0,
+        borderLeft: `${isThought ? "1px dashed" : "2px solid"} ${color}`,
+        borderRadius: isError ? "0 var(--r) var(--r) 0" : 0,
+        background: isError ? "rgba(248,113,113,.04)" : "transparent",
+        boxShadow: isError ? "inset 0 0 12px rgba(248,113,113,.06)" : "none",
+        transition: `background var(--dur) var(--ease)`,
+      }}
+    >
+      <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
+        {fmtTime(e.timestamp)}
+      </div>
+      <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
+        {e.event_type}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <EventDetail event={e} />
+        {e.trace_id && (
+          <div style={{ marginTop: 4, fontSize: 10, display: "flex", alignItems: "center", gap: 6 }}>
+            <Link href={`/traces/${e.trace_id}`} style={{ color: "var(--blue)", opacity: 0.6, fontFamily: "var(--font-mono)" }}>
+              trace:{e.trace_id.slice(-16)}
+            </Link>
+            {e.trace_id && (roundsByTrace[e.trace_id] ?? 0) > 0 && (
+              <span style={{
+                color: traceComplete.has(e.trace_id) ? "var(--amber)" : "var(--text-dim)",
+                fontSize: 10, fontFamily: "var(--font-mono)", opacity: 0.8,
+              }}>
+                {roundsByTrace[e.trace_id]}轮
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete }: {
+  events: NormalizedEvent[];
+  anchors: Record<string, string | undefined>;
+  roundsByTrace: Record<string, number>;
+  traceComplete: Set<string>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const subtypeCounts = events.reduce<Record<string, number>>((acc, e) => {
+    const st = (e.payload as Record<string, unknown>).type as string | undefined;
+    if (st) acc[st] = (acc[st] ?? 0) + 1;
+    return acc;
+  }, {});
+  const sortedSubtypes = Object.entries(subtypeCounts).sort((a, b) => b[1] - a[1]);
+  const firstE = events[0];
+  const lastE = events[events.length - 1];
+  const color = EVENT_COLORS["task_event"] ?? "var(--green)";
+
+  if (!expanded) {
+    return (
+      <div
+        id={anchors[firstE.event_id]}
+        style={{
+          display: "flex",
+          gap: "0.75rem",
+          marginBottom: "0.4rem",
+          paddingLeft: "0.75rem",
+          borderLeft: `2px dashed ${color}`,
+        }}
+      >
+        <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
+          {fmtTime(firstE.timestamp)}
+        </div>
+        <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
+          task_event
+        </div>
+        <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+          <button onClick={() => setExpanded(true)} style={{
+            background: "none", border: `1px solid ${color}`, color,
+            cursor: "pointer", fontSize: 11, padding: "1px 8px", borderRadius: 3,
+            fontFamily: "var(--font-mono)",
+          }}>
+            ▶ 展开 {events.length} 条
+          </button>
+          {sortedSubtypes.map(([st, n]) => (
+            <span key={st} style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--text-muted)" }}>
+              {st}<span style={{ color: "var(--text-dim)" }}>×{n}</span>
+            </span>
+          ))}
+          <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: "auto", fontFamily: "var(--font-mono)" }}>
+            → {fmtTime(lastE.timestamp)}
+          </span>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{
+        display: "flex", gap: "0.75rem", marginBottom: "0.2rem",
+        paddingLeft: "0.75rem",
+      }}>
+        <div style={{ width: 62, flexShrink: 0 }} />
+        <div style={{ width: 88, flexShrink: 0 }} />
+        <button onClick={() => setExpanded(false)} style={{
+          background: "none", border: "1px solid var(--border)", color: "var(--text-dim)",
+          cursor: "pointer", fontSize: 11, padding: "1px 8px", borderRadius: 3,
+          fontFamily: "var(--font-mono)",
+        }}>
+          ▼ 折叠 {events.length} 条
+        </button>
+      </div>
+      {events.map((e) => (
+        <EventRow
+          key={e.event_id}
+          event={e}
+          anchorId={anchors[e.event_id]}
+          roundsByTrace={roundsByTrace}
+          traceComplete={traceComplete}
+        />
+      ))}
+    </div>
+  );
+}
+
 // ── timeline ──────────────────────────────────────────────────────────────────
 
 function Timeline({ events, roundsByTrace }: { events: NormalizedEvent[]; roundsByTrace: Record<string, number> }) {
@@ -586,60 +745,56 @@ function Timeline({ events, roundsByTrace }: { events: NormalizedEvent[]; rounds
 
       <div ref={scrollRef} style={{ flex: 1, overflowY: "auto" }}>
         {(() => {
+          type Item =
+            | { kind: "single"; event: NormalizedEvent }
+            | { kind: "group"; events: NormalizedEvent[] };
+          const items: Item[] = [];
+          let buf: NormalizedEvent[] = [];
+          const flush = () => {
+            if (buf.length === 0) return;
+            if (buf.length >= 3) items.push({ kind: "group", events: buf });
+            else buf.forEach((ev) => items.push({ kind: "single", event: ev }));
+            buf = [];
+          };
+          for (const e of visible) {
+            if (e.event_type === "task_event") buf.push(e);
+            else { flush(); items.push({ kind: "single", event: e }); }
+          }
+          flush();
+
           const seenTraceIds = new Set<string>();
-          return visible.map((e) => {
-          const color = EVENT_COLORS[e.event_type] ?? "var(--text-dim)";
-          const isError = e.event_type === "error";
-          const isThought = e.event_type === "thought";
-          const anchorId = e.trace_id && !seenTraceIds.has(e.trace_id)
-            ? (seenTraceIds.add(e.trace_id), `trace-${e.trace_id}`)
-            : undefined;
-          return (
-            <div
-              key={e.event_id}
-              id={anchorId}
-              style={{
-                display: "flex",
-                gap: "0.75rem",
-                marginBottom: "0.4rem",
-                marginLeft: isThought ? "1.5rem" : 0,
-                paddingLeft: "0.75rem",
-                paddingTop: isError ? 4 : 0,
-                paddingBottom: isError ? 4 : 0,
-                borderLeft: `${isThought ? "1px dashed" : "2px solid"} ${color}`,
-                borderRadius: isError ? "0 var(--r) var(--r) 0" : 0,
-                background: isError ? "rgba(248,113,113,.04)" : "transparent",
-                boxShadow: isError ? "inset 0 0 12px rgba(248,113,113,.06)" : "none",
-                transition: `background var(--dur) var(--ease)`,
-              }}
-            >
-              <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-                {fmtTime(e.timestamp)}
-              </div>
-              <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-                {e.event_type}
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <EventDetail event={e} />
-                {e.trace_id && (
-                  <div style={{ marginTop: 4, fontSize: 10, display: "flex", alignItems: "center", gap: 6 }}>
-                    <Link href={`/traces/${e.trace_id}`} style={{ color: "var(--blue)", opacity: 0.6, fontFamily: "var(--font-mono)" }}>
-                      trace:{e.trace_id.slice(-16)}
-                    </Link>
-                    {e.trace_id && (roundsByTrace[e.trace_id] ?? 0) > 0 && (
-                      <span style={{
-                        color: traceComplete.has(e.trace_id) ? "var(--amber)" : "var(--text-dim)",
-                        fontSize: 10, fontFamily: "var(--font-mono)", opacity: 0.8,
-                      }}>
-                        {roundsByTrace[e.trace_id]}轮
-                      </span>
-                    )}
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        });
+          const allocAnchor = (e: NormalizedEvent): string | undefined => {
+            if (!e.trace_id || seenTraceIds.has(e.trace_id)) return undefined;
+            seenTraceIds.add(e.trace_id);
+            return `trace-${e.trace_id}`;
+          };
+
+          return items.map((item, idx) => {
+            if (item.kind === "single") {
+              return (
+                <EventRow
+                  key={item.event.event_id}
+                  event={item.event}
+                  anchorId={allocAnchor(item.event)}
+                  roundsByTrace={roundsByTrace}
+                  traceComplete={traceComplete}
+                />
+              );
+            }
+            const anchors: Record<string, string | undefined> = {};
+            item.events.forEach((e) => {
+              anchors[e.event_id] = allocAnchor(e);
+            });
+            return (
+              <TaskEventGroup
+                key={`group-${idx}-${item.events[0].event_id}`}
+                events={item.events}
+                anchors={anchors}
+                roundsByTrace={roundsByTrace}
+                traceComplete={traceComplete}
+              />
+            );
+          });
         })()}
         {visible.length === 0 && <p style={{ color: "var(--text-dim)" }}>无匹配事件</p>}
       </div>
