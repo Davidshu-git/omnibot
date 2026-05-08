@@ -24,6 +24,9 @@ log = logging.getLogger(__name__)
 from filelock import FileLock
 from langchain_core.callbacks import AsyncCallbackHandler
 from langchain_core.outputs import LLMResult
+from langchain_core.runnables.config import var_child_runnable_config
+
+_META_BYTE_LIMIT = 4096
 
 
 def _now_iso() -> str:
@@ -183,6 +186,7 @@ class OmniObserver:
         error_message: str | None,
         trace_id: str | None,
         run_id: str | None,
+        meta: dict | None = None,
     ) -> None:
         rec: dict[str, Any] = {
             "type": "tool_result",
@@ -197,6 +201,15 @@ class OmniObserver:
             rec["trace_id"] = trace_id
         if run_id:
             rec["run_id"] = run_id
+        if meta is not None:
+            try:
+                s = json.dumps(meta, ensure_ascii=False)
+                if len(s.encode("utf-8")) <= _META_BYTE_LIMIT:
+                    rec["meta"] = meta
+                else:
+                    log.warning("tool_result meta exceeds %d bytes, dropped", _META_BYTE_LIMIT)
+            except (TypeError, ValueError) as exc:
+                log.warning("tool_result meta is not serializable, dropped: %s", exc)
         self._write(rec)
 
 
@@ -215,6 +228,37 @@ def extract_think_blocks(text: str) -> list[str]:
 def strip_think_blocks(text: str) -> str:
     """Remove all <think>…</think> blocks and collapse extra blank lines."""
     return _THINK_RE.sub("", text).strip()
+
+
+def attach_tool_meta(meta: dict) -> bool:
+    """Attach structured metadata to the current observed LangChain tool result.
+
+    Tool functions may call this as a best-effort side channel. It returns False
+    when no OmnibotObsCallbackHandler is active in the current tool context.
+    """
+    cfg = var_child_runnable_config.get()
+    if not cfg:
+        return False
+    cbs = cfg.get("callbacks")
+    if cbs is None:
+        return False
+
+    if hasattr(cbs, "handlers"):
+        handlers = list(cbs.handlers) + list(getattr(cbs, "inheritable_handlers", []))
+    elif isinstance(cbs, list):
+        handlers = list(cbs)
+    else:
+        return False
+
+    target = next(
+        (h for h in handlers if isinstance(h, OmnibotObsCallbackHandler)),
+        None,
+    )
+    if target is None:
+        return False
+
+    target._set_pending_meta(meta)
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +286,19 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
         # Keyed by LangChain run_id (UUID str) so concurrent tool calls don't clash
         self._tool_start_times: dict[str, float] = {}
         self._tool_names: dict[str, str] = {}
+        self._pending_meta: dict | None = None
+
+    def _set_pending_meta(self, meta: dict) -> None:
+        """Called by attach_tool_meta(); bounded to keep JSONL rows compact."""
+        try:
+            s = json.dumps(meta, ensure_ascii=False)
+        except (TypeError, ValueError) as exc:
+            log.warning("attach_tool_meta: not serializable, dropped: %s", exc)
+            return
+        if len(s.encode("utf-8")) > _META_BYTE_LIMIT:
+            log.warning("attach_tool_meta: exceeds %d bytes, dropped", _META_BYTE_LIMIT)
+            return
+        self._pending_meta = dict(meta)
 
     # ------------------------------------------------------------------
     # LLM events
@@ -356,6 +413,7 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
     ) -> None:
         lc_run_id = str(kwargs.get("run_id", ""))
         tool_name = serialized.get("name", "unknown")
+        self._pending_meta = None
         self._tool_start_times[lc_run_id] = time.perf_counter()
         self._tool_names[lc_run_id] = tool_name
 
@@ -388,6 +446,8 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
         tool_name = self._tool_names.pop(lc_run_id, "unknown")
         start_t = self._tool_start_times.pop(lc_run_id, time.perf_counter())
         duration_ms = round((time.perf_counter() - start_t) * 1000, 1)
+        meta = self._pending_meta
+        self._pending_meta = None
 
         self._obs.log_tool_result(
             tool_name=tool_name,
@@ -397,6 +457,7 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
             error_message=None,
             trace_id=self._trace_id,
             run_id=self._current_run_id,
+            meta=meta,
         )
 
     async def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
@@ -404,6 +465,8 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
         tool_name = self._tool_names.pop(lc_run_id, "unknown")
         start_t = self._tool_start_times.pop(lc_run_id, time.perf_counter())
         duration_ms = round((time.perf_counter() - start_t) * 1000, 1)
+        meta = self._pending_meta
+        self._pending_meta = None
 
         self._obs.log_tool_result(
             tool_name=tool_name,
@@ -413,4 +476,5 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
             error_message=str(error),
             trace_id=self._trace_id,
             run_id=self._current_run_id,
+            meta=meta,
         )

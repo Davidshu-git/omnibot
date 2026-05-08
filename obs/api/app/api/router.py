@@ -15,7 +15,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select, distinct, String
+from sqlalchemy import func, select, distinct, String, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import get_db, AsyncSessionLocal
@@ -566,6 +566,86 @@ async def tools_stats(
         q = q.where(Event.project_id == project_id)
     result = await db.execute(q)
     return [{"tool_name": r.tool_name, "calls": r.calls} for r in result.all()]
+
+
+# ---------------------------------------------------------------------------
+# Stats — instance diagnoses
+# ---------------------------------------------------------------------------
+
+@router.get("/stats/diagnoses")
+async def diagnoses_stats(
+    project_id: Optional[str] = Query("mhxy"),
+    since: Optional[datetime] = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Aggregate structured instance diagnosis metadata by code and state."""
+    meta_kind = Event.payload_json["meta"]["kind"].as_string()
+    code_col = Event.payload_json["meta"]["code"].as_string().label("code")
+    state_col = Event.payload_json["meta"]["state"].as_string().label("state")
+    needs_human = Event.payload_json["meta"]["needs_human"].as_boolean()
+
+    base_filter = [
+        Event.event_type == "tool_result",
+        meta_kind == "instance_diagnosis",
+    ]
+    if project_id:
+        base_filter.append(Event.project_id == project_id)
+    if since:
+        base_filter.append(Event.timestamp >= since)
+
+    q = (
+        select(
+            code_col,
+            state_col,
+            func.count().label("n"),
+            func.sum(case((needs_human, 1), else_=0)).label("needs_human"),
+        )
+        .where(*base_filter)
+        .group_by(code_col, state_col)
+        .order_by(func.count().desc())
+    )
+    result = await db.execute(q)
+    return [
+        {
+            "code": r.code,
+            "state": r.state,
+            "count": r.n,
+            "needs_human": int(r.needs_human or 0),
+        }
+        for r in result.all()
+    ]
+
+
+@router.get("/stats/diagnoses/recent")
+async def diagnoses_recent(
+    project_id: str = Query("mhxy"),
+    limit: int = Query(50, le=200),
+    db: AsyncSession = Depends(get_db),
+):
+    """Return recent structured diagnosis events, including full step lists."""
+    meta_kind = Event.payload_json["meta"]["kind"].as_string()
+    q = (
+        select(Event)
+        .where(
+            Event.event_type == "tool_result",
+            meta_kind == "instance_diagnosis",
+            Event.project_id == project_id,
+        )
+        .order_by(Event.timestamp.desc(), Event.id.desc())
+        .limit(limit)
+    )
+    result = await db.execute(q)
+    events = result.scalars().all()
+    return [
+        {
+            "event_id": e.event_id,
+            "session_id": e.session_id,
+            "timestamp": e.timestamp,
+            "trace_id": e.trace_id,
+            "meta": (e.payload_json or {}).get("meta") or {},
+        }
+        for e in events
+    ]
 
 
 # ---------------------------------------------------------------------------

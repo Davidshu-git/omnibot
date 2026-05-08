@@ -9,7 +9,7 @@ mhxy JSONL format (one JSON object per line):
                duration_ms, stop_reason, error_message}
   thought     {type, timestamp, content}
   tool_call   {type, timestamp, tool_name, arguments}
-  tool_result {type, timestamp, tool_name, output, success, duration_ms, error_message}
+  tool_result {type, timestamp, tool_name, output, success, duration_ms, error_message, meta?}
 
 Mapping rules:
   - project_id  = "mhxy"
@@ -298,15 +298,18 @@ class MhxyJsonlAdapter:
             )
 
         if rtype == "tool_result":
+            payload = {
+                "tool_name": record.get("tool_name", ""),
+                "success": record.get("success", True),
+                "result": record.get("output"),
+                "duration_ms": record.get("duration_ms"),
+            }
+            if record.get("meta") is not None:
+                payload["meta"] = record["meta"]
             return NormalizedEvent(
                 **base,
                 event_type=EventType.TOOL_RESULT,
-                payload={
-                    "tool_name": record.get("tool_name", ""),
-                    "success": record.get("success", True),
-                    "result": record.get("output"),
-                    "duration_ms": record.get("duration_ms"),
-                },
+                payload=payload,
                 extra={"error_message": record.get("error_message")} if record.get("error_message") else {},
             )
 

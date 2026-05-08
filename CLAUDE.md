@@ -41,6 +41,15 @@ docker compose -f obs/docker-compose.yml restart api        # 重启 API
 curl -X POST http://localhost:8000/api/ingest/mhxy
 curl -X POST http://localhost:8000/api/ingest/stock-bot
 curl -X POST http://localhost:8000/api/ingest/ehs-bot
+
+# 运行单元测试（在容器内跑，不依赖本地 venv）
+# core/ 和 mhxy_bot/ 已通过 volume 挂载进容器，测试文件需先 cp 进去
+docker exec v2-omnimhxy-tg-bot mkdir -p /app/tests
+docker cp tests/<file>.py v2-omnimhxy-tg-bot:/app/tests/<file>.py
+docker exec v2-omnimhxy-tg-bot python -m pytest tests/<file>.py -v
+# 批量跑所有测试（先把整个 tests/ 目录 cp 进容器）：
+# docker cp tests/ v2-omnimhxy-tg-bot:/app/tests
+# docker exec v2-omnimhxy-tg-bot python -m pytest tests/ -v
 ```
 
 ---

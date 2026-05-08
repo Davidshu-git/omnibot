@@ -13,6 +13,7 @@ export type EventType =
   | "tool_result"
   | "metric"
   | "event"
+  | "task_event"
   | "error";
 
 export type ThoughtKind = "reasoning_summary" | "custom_think" | "extracted";
@@ -61,6 +62,7 @@ export interface ToolResultPayload {
   success: boolean;
   result?: unknown;
   duration_ms?: number;
+  meta?: Record<string, unknown>;
 }
 
 export interface MetricPayload {

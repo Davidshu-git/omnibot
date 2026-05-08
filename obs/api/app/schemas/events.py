@@ -85,6 +85,7 @@ class ToolResultPayload(BaseModel):
     success: bool = True
     result: Optional[Any] = None
     duration_ms: Optional[float] = None
+    meta: Optional[dict[str, Any]] = None
 
 
 class MetricPayload(BaseModel):

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
 import { useRouter } from "next/router";
 import Link from "next/link";
 import { marked } from "marked";
@@ -70,6 +71,20 @@ function fmtMsValue(v: unknown): string | null {
   if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 1 : 2)}s`;
   return `${Math.round(v)}ms`;
 }
+const chipStyle = (tone: "ok" | "warn" | "error" | "muted"): CSSProperties => ({
+  display: "inline-block",
+  padding: "1px 6px",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+  borderRadius: 3,
+  border: "1px solid var(--border)",
+  color: {
+    ok: "var(--green)",
+    warn: "var(--orange)",
+    error: "var(--red)",
+    muted: "var(--text-muted)",
+  }[tone],
+});
 function hasObjectContent(v: unknown): boolean {
   return !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v as Record<string, unknown>).length > 0;
 }
@@ -267,6 +282,8 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
     const ok = p.success as boolean;
     const durMs = p.duration_ms as number | null;
     const result = typeof p.result === "string" ? p.result : JSON.stringify(p.result);
+    const meta = p.meta as Record<string, unknown> | undefined;
+    const steps = Array.isArray(meta?.steps) ? meta.steps : [];
     const truncated = !expanded && (result?.length ?? 0) > 250;
     const preview = truncated ? result!.slice(0, 250) + "…" : result;
     return (
@@ -288,6 +305,23 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
         {result && (
           <div style={{ marginTop: 4, color: "var(--text-muted)", fontSize: 11, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)", lineHeight: 1.5 }}>
             {preview}
+          </div>
+        )}
+        {meta?.kind === "instance_diagnosis" && (
+          <div style={{ marginTop: 6 }}>
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+              <span style={chipStyle("muted")}>端口 {String(meta.port ?? "")}</span>
+              <span style={chipStyle(meta.code === "unknown_ok" ? "ok" : "warn")}>
+                {String(meta.code ?? "")}
+              </span>
+              <span style={chipStyle("muted")}>{String(meta.state ?? "")}</span>
+              {meta.needs_human === true && <span style={chipStyle("error")}>需人工</span>}
+            </div>
+            {steps.length > 0 && (
+              <ol style={{ marginTop: 6, paddingLeft: 18, color: "var(--text-muted)", fontSize: 11 }}>
+                {steps.map((s, i) => <li key={i}>{String(s)}</li>)}
+              </ol>
+            )}
           </div>
         )}
       </div>
@@ -337,7 +371,7 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
           <span>{icon}</span>
           <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{subtype}</span>
           <span style={{ color: "var(--teal)", fontFamily: "var(--font-mono)" }}>:{port}</span>
-          {p.phase && <span style={{ color: "var(--purple)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{p.phase as string}</span>}
+          {p.phase != null && <span style={{ color: "var(--purple)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{String(p.phase)}</span>}
 
           {subtype === "task_started" && <>
             <span style={{ fontFamily: "var(--font-mono)" }}>{p.task_id as string}</span>
@@ -454,7 +488,7 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
             paddingTop: 6,
           }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>
-              {p.task_run_id && <span>run:{String(p.task_run_id).slice(-28)}</span>}
+              {p.task_run_id != null && <span>run:{String(p.task_run_id).slice(-28)}</span>}
               {p.timeout_sec != null && <span>timeout:{String(p.timeout_sec)}s</span>}
               {p.retries != null && <span>retries:{String(p.retries)}</span>}
               {typeof p.preflight_steps === "number" && <span>preflight:{p.preflight_steps as number}</span>}

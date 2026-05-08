@@ -10,7 +10,7 @@ Format (produced by core/observability.py in omnibot):
                duration_ms, stop_reason, error_message, trace_id?, run_id?}
   tool_call   {type, timestamp, tool_name, arguments, trace_id?, run_id?}
   tool_result {type, timestamp, tool_name, output, success, duration_ms,
-               error_message, trace_id?, run_id?}
+               error_message, meta?, trace_id?, run_id?}
 
 Key differences from mhxy_jsonl:
   - trace_id and run_id are already embedded in each record (no need to derive)
@@ -240,15 +240,18 @@ class OmnibotJsonlAdapter:
             )
 
         if rtype == "tool_result":
+            payload = {
+                "tool_name": record.get("tool_name", ""),
+                "success": record.get("success", True),
+                "result": record.get("output"),
+                "duration_ms": record.get("duration_ms"),
+            }
+            if record.get("meta") is not None:
+                payload["meta"] = record["meta"]
             return NormalizedEvent(
                 **base,
                 event_type=EventType.TOOL_RESULT,
-                payload={
-                    "tool_name": record.get("tool_name", ""),
-                    "success": record.get("success", True),
-                    "result": record.get("output"),
-                    "duration_ms": record.get("duration_ms"),
-                },
+                payload=payload,
                 extra={"error_message": record.get("error_message")} if record.get("error_message") else {},
             )
 

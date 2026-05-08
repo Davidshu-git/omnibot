@@ -83,8 +83,44 @@ def test_internal_exception_uses_unknown_ok_code():
     assert any("诊断内部异常" in s for s in diag.steps)
 
 
-def test_try_reconnect_success_writes_step():
-    """try_reconnect 成功时应向 steps 写入"自动恢复成功"。"""
+def test_disconnected_diagnosis_does_not_try_reconnect_by_default():
+    """诊断掉线状态默认只上报，不应直接触发 try_reconnect。"""
+    executor = MagicMock(spec=ExecutorClient)
+    executor.app_health.return_value = {"adb": True, "screenshot": True, "ocr": True}
+    executor.sense.return_value = []
+
+    with patch("mhxy_bot.runner.perception.detect_screen_state", return_value=InstanceState.DISCONNECTED), \
+         patch("mhxy_bot.runner.instance_recovery.try_reconnect") as mock_reconnect:
+        ctx = _make_ctx(executor)
+        diag = diagnose_instance(ctx)
+
+    mock_reconnect.assert_not_called()
+    assert any("检测到掉线，未执行自动重连" in s for s in diag.steps)
+    assert diag.code == InstanceIssue.DISCONNECTED
+    assert diag.state == InstanceState.DISCONNECTED
+    assert diag.needs_human is True
+
+
+def test_login_screen_diagnosis_does_not_try_reconnect_by_default():
+    """诊断登录界面默认只上报，不应直接触发 try_reconnect。"""
+    executor = MagicMock(spec=ExecutorClient)
+    executor.app_health.return_value = {"adb": True, "screenshot": True, "ocr": True}
+    executor.sense.return_value = []
+
+    with patch("mhxy_bot.runner.perception.detect_screen_state", return_value=InstanceState.LOGIN_SCREEN), \
+         patch("mhxy_bot.runner.instance_recovery.try_reconnect") as mock_reconnect:
+        ctx = _make_ctx(executor)
+        diag = diagnose_instance(ctx)
+
+    mock_reconnect.assert_not_called()
+    assert any("检测到登录界面，未执行自动重连" in s for s in diag.steps)
+    assert diag.code == InstanceIssue.LOGIN_SCREEN
+    assert diag.state == InstanceState.LOGIN_SCREEN
+    assert diag.needs_human is True
+
+
+def test_attempt_reconnect_success_writes_step_when_explicitly_enabled():
+    """显式开启 attempt_reconnect 时，诊断才允许调用 try_reconnect。"""
     executor = MagicMock(spec=ExecutorClient)
     executor.app_health.return_value = {"adb": True, "screenshot": True, "ocr": True}
     executor.sense.return_value = []
@@ -108,69 +144,9 @@ def test_try_reconnect_success_writes_step():
 
         mock_reconnect.side_effect = _reconnect_with_step
         ctx = _make_ctx(executor)
-        diag = diagnose_instance(ctx)
+        diag = diagnose_instance(ctx, attempt_reconnect=True)
 
+    mock_reconnect.assert_called_once()
     assert any("自动恢复成功" in s for s in diag.steps)
     assert diag.code == InstanceIssue.UNKNOWN_OK
     assert diag.needs_human is False
-
-
-def test_try_reconnect_timeout_writes_step():
-    """try_reconnect 超时时应向 steps 写入"自动恢复失败或超时"。"""
-    executor = MagicMock(spec=ExecutorClient)
-    executor.app_health.return_value = {"adb": True, "screenshot": True, "ocr": True}
-    executor.sense.return_value = []
-
-    with patch("mhxy_bot.runner.perception.detect_screen_state", return_value=InstanceState.DISCONNECTED), \
-         patch("mhxy_bot.runner.instance_recovery.try_reconnect") as mock_reconnect:
-
-        def _reconnect_timeout(ctx, timeout_sec=90, steps=None):
-            if steps is not None:
-                steps.append(f"自动恢复失败或超时（{timeout_sec}s）")
-            return False
-
-        mock_reconnect.side_effect = _reconnect_timeout
-        ctx = _make_ctx(executor)
-        diag = diagnose_instance(ctx)
-
-    assert any("自动恢复失败或超时" in s for s in diag.steps)
-    assert diag.code == InstanceIssue.DISCONNECTED
-    assert diag.needs_human is True
-
-
-def test_steps_capped_at_12():
-    """steps 超出 12 条时应截断并追加"…（已截断）"。"""
-    executor = MagicMock(spec=ExecutorClient)
-    executor.app_health.return_value = {"adb": True, "screenshot": True, "ocr": True}
-    # sense 每次返回会触发多次 _cap_steps 调用，通过 detect_screen_state mock 控制循环次数
-    executor.sense.return_value = []
-
-    call_count = 0
-
-    def _detect_many_states(ctx):
-        nonlocal call_count
-        call_count += 1
-        # 前 11 次返回 DISCONNECTED，触发 reconnect，最终返回 MAIN_UI
-        return InstanceState.MAIN_UI
-
-    with patch("mhxy_bot.runner.perception.detect_screen_state", side_effect=_detect_many_states), \
-         patch("mhxy_bot.runner.instance_recovery.try_reconnect") as mock_reconnect:
-
-        # 注入 13 条 steps（超限场景）
-        def _inject_many_steps(ctx, timeout_sec=90, steps=None):
-            if steps is not None:
-                for i in range(13):
-                    steps.append(f"额外步骤 {i}")
-            return True
-
-        mock_reconnect.side_effect = _inject_many_steps
-
-        # 触发 LOGIN_SCREEN 路径以调用 try_reconnect
-        with patch("mhxy_bot.runner.perception.detect_screen_state", return_value=InstanceState.LOGIN_SCREEN):
-            ctx = _make_ctx(executor)
-            diag = diagnose_instance(ctx)
-
-    # steps 总数不超过 13（12 条实质内容 + 截断提示）
-    assert len(diag.steps) <= 13
-    if len(diag.steps) == 13:
-        assert diag.steps[-1] == "…（已截断）"

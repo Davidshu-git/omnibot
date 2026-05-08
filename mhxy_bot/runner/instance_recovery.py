@@ -119,8 +119,18 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90, steps: list[str] 
     return False
 
 
-def diagnose_instance(ctx: "RunnerContext") -> InstanceDiagnosis:
-    """Classify the minimum actionable health state for one game instance."""
+def diagnose_instance(ctx: "RunnerContext", attempt_reconnect: bool = False) -> InstanceDiagnosis:
+    """Classify the minimum actionable health state for one game instance.
+
+    Args:
+        ctx: Runner context bound to one emulator instance.
+        attempt_reconnect: Whether to actively call try_reconnect for recoverable
+            login/disconnect states. Defaults to False so health checks remain
+            read-only and do not click or change game state.
+
+    Returns:
+        Instance diagnosis with issue code, state, human-action flag, and steps.
+    """
     steps: list[str] = []
 
     if ctx.dry_run:
@@ -186,28 +196,23 @@ def diagnose_instance(ctx: "RunnerContext") -> InstanceDiagnosis:
                 steps=steps,
             )
 
-        try:
-            ctx.executor.sense(ctx.port)
-            steps.append("ADB / 截图 / OCR 均正常")
-        except Exception as exc:
-            steps.append(f"OCR sense 调用失败：{exc}")
-            _cap_steps()
-            return InstanceDiagnosis(
-                code=InstanceIssue.OCR_FAILED,
-                state=InstanceState.UNKNOWN,
-                needs_human=True,
-                message=f"OCR/sense failed: {exc}",
-                details=details,
-                steps=steps,
-            )
+        from mhxy_bot.runner.perception import detect_screen_state, detect_with_texts
 
-        from mhxy_bot.runner.perception import detect_screen_state
-
-        state = detect_screen_state(ctx)
-        steps.append(f"屏幕状态识别：{state.value}")
+        state, _, _ = detect_with_texts(ctx)
+        steps.append(f"OCR 正常，屏幕状态：{state.value}")
         _cap_steps()
 
         if state == InstanceState.LOGIN_SCREEN:
+            if not attempt_reconnect:
+                steps.append("检测到登录界面，未执行自动重连")
+                _cap_steps()
+                return InstanceDiagnosis(
+                    code=InstanceIssue.LOGIN_SCREEN,
+                    state=InstanceState.LOGIN_SCREEN,
+                    needs_human=True,
+                    message="game is at login screen; reconnect not attempted",
+                    steps=steps,
+                )
             ctx.info("diagnose: login screen, attempting auto-login entry")
             steps.append("检测到登录界面，尝试自动进入游戏")
             _cap_steps()
@@ -240,6 +245,16 @@ def diagnose_instance(ctx: "RunnerContext") -> InstanceDiagnosis:
                 steps=steps,
             )
         if state == InstanceState.DISCONNECTED:
+            if not attempt_reconnect:
+                steps.append("检测到掉线，未执行自动重连")
+                _cap_steps()
+                return InstanceDiagnosis(
+                    code=InstanceIssue.DISCONNECTED,
+                    state=InstanceState.DISCONNECTED,
+                    needs_human=True,
+                    message="game disconnected; reconnect not attempted",
+                    steps=steps,
+                )
             ctx.info("diagnose: disconnected, attempting auto-reconnect")
             steps.append("检测到掉线，尝试自动重连")
             _cap_steps()
