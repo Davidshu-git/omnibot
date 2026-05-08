@@ -126,6 +126,7 @@ class InstanceDiagnosis:
     needs_human: bool = False
     message: str = ""
     details: dict[str, Any] = field(default_factory=dict)
+    steps: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -134,6 +135,7 @@ class InstanceDiagnosis:
             "needs_human": self.needs_human,
             "message": self.message,
             "details": self.details,
+            "steps": self.steps,
         }
 
 

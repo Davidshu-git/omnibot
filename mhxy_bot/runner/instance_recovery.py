@@ -39,7 +39,7 @@ def _tap_text(ctx: "RunnerContext", candidates: list[str]) -> bool:
     return _tap_from_items(ctx, items, candidates)
 
 
-def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
+def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90, steps: list[str] | None = None) -> bool:
     """掉线后自动重连：处理掉线、更新重启、桌面启动、登录入口，等待主界面。
 
     Returns True if back to main UI.
@@ -60,6 +60,8 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
         ctx.info("reconnect: waiting... state=%s", state.value)
         if state == InstanceState.MAIN_UI:
             ctx.info("reconnect: success, back to main UI")
+            if steps is not None:
+                steps.append("自动恢复成功，回到主界面")
             return True
         if state == InstanceState.DISCONNECTED:
             try:
@@ -112,116 +114,172 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90) -> bool:
         time.sleep(3.0)
 
     ctx.warning("reconnect: timeout after %ds", timeout_sec)
+    if steps is not None:
+        steps.append(f"自动恢复失败或超时（{timeout_sec}s）")
     return False
 
 
 def diagnose_instance(ctx: "RunnerContext") -> InstanceDiagnosis:
     """Classify the minimum actionable health state for one game instance."""
+    steps: list[str] = []
+
     if ctx.dry_run:
         return InstanceDiagnosis(
             code=InstanceIssue.UNKNOWN_OK,
             state=InstanceState.UNKNOWN,
             needs_human=False,
             message="dry_run: instance diagnosis skipped",
+            steps=steps,
         )
+
+    def _cap_steps() -> None:
+        if len(steps) > 12:
+            del steps[12:]
+            steps.append("…（已截断）")
 
     try:
-        health = ctx.executor.app_health(ctx.port)
-    except Exception as exc:
-        return InstanceDiagnosis(
-            code=InstanceIssue.ADB_OFFLINE,
-            state=InstanceState.OFFLINE,
-            needs_human=True,
-            message=f"app_health error: {exc}",
-        )
+        try:
+            health = ctx.executor.app_health(ctx.port)
+        except Exception as exc:
+            steps.append(f"app_health 调用失败：{exc}")
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.ADB_OFFLINE,
+                state=InstanceState.OFFLINE,
+                needs_human=True,
+                message=f"app_health error: {exc}",
+                steps=steps,
+            )
 
-    details = health.get("details") or {}
-    if not health.get("adb"):
+        details = health.get("details") or {}
+        if not health.get("adb"):
+            steps.append("ADB 未连接")
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.ADB_OFFLINE,
+                state=InstanceState.OFFLINE,
+                needs_human=True,
+                message="ADB is not connected",
+                details=details,
+                steps=steps,
+            )
+        if not health.get("screenshot"):
+            steps.append("截图失败")
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.SCREENSHOT_FAILED,
+                state=InstanceState.OFFLINE,
+                needs_human=True,
+                message="screenshot failed",
+                details=details,
+                steps=steps,
+            )
+        if not health.get("ocr"):
+            steps.append("OCR 不可用")
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.OCR_FAILED,
+                state=InstanceState.UNKNOWN,
+                needs_human=True,
+                message="OCR unavailable",
+                details=details,
+                steps=steps,
+            )
+
+        try:
+            ctx.executor.sense(ctx.port)
+            steps.append("ADB / 截图 / OCR 均正常")
+        except Exception as exc:
+            steps.append(f"OCR sense 调用失败：{exc}")
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.OCR_FAILED,
+                state=InstanceState.UNKNOWN,
+                needs_human=True,
+                message=f"OCR/sense failed: {exc}",
+                details=details,
+                steps=steps,
+            )
+
+        from mhxy_bot.runner.perception import detect_screen_state
+
+        state = detect_screen_state(ctx)
+        steps.append(f"屏幕状态识别：{state.value}")
+        _cap_steps()
+
+        if state == InstanceState.LOGIN_SCREEN:
+            ctx.info("diagnose: login screen, attempting auto-login entry")
+            steps.append("检测到登录界面，尝试自动进入游戏")
+            _cap_steps()
+            if try_reconnect(ctx, steps=steps):
+                state = detect_screen_state(ctx)
+                _cap_steps()
+                reported = InstanceState.UNKNOWN if state == InstanceState.OFFLINE else state
+                return InstanceDiagnosis(
+                    code=InstanceIssue.UNKNOWN_OK,
+                    state=reported,
+                    needs_human=False,
+                    message=f"entered game successfully, state={reported.value}",
+                    steps=steps,
+                )
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.LOGIN_SCREEN,
+                state=InstanceState.LOGIN_SCREEN,
+                needs_human=True,
+                message="game login entry failed or timed out",
+                steps=steps,
+            )
+        if state in (InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING):
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.LOGIN_SCREEN,
+                state=state,
+                needs_human=True,
+                message=f"instance is not ready for tasks: {state.value}",
+                steps=steps,
+            )
+        if state == InstanceState.DISCONNECTED:
+            ctx.info("diagnose: disconnected, attempting auto-reconnect")
+            steps.append("检测到掉线，尝试自动重连")
+            _cap_steps()
+            if try_reconnect(ctx, steps=steps):
+                state = detect_screen_state(ctx)
+                _cap_steps()
+                reported = InstanceState.UNKNOWN if state == InstanceState.OFFLINE else state
+                return InstanceDiagnosis(
+                    code=InstanceIssue.UNKNOWN_OK,
+                    state=reported,
+                    needs_human=False,
+                    message=f"reconnected successfully, state={reported.value}",
+                    steps=steps,
+                )
+            _cap_steps()
+            return InstanceDiagnosis(
+                code=InstanceIssue.DISCONNECTED,
+                state=InstanceState.DISCONNECTED,
+                needs_human=True,
+                message="game disconnected and auto-reconnect failed",
+                steps=steps,
+            )
+
+        reported_state = InstanceState.UNKNOWN if state == InstanceState.OFFLINE else state
+        _cap_steps()
         return InstanceDiagnosis(
-            code=InstanceIssue.ADB_OFFLINE,
-            state=InstanceState.OFFLINE,
-            needs_human=True,
-            message="ADB is not connected",
+            code=InstanceIssue.UNKNOWN_OK,
+            state=reported_state,
+            needs_human=False,
+            message=f"instance usable, state={reported_state.value}",
             details=details,
+            steps=steps,
         )
-    if not health.get("screenshot"):
+    except Exception as exc:
+        steps.append(f"诊断内部异常：{exc}")
+        _cap_steps()
         return InstanceDiagnosis(
-            code=InstanceIssue.SCREENSHOT_FAILED,
-            state=InstanceState.OFFLINE,
-            needs_human=True,
-            message="screenshot failed",
-            details=details,
-        )
-    if not health.get("ocr"):
-        return InstanceDiagnosis(
-            code=InstanceIssue.OCR_FAILED,
+            code=InstanceIssue.UNKNOWN_OK,
             state=InstanceState.UNKNOWN,
             needs_human=True,
-            message="OCR unavailable",
-            details=details,
+            message=f"internal diagnosis error: {exc}",
+            steps=steps,
         )
-
-    try:
-        ctx.executor.sense(ctx.port)
-    except Exception as exc:
-        return InstanceDiagnosis(
-            code=InstanceIssue.OCR_FAILED,
-            state=InstanceState.UNKNOWN,
-            needs_human=True,
-            message=f"OCR/sense failed: {exc}",
-            details=details,
-        )
-
-    from mhxy_bot.runner.perception import detect_screen_state
-
-    state = detect_screen_state(ctx)
-    if state == InstanceState.LOGIN_SCREEN:
-        ctx.info("diagnose: login screen, attempting auto-login entry")
-        if try_reconnect(ctx):
-            state = detect_screen_state(ctx)
-            reported = InstanceState.UNKNOWN if state == InstanceState.OFFLINE else state
-            return InstanceDiagnosis(
-                code=InstanceIssue.UNKNOWN_OK,
-                state=reported,
-                needs_human=False,
-                message=f"entered game successfully, state={reported.value}",
-            )
-        return InstanceDiagnosis(
-            code=InstanceIssue.LOGIN_SCREEN,
-            state=InstanceState.LOGIN_SCREEN,
-            needs_human=True,
-            message="game login entry failed or timed out",
-        )
-    if state in (InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING):
-        return InstanceDiagnosis(
-            code=InstanceIssue.LOGIN_SCREEN,
-            state=state,
-            needs_human=True,
-            message=f"instance is not ready for tasks: {state.value}",
-        )
-    if state == InstanceState.DISCONNECTED:
-        ctx.info("diagnose: disconnected, attempting auto-reconnect")
-        if try_reconnect(ctx):
-            state = detect_screen_state(ctx)
-            reported = InstanceState.UNKNOWN if state == InstanceState.OFFLINE else state
-            return InstanceDiagnosis(
-                code=InstanceIssue.UNKNOWN_OK,
-                state=reported,
-                needs_human=False,
-                message=f"reconnected successfully, state={reported.value}",
-            )
-        return InstanceDiagnosis(
-            code=InstanceIssue.DISCONNECTED,
-            state=InstanceState.DISCONNECTED,
-            needs_human=True,
-            message="game disconnected and auto-reconnect failed",
-        )
-
-    reported_state = InstanceState.UNKNOWN if state == InstanceState.OFFLINE else state
-    return InstanceDiagnosis(
-        code=InstanceIssue.UNKNOWN_OK,
-        state=reported_state,
-        needs_human=False,
-        message=f"instance usable, state={reported_state.value}",
-        details=details,
-    )

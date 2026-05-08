@@ -76,6 +76,86 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
             return f"❌ 读取实例信息失败：{type(e).__name__} - {e}"
 
     @tool
+    def check_instance_health(port: str) -> str:
+        """诊断指定模拟器实例的运行状态（ADB 连接 / 截图 / OCR / 游戏界面）。会尝试自动重连，最长等待 90 秒。
+
+        Args:
+            port: 模拟器端口号，如 "5557" 或 "127.0.0.1:5557"
+
+        Returns:
+            诊断结果字符串，包含状态、问题码、是否需要人工介入等信息。
+        """
+        try:
+            from mhxy_bot.runner.context import RunnerContext
+            from mhxy_bot.runner.instance_recovery import diagnose_instance
+
+            ctx = RunnerContext(executor=executor, port=_port_to_str(port))
+            diag = diagnose_instance(ctx)
+            d = diag.as_dict()
+
+            code = d["code"]
+            state = d["state"]
+            needs_human = d["needs_human"]
+            message = d["message"]
+
+            if needs_human:
+                prefix = "⚠️ "
+            elif code != "unknown_ok":
+                prefix = "❌ "
+            else:
+                prefix = "✅ "
+
+            steps_section = ""
+            if diag.steps:
+                steps_text = "\n".join(f"  {s}" for s in diag.steps)
+                steps_section = f"\n【诊断过程】\n{steps_text}"
+
+            return (
+                f"{prefix}端口 {port} 健康诊断\n"
+                f"  状态：{state}\n"
+                f"  问题码：{code}\n"
+                f"  需要人工介入：{'是' if needs_human else '否'}\n"
+                f"  说明：{message}"
+                f"{steps_section}"
+            )
+        except Exception as e:
+            return f"❌ 诊断异常：{type(e).__name__} - {e}"
+
+    @tool
+    def batch_check_all_instances(ports: str = "") -> str:
+        """批量诊断所有实例或指定实例（逗号分隔端口）的运行状态。每个实例最长等待 90 秒（含自动重连），实例数多时耗时较长。
+
+        Args:
+            ports: 逗号分隔的端口列表，为空时诊断所有实例。
+
+        Returns:
+            批量诊断汇总结果，包含各实例状态及统计信息。
+        """
+        try:
+            if ports.strip():
+                port_list = [p.strip() for p in ports.split(",") if p.strip()]
+            else:
+                port_list = [str(inst["port"]) for inst in _load_instances().get("instances", [])]
+            if not port_list:
+                return "❌ 没有可用实例"
+
+            ok = 0
+            warn = 0
+            lines = []
+            for port in port_list:
+                result = check_instance_health.invoke({"port": port})
+                first_line = result.split("\n")[0] if result else ""
+                lines.append(first_line)
+                if first_line.startswith("✅"):
+                    ok += 1
+                elif "⚠️" in first_line or "❌" in first_line:
+                    warn += 1
+
+            return f"共检查 {len(port_list)} 个实例（{ok} 正常 / {warn} 需介入）：\n" + "\n".join(lines)
+        except Exception as e:
+            return f"❌ 批量诊断失败：{type(e).__name__} - {e}"
+
+    @tool
     def capture_screenshot(port: str) -> str:
         """对指定端口截图并返回图片给 Telegram。port 如 5557 或 127.0.0.1:5557。"""
         try:
@@ -347,6 +427,8 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     return [
         get_instances,
         batch_recognize_schools,
+        check_instance_health,
+        batch_check_all_instances,
         capture_screenshot,
         sense_screen,
         analyze_scene,
