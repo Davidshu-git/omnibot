@@ -149,7 +149,8 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
                 else:
                     emoji = "✅"
                     ok += 1
-                lines.append(f"  {emoji} 端口 {p}  {d['state']}  {d['code']}")
+                tag = "[需恢复]" if (d["needs_human"] or d["code"] != "unknown_ok") else "[正常]"
+                lines.append(f"  {emoji} 端口 {p}  {d['state']}  {d['code']}  {tag}")
                 batch_results.append({
                     "port": port_str,
                     "code": d["code"],
@@ -167,6 +168,107 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
 
         except Exception as e:
             return f"❌ 诊断异常：{type(e).__name__} - {e}"
+
+    @tool
+    def reconnect_instances(ports: str = "") -> str:
+        """主动对一个或多个模拟器实例执行重连恢复（处理掉线 / 登录界面 / 安卓桌面）。
+        若实例当前不在可重连状态（如已在主界面），会被标记为 skipped。
+        每个实例最多等待 60 秒，N 个实例最长耗时约 60×N 秒。
+
+        Args:
+            ports: 端口号（如 "5557"）、逗号分隔多端口（如 "5557,5559"），
+                   或留空对所有实例执行重连。
+
+        Returns:
+            单实例时返回详细结果；多实例时返回汇总（成功 / 失败 / 跳过统计 + 各实例结果）。
+        """
+        try:
+            from core.observability import attach_tool_meta
+            from mhxy_bot.runner.context import RunnerContext
+            from mhxy_bot.runner.instance_recovery import reconnect_one_port
+
+            if ports.strip():
+                port_list = [p.strip() for p in ports.split(",") if p.strip()]
+            else:
+                port_list = [str(inst["port"]) for inst in _load_instances().get("instances", [])]
+            if not port_list:
+                return "❌ 没有可用实例"
+
+            # 软上限：留空且实例数 > 5 时拒绝无差别全量，避免 LLM 触发 60×N 秒阻塞
+            BATCH_LIMIT = 5
+            if not ports.strip() and len(port_list) > BATCH_LIMIT:
+                return (
+                    f"⚠️ 检测到 {len(port_list)} 个实例。无差别批量重连预计耗时 "
+                    f">{60 * BATCH_LIMIT}s，建议先调 check_instance_health 筛出 "
+                    f"`needs_human=True` 实例，再用 ports 参数显式指定端口。"
+                )
+
+            # 单端口：返回详细结果
+            if len(port_list) == 1:
+                port_str = _port_to_str(port_list[0])
+                ctx = RunnerContext(executor=executor, port=port_str)
+                outcome = reconnect_one_port(ctx, timeout_sec=60)
+                attach_tool_meta({
+                    "kind": "reconnect",
+                    "port": port_str,
+                    **outcome,
+                })
+                action = outcome["action"]
+                if action == "skipped":
+                    return (f"⏭️ 端口 {port_list[0]} 跳过重连\n"
+                            f"  当前状态：{outcome['state']}（无需恢复）")
+                prefix = "✅" if action == "reconnected" else "❌"
+                verb = "成功" if action == "reconnected" else "失败"
+                steps_section = ""
+                if outcome.get("steps"):
+                    steps_text = "\n".join(f"  {s}" for s in outcome["steps"])
+                    steps_section = f"\n【恢复过程】\n{steps_text}"
+                return (
+                    f"{prefix} 端口 {port_list[0]} 重连{verb}\n"
+                    f"  初始状态：{outcome['initial_state']}\n"
+                    f"  最终状态：{outcome['final_state']}"
+                    f"{steps_section}"
+                )
+
+            # 多端口：顺序执行 + 汇总
+            ok = bad = skip = 0
+            lines = []
+            batch_results = []
+            for p in port_list:
+                port_str = _port_to_str(p)
+                try:
+                    ctx = RunnerContext(executor=executor, port=port_str)
+                    outcome = reconnect_one_port(ctx, timeout_sec=60)
+                except Exception as exc:
+                    outcome = {"action": "failed", "initial_state": "error",
+                               "final_state": f"error: {type(exc).__name__}",
+                               "steps": []}
+                action = outcome["action"]
+                if action == "reconnected":
+                    emoji, detail = "✅", outcome["final_state"]
+                    ok += 1
+                elif action == "failed":
+                    emoji, detail = "❌", outcome["final_state"]
+                    bad += 1
+                else:  # skipped
+                    emoji, detail = "⏭️", outcome["state"]
+                    skip += 1
+                lines.append(f"  {emoji} 端口 {p}  {detail}")
+                batch_results.append({"port": port_str, **outcome})
+
+            attach_tool_meta({
+                "kind": "reconnect",
+                "batch_size": len(port_list),
+                "ok": ok,
+                "failed": bad,
+                "skipped": skip,
+                "results": batch_results,
+            })
+            return (f"共重连 {len(port_list)} 个实例"
+                    f"（{ok} 成功 / {bad} 失败 / {skip} 跳过）：\n"
+                    + "\n".join(lines))
+        except Exception as e:
+            return f"❌ 重连异常：{type(e).__name__} - {e}"
 
     @tool
     def capture_screenshot(port: str) -> str:
@@ -441,6 +543,7 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
         get_instances,
         batch_recognize_schools,
         check_instance_health,
+        reconnect_instances,
         capture_screenshot,
         sense_screen,
         analyze_scene,

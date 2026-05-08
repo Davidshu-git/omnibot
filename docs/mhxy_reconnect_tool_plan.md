@@ -1,68 +1,51 @@
 # 方案：把"重连实例"作为独立工具暴露给 LLM
 
-## 背景与现状
+> v2.1 修订版。覆盖 v1 / v2。
 
-mhxy_bot 当前 LLM 可见的工具集（`mhxy_bot/tools/game_tools.py::make_game_tools`）里
-**没有独立的"重连"工具**。LLM 触发重连的唯一路径是 `check_instance_health` /
-`batch_check_all_instances` —— 它们在内部走 `diagnose_instance`，且只在屏幕状态
-被识别为 `DISCONNECTED` 或 `LOGIN_SCREEN` 时才隐式调用 `try_reconnect`。
+## ChangeLog
 
-而 Telegram `/reconnect` 命令背后的 `_reconnect_sync`（`mhxy_bot/tg_main.py`）把
-`{DISCONNECTED, LOGIN_SCREEN, ANDROID_HOME}` 都视为可重连状态，并在所有
-`reconnect_actions = ["重新登录", "确定"]`、"梦幻西游" 桌面图标、"登录游戏"、
-更新弹窗、过场动画等场景下推进流程。
+### v2.1（基于自审 review）
 
-由此产生两个问题：
+1. **核实 `RunnerContext` 直构合法**：dataclass 非默认字段只有 `executor / port`，`check_instance_health` 已在用（`game_tools.py:103 / 140`）。新工具沿用同一风格，**不要**改成 `build_context(...)`。
+2. **统一 obs `kind` 命名**：单 / 批量都用 `kind="reconnect"`，多端口附加 `batch_size: int`，避免聚合查询时漏 OR 一个 kind。
+3. **采集 `try_reconnect` 的 `steps`**：helper 构造 steps 列表传入 `try_reconnect`，结果一并塞进 `attach_tool_meta`，对齐 `instance_diagnosis` 的 steps 字段，让 obs 看板能展开"诊断过程"。
+4. **批量耗时硬兜底**：tool 内对"留空 + 实例数 > 5"的调用直接返回引导话术，避免 LLM 触发 5 分钟阻塞 / Telegram UX 雪崩。
+5. **`check_instance_health` 输出标签化**：每行追加 `[需恢复]` / `[正常]`，让 LLM 二阶段决策摆脱 emoji 推断。
+6. **prompt 准则 7 加豁免**：用户明确要求"全部重连"时允许直接全量，消除与准则 8 的措辞冲突。
+7. **codex 自测指令具体化**：给到 `docker compose` 和 `docker logs` 实际命令。
 
-1. **能力错位**：`/reconnect` 能处理 ANDROID_HOME 等状态，LLM 走诊断却拿到
-   `needs_human=True` 的最终结论，无法发起恢复。
-2. **意图错位**：用户在 Telegram 用自然语言说"把 5557 重连一下" / "把所有掉线
-   实例拉起来"，LLM 只能选择 `check_instance_health`（语义偏向"体检"）。这条路径
-   既不直观，也无法表达"我**就是**要执行恢复"的意图。
+### v2（相对 v1）
 
-`/reconnect` 命令、"🔌 掉线重连" 内联按钮、`runner/recovery.py` 的步级自动恢复
-都能直接调到 `try_reconnect`，唯独 LLM tool call 不能。
+1. **事实修正**：v1 提到的 `batch_check_all_instances` **不存在**。`check_instance_health` 的 `port` 参数已经一并支持空串（=全部）、CSV（=多个）、单端口三种调用。
+2. **事实修正**：v1 称 `check_instance_health` 会"隐式调用 `try_reconnect`"——错。`game_tools.py:103 / 140` 调 `diagnose_instance(ctx)` 没传 `attempt_reconnect=True`，**当前是纯只读**。docstring 也写明"纯只读，不执行修复或重连"。
+3. **设计简化**：合并 v1 的 `reconnect_instance` + `batch_reconnect_instances` 为单工具 `reconnect_instances(ports="")`，参数风格与 `check_instance_health` 对称。
+4. **obs 统一**：`events.reconnect_port` 上移到 helper 内 emit，让按钮路径与 LLM 路径共用同一组 runner 事件。
+5. **prompt 现状补齐**：当前 `GAME_SYSTEM_PROMPT` 完全没列 `check_instance_health`——本次需把"诊断 + 恢复"两族整体补进去。
+
+---
+
+## 背景
+
+- mhxy_bot 主控台「📊 实例状态」「🔌 掉线重连」按钮走的是 `tg_main.py::_instance_status_sync` / `_reconnect_sync`，**不经过 LLM**——`runner/perception` + `runner/instance_recovery.try_reconnect` 的确定性流水线。
+- 当用户在对话里自然语言说"看看所有实例情况，处理下有问题的实例"——LLM 只能调 `check_instance_health`（纯只读体检）+ 自己用 `sense_screen` / `tap_*` 在线拼装恢复循环，慢、贵、且复制 `try_reconnect` 已有逻辑。
+- 合理分工：**LLM 做决策（要不要修、修哪些），脚本做动作（恢复流程）**。要让 LLM 直接调"重连"，必须把 `try_reconnect` 包成 LangChain `@tool`。
 
 ## 目标
 
-把"重连实例"提升为 LLM 可主动调用的一类 tool，与 `check_instance_health` /
-`batch_check_all_instances` 平级，覆盖单端口与批量两个变体。重连仍走
-`mhxy_bot/runner/instance_recovery.py::try_reconnect`，不引入新的恢复路径。
+把"重连实例"提升为 LLM 可主动调用的一类 tool，与 `check_instance_health` 平级。重连仍走 `runner/instance_recovery.try_reconnect`，**不引入新的恢复路径**；同时把 `_reconnect_sync` 折叠到同一 helper，避免双份逻辑漂移。
 
-## 设计要点
+---
 
-1. **新工具命名沿用现有约定**：`reconnect_instance(port)` 与
-   `batch_reconnect_instances(ports="")`。
-2. **复用 `_reconnect_sync` 的"按当前状态决定 skip / reconnect"语义**，但不依赖
-   `TelegramBotBase` 实例方法，因此把核心循环下沉成 `instance_recovery` 模块级
-   helper（见下文 §1）。`tg_main.py::_reconnect_sync` 改为调用该 helper，避免
-   两份逻辑漂移。
-3. **可重连状态集合保持唯一来源**：在 `instance_recovery` 内定义
-   `RECONNECTABLE_STATES = {DISCONNECTED, LOGIN_SCREEN, ANDROID_HOME}`，
-   `_reconnect_sync` 与新 tool 都从这里读取。
-4. **超时**：默认 60s（与 `/reconnect` 一致）。Tool 不暴露 timeout 参数 —— 暴露
-   只会鼓励 LLM 乱填，且更长的 timeout 会让 Agent 回合卡死。
-5. **observability**：tool 调用本身已经被 LangChain callback 记录到 obs
-   （tool_started/tool_completed），新工具仅再额外调 `attach_tool_meta` 上报
-   `kind=reconnect` 的结构化结果，不重复 events.scan_started / reconnect_port
-   （那条事件流是 Telegram 命令路径专用的）。
-6. **不引入并发**：`batch_reconnect_instances` 顺序执行，与
-   `batch_check_all_instances` 一致。原因：ADB 顺序读屏 + OCR 阻塞，并发反而
-   触发 executor 限流。
-7. **不和 `check_instance_health` 内的隐式重连去重**：两条路径目标不同 ——
-   `check_instance_health` 是"先体检，必要时附带恢复"，`reconnect_instance`
-   是"明确执行恢复"。LLM 的 system prompt 要明确这条边界（见下文 §3）。
+## 改动范围（4 个文件）
 
-## 改动范围（3 个文件）
+### 1) `mhxy_bot/runner/instance_recovery.py`：新增常量与 helper
 
-### 1. `mhxy_bot/runner/instance_recovery.py`
-
-新增模块级常量与 helper，抽出 `_reconnect_sync` 的核心循环。
+把 `_reconnect_sync` 的"按当前状态决定 skip / reconnect"逻辑下沉到 helper，并由 helper 负责发 `events.reconnect_port`，让所有重连入口共用同一组事件；同时采集 `try_reconnect` 的 `steps`。
 
 ```python
 from mhxy_bot.runner.models import InstanceState
 
-# 当前 state 处于这些值时，try_reconnect 才有意义
+# 当前 state 处于这些值时，try_reconnect 才有意义；按钮 / LLM 两条路径都从这里读
 RECONNECTABLE_STATES: frozenset[InstanceState] = frozenset({
     InstanceState.DISCONNECTED,
     InstanceState.LOGIN_SCREEN,
@@ -77,32 +60,42 @@ def reconnect_one_port(
 ) -> dict:
     """对单端口执行"按当前状态决定 skip / reconnect"流程，返回结构化结果。
 
+    内部会 emit `events.reconnect_port`（若 ctx 带 observer），所以调用方不应再
+    重复 emit，避免 obs 双写。
+
     Returns:
         dict 形如:
-        - {"action": "skipped",     "state": "<initial_state>"}
-        - {"action": "reconnected", "final_state": "<state>"}
-        - {"action": "failed",      "final_state": "<state>"}
+        - {"action": "skipped",     "state": "<initial>",          "steps": []}
+        - {"action": "reconnected", "initial_state": "<s>",
+            "final_state": "<s>", "steps": [...]}
+        - {"action": "failed",      "initial_state": "<s>",
+            "final_state": "<s>", "steps": [...]}
     """
     from mhxy_bot.runner.perception import detect_screen_state
+    from mhxy_bot.runner import events
 
     state = detect_screen_state(ctx)
     if state not in RECONNECTABLE_STATES:
-        return {"action": "skipped", "state": state.value}
+        events.reconnect_port(ctx, state.value, None, state.value)
+        return {"action": "skipped", "state": state.value, "steps": []}
 
-    ok = try_reconnect(ctx, timeout_sec=timeout_sec)
+    steps: list[str] = []
+    ok = try_reconnect(ctx, timeout_sec=timeout_sec, steps=steps)
     final = detect_screen_state(ctx).value
+    events.reconnect_port(ctx, state.value, ok, final)
     return {
         "action": "reconnected" if ok else "failed",
-        "final_state": final,
         "initial_state": state.value,
+        "final_state": final,
+        "steps": steps,
     }
 ```
 
-`try_reconnect` 自身的实现不动。
+`try_reconnect` 自身不动（已支持 `steps` 形参，会塞入"自动恢复成功，回到主界面"或"自动恢复失败或超时"等条目）。
 
-### 2. `mhxy_bot/tg_main.py::_reconnect_sync`
+### 2) `mhxy_bot/tg_main.py::_reconnect_sync`：折叠到 helper
 
-改为调用新 helper，保留事件埋点：
+行为完全等价；目的是让 helper 成为**唯一的重连入口**。
 
 ```python
 def _reconnect_sync(self, ports, observer=None, trace_id=None):
@@ -119,17 +112,11 @@ def _reconnect_sync(self, ports, observer=None, trace_id=None):
     for port in ports:
         ctx = build_context(port, executor, observer=observer, trace_id=trace_id)
         outcome = reconnect_one_port(ctx, timeout_sec=60)
+        # helper 内部已经 emit events.reconnect_port，这里只负责拼对外结果
         if outcome["action"] == "skipped":
-            events.reconnect_port(ctx, outcome["state"], None, outcome["state"])
             results.append({"port": port, "action": "skipped",
                             "state": outcome["state"]})
         else:
-            events.reconnect_port(
-                ctx,
-                outcome["initial_state"],
-                outcome["action"] == "reconnected",
-                outcome["final_state"],
-            )
             results.append({
                 "port": port,
                 "action": outcome["action"],
@@ -138,63 +125,35 @@ def _reconnect_sync(self, ports, observer=None, trace_id=None):
     return results
 ```
 
-行为完全等价；目的是让 helper 成为唯一的重连入口。
+`_format_reconnect_results` 用到的字段名（`action / state / final_state`）保持不变，**HTML 渲染不需要改**。
 
-### 3. `mhxy_bot/tools/game_tools.py`
+### 3) `mhxy_bot/tools/game_tools.py`：新增 `reconnect_instances`
 
-在 `make_game_tools` 内新增两个 `@tool`，并加入返回列表。
+参数风格与 `check_instance_health` 完全对称（空串=全部、CSV=多个、单端口=单个）。批量内部直接用 helper 顺序循环，**不要走 `tool.invoke` 互调**（会被 LangChain callback 当成嵌套 tool call，污染 obs 事件流）。
+
+> **`RunnerContext` 直构合法性已核实**：dataclass 非默认字段只有 `executor / port`，`check_instance_health` 现有代码（`game_tools.py:103 / 140`）已经直构。新工具保持同一风格，**不要**改用 `build_context`——LLM 路径没有 observer / trace_id，`build_context` 内的 `executor.set_context(...)` 没增益。
+>
+> helper 内 `events.reconnect_port` 走 `_emit`，无 observer 时只写 logging（见 `runner/events.py::_emit`）；LLM 路径完全靠 LangChain callback + `attach_tool_meta`，runner 事件只在按钮路径写 obs。
 
 ```python
 @tool
-def reconnect_instance(port: str) -> str:
-    """主动对指定模拟器实例执行重连恢复（处理掉线 / 登录界面 / 安卓桌面状态）。
-    若实例当前不在可重连状态（如已在主界面），则跳过。最长等待 60 秒。
+def reconnect_instances(ports: str = "") -> str:
+    """主动对一个或多个模拟器实例执行重连恢复（处理掉线 / 登录界面 / 安卓桌面）。
+    若实例当前不在可重连状态（如已在主界面），会被标记为 skipped。
+    每个实例最多等待 60 秒，N 个实例最长耗时约 60×N 秒。
 
     Args:
-        port: 模拟器端口号，如 "5557" 或 "127.0.0.1:5557"
+        ports: 端口号（如 "5557"）、逗号分隔多端口（如 "5557,5559"），
+               或留空对所有实例执行重连。
 
     Returns:
-        重连结果字符串：包含初始状态、动作（reconnected / failed / skipped）、最终状态。
+        单实例时返回详细结果；多实例时返回汇总（成功 / 失败 / 跳过统计 + 各实例结果）。
     """
     try:
         from core.observability import attach_tool_meta
         from mhxy_bot.runner.context import RunnerContext
         from mhxy_bot.runner.instance_recovery import reconnect_one_port
 
-        ctx = RunnerContext(executor=executor, port=_port_to_str(port))
-        outcome = reconnect_one_port(ctx, timeout_sec=60)
-        attach_tool_meta({
-            "kind": "reconnect",
-            "port": _port_to_str(port),
-            **outcome,
-        })
-
-        action = outcome["action"]
-        if action == "skipped":
-            return (f"⏭️ 端口 {port} 跳过重连\n"
-                    f"  当前状态：{outcome['state']}（无需恢复）")
-        prefix = "✅" if action == "reconnected" else "❌"
-        return (
-            f"{prefix} 端口 {port} 重连{'成功' if action == 'reconnected' else '失败'}\n"
-            f"  初始状态：{outcome['initial_state']}\n"
-            f"  最终状态：{outcome['final_state']}"
-        )
-    except Exception as e:
-        return f"❌ 重连异常：{type(e).__name__} - {e}"
-
-
-@tool
-def batch_reconnect_instances(ports: str = "") -> str:
-    """批量对所有实例或指定实例（逗号分隔端口）执行重连。
-    非可重连状态的实例会被跳过。每个实例最长等待 60 秒，实例数多时耗时较长。
-
-    Args:
-        ports: 逗号分隔的端口列表，为空时对所有实例执行重连。
-
-    Returns:
-        批量重连汇总：包含成功 / 失败 / 跳过统计与各实例结果。
-    """
-    try:
         if ports.strip():
             port_list = [p.strip() for p in ports.split(",") if p.strip()]
         else:
@@ -202,100 +161,218 @@ def batch_reconnect_instances(ports: str = "") -> str:
         if not port_list:
             return "❌ 没有可用实例"
 
+        # 软上限：留空且实例数 > 5 时拒绝无差别全量，避免 LLM 触发 60×N 秒阻塞
+        BATCH_LIMIT = 5
+        if not ports.strip() and len(port_list) > BATCH_LIMIT:
+            return (
+                f"⚠️ 检测到 {len(port_list)} 个实例。无差别批量重连预计耗时 "
+                f">{60 * BATCH_LIMIT}s，建议先调 check_instance_health 筛出 "
+                f"`needs_human=True` 实例，再用 ports 参数显式指定端口。"
+            )
+
+        # 单端口：返回详细结果
+        if len(port_list) == 1:
+            port_str = _port_to_str(port_list[0])
+            ctx = RunnerContext(executor=executor, port=port_str)
+            outcome = reconnect_one_port(ctx, timeout_sec=60)
+            attach_tool_meta({
+                "kind": "reconnect",
+                "port": port_str,
+                **outcome,
+            })
+            action = outcome["action"]
+            if action == "skipped":
+                return (f"⏭️ 端口 {port_list[0]} 跳过重连\n"
+                        f"  当前状态：{outcome['state']}（无需恢复）")
+            prefix = "✅" if action == "reconnected" else "❌"
+            verb = "成功" if action == "reconnected" else "失败"
+            steps_section = ""
+            if outcome.get("steps"):
+                steps_text = "\n".join(f"  {s}" for s in outcome["steps"])
+                steps_section = f"\n【恢复过程】\n{steps_text}"
+            return (
+                f"{prefix} 端口 {port_list[0]} 重连{verb}\n"
+                f"  初始状态：{outcome['initial_state']}\n"
+                f"  最终状态：{outcome['final_state']}"
+                f"{steps_section}"
+            )
+
+        # 多端口：顺序执行 + 汇总
         ok = bad = skip = 0
         lines = []
-        for port in port_list:
-            result = reconnect_instance.invoke({"port": port})
-            first_line = result.split("\n")[0] if result else ""
-            lines.append(first_line)
-            if first_line.startswith("✅"):
+        batch_results = []
+        for p in port_list:
+            port_str = _port_to_str(p)
+            try:
+                ctx = RunnerContext(executor=executor, port=port_str)
+                outcome = reconnect_one_port(ctx, timeout_sec=60)
+            except Exception as exc:
+                outcome = {"action": "failed", "initial_state": "error",
+                           "final_state": f"error: {type(exc).__name__}",
+                           "steps": []}
+            action = outcome["action"]
+            if action == "reconnected":
+                emoji, detail = "✅", outcome["final_state"]
                 ok += 1
-            elif first_line.startswith("❌"):
+            elif action == "failed":
+                emoji, detail = "❌", outcome["final_state"]
                 bad += 1
-            elif first_line.startswith("⏭️"):
+            else:  # skipped
+                emoji, detail = "⏭️", outcome["state"]
                 skip += 1
+            lines.append(f"  {emoji} 端口 {p}  {detail}")
+            batch_results.append({"port": port_str, **outcome})
 
+        attach_tool_meta({
+            "kind": "reconnect",            # 单 / 批量统一同一 kind
+            "batch_size": len(port_list),
+            "ok": ok,
+            "failed": bad,
+            "skipped": skip,
+            "results": batch_results,
+        })
         return (f"共重连 {len(port_list)} 个实例"
                 f"（{ok} 成功 / {bad} 失败 / {skip} 跳过）：\n"
                 + "\n".join(lines))
     except Exception as e:
-        return f"❌ 批量重连失败：{type(e).__name__} - {e}"
+        return f"❌ 重连异常：{type(e).__name__} - {e}"
 ```
 
-最后把这两个工具加进 `make_game_tools` 返回的列表，建议位置紧跟在
-`batch_check_all_instances` 之后，与"诊断"族放一起：
+`make_game_tools` 返回列表把它加到 `check_instance_health` 之后（"诊断"族紧挨"恢复"族）：
 
 ```python
 return [
     get_instances,
     batch_recognize_schools,
     check_instance_health,
-    batch_check_all_instances,
-    reconnect_instance,            # 新增
-    batch_reconnect_instances,     # 新增
+    reconnect_instances,           # ← 新增
     capture_screenshot,
-    ...
+    sense_screen,
+    analyze_scene,
+    locate_element_vl,
+    tap_coordinate,
+    batch_tap_coordinate,
+    tap_saved_element,
+    press_back,
+    batch_press_back,
+    list_element_library,
+    save_to_element_library,
+    delete_from_element_library,
 ]
 ```
 
-### 4. `mhxy_bot/tg_main.py::get_tool_status_map`
+#### 顺手补：`check_instance_health` 批量输出标签化
 
-新增两个状态文案，让 Telegram"正在……"提示对得上：
+让 LLM 摆脱"靠 emoji 推断 needs_human"。改 `game_tools.py:152` 那行：
 
 ```python
-"reconnect_instance":         "🔌 正在重连模拟器实例...",
-"batch_reconnect_instances":  "🔌 正在批量重连模拟器实例，请耐心等待...",
+# 改前
+lines.append(f"  {emoji} 端口 {p}  {d['state']}  {d['code']}")
+# 改后
+tag = "[需恢复]" if (d["needs_human"] or d["code"] != "unknown_ok") else "[正常]"
+lines.append(f"  {emoji} 端口 {p}  {d['state']}  {d['code']}  {tag}")
 ```
 
-### 5. `mhxy_bot/agent.py::GAME_SYSTEM_PROMPT`
+`attach_tool_meta` 字段不动，纯文本侧增量。
 
-在"## 你的能力"小节里把诊断与恢复拆成两条，明确边界，避免 LLM 在用户说
-"重连"时仍然只用 `check_instance_health`：
+### 4) `mhxy_bot/tg_main.py::get_tool_status_map`
 
-```
-- 实例诊断：单端口体检（check_instance_health）、批量体检（batch_check_all_instances）
-  —— 体检会在检测到掉线/登录界面时附带尝试恢复，用于"先看看状态"。
-- 实例恢复：主动重连指定端口（reconnect_instance）、批量重连（batch_reconnect_instances，
-  ports 留空=全部实例）—— 用于"用户明确要求恢复"或体检后已知需要恢复的场景。
+新增"正在……"文案：
+
+```python
+"reconnect_instances":   "🔌 正在重连模拟器实例（最长每实例 60s，请耐心等待）...",
+"check_instance_health": "🩺 正在诊断模拟器实例...",
 ```
 
-并在"## 操作准则"里新增一条：
+> 现状 grep `tg_main.py` 没看到 `check_instance_health` 的状态文案；顺手补齐让 Telegram UX 一致。
 
+### 5) `mhxy_bot/agent.py::GAME_SYSTEM_PROMPT`
+
+当前 prompt 的"## 你的能力"小节根本**没列诊断 / 恢复族**。补成：
+
+```text
+- 实例诊断（只读）：单端口或批量体检（check_instance_health，port 留空=全部，
+  传 "5557,5559" 可指定多个）—— 仅做 ADB / 截图 / OCR / 屏幕状态判定，
+  不点击、不修复。输出每行带 [需恢复] / [正常] 标签。
+- 实例恢复（动作）：主动重连一个或多个实例（reconnect_instances，
+  ports 留空=全部）—— 对掉线 / 登录界面 / 安卓桌面状态执行恢复脚本，
+  每实例最长 60s。
 ```
-7. 用户说"重连/恢复/拉起"等动词时优先用 reconnect_* 系列；说"看看/状态/有没有挂"
-   等观察类动词时用 check_* 系列。两者不要级联调用 —— check 已经会附带恢复。
+
+并在"## 操作准则"里追加：
+
+```text
+7. 处理"看看实例情况，把有问题的拉起来"这类组合诉求时：
+   先调 check_instance_health 拿到全局诊断，再依据 [需恢复] 标签的端口
+   主动调 reconnect_instances 并以 ports 参数指定它们；
+   除非用户明确要求"全部重连/全量恢复"，否则不要无差别批量。
+8. 用户说"重连/恢复/拉起"等动作动词时直接用 reconnect_instances；
+   说"看看/状态/有没有挂"等观察动词时用 check_instance_health。
+   两者职责清晰，不要在同一轮里反复来回调用。
 ```
+
+---
 
 ## 验收标准
 
-1. 用户在 Telegram 自然语言说"把 5557 重连一下" → LLM 调
-   `reconnect_instance(port="5557")`，返回结构化结果。
-2. 用户说"把所有掉线的实例都拉起来" → LLM 调 `batch_reconnect_instances()`，
-   非可重连状态被正确标记 skipped。
-3. `/reconnect` 命令的 Telegram 行为与改动前完全一致（结果列表字段同名、
-   `_format_reconnect_results` 不需要改）。
-4. obs 平台能看到 tool_started=`reconnect_instance` / `batch_reconnect_instances`
-   的事件，metadata 里包含 `kind="reconnect"` 与端口、动作、最终状态。
-5. `runner/recovery.py` 内的步级自动恢复行为不变（仍直接调 `try_reconnect`）。
+1. **新增对话能力**：用户说"把 5557 重连一下" → LLM 调 `reconnect_instances(ports="5557")`，返回带"恢复过程"列表的详细结果。
+2. **组合意图**：用户说"看看所有实例情况，处理下有问题的实例" → LLM 先调 `check_instance_health(port="")` 拿到带 `[需恢复]` / `[正常]` 标签的汇总，再对 `[需恢复]` 端口调 `reconnect_instances(ports="<csv>")`，**不会**对正常实例发起重连。
+3. **批量软上限**：用户说"全部重连一下" 且当前实例数 > 5 → LLM 调 `reconnect_instances()` 时 tool 直接返回引导话术，**不阻塞 60×N 秒**。LLM 应顺势改用 `check_instance_health` 先筛选。
+4. **按钮行为不回归**：
+   - `/reconnect` 命令的 Telegram 输出与改动前完全一致（`_format_reconnect_results` 字段同名，文案不变）。
+   - 主控台「🔌 掉线重连」按钮行为不变。
+5. **obs 事件**：
+   - 按钮路径：`scan_started` + 每端口 `reconnect_result`（由 helper 内 emit；schema 不变）。
+   - LLM 路径：`tool_started=reconnect_instances` / `tool_completed`，metadata 含 `kind="reconnect"` + 单端口字段或 `batch_size / ok / failed / skipped / results`。
+6. **`runner/recovery.py` 内的步级自动恢复行为不变**（仍直接调 `try_reconnect`）。
+7. **新代码遵守仓库规范**：
+   - 完整 Type Hints + Google 风格 docstring（`Args` / `Returns` / `Raises`）。
+   - 异常捕获具体到子类，禁止裸 `except:`。
+   - 不引入新第三方依赖。
+
+---
 
 ## 风险与注意事项
 
-- **LLM 误调用**：若 LLM 在主界面正常的实例上调 `reconnect_instance`，helper 会
-  返回 `skipped`，不会破坏状态；不需要额外护栏。
-- **批量耗时**：N 个实例 × 最长 60s = 60N 秒，期间 Agent 回合阻塞。系统提示
-  里已写明"实例数多时耗时较长"，提醒 LLM 不要在快速对话场景里盲目批量。
-- **与 `_task_running` 互斥**：`/reconnect` 命令路径设了 `_task_running` 锁，
-  避免任务执行中再触发重连。Tool 路径**不**接入这个锁 —— 因为 Tool 由 LLM
-  在 Agent 回合内调用，本来就和 `_run_task_sync` 互斥（同一个 bot 进程的
-  `asyncio.to_thread` 串行）。如果未来允许并发任务，这条假设要重新审视。
-- **`reconnect_one_port` 的返回格式是新增契约**：obs adapter 当前没有消费它，
-  无需联动；但若以后写新看板，请直接读 tool_completed 里 `attach_tool_meta`
-  上报的字段。
+- **LLM 误触发**：在主界面正常的实例上调 `reconnect_instances` 会被 helper 标记为 `skipped`，不会破坏状态；不需要额外护栏。
+- **批量阻塞**：`reconnect_instances` 内置 `BATCH_LIMIT=5` 软上限只对"留空全量"路径生效；用户显式传 6 个端口的 CSV 时仍会跑满 60×N 秒（这是用户明确意图，符合预期）。Telegram "正在输入" 心跳由 `keep_typing_action` 维持。
+- **与按钮路径并发**：`/reconnect` 命令路径有 `_task_running` 锁，但 LLM tool 路径**不**接入这个锁——理由是同一个 bot 进程的 `asyncio.to_thread` 串行，本来就不会和 `_run_task_sync` 真并发。两个 Telegram 用户同时操作（一个点按钮、一个发自然语言）属既存风险，本方案不扩大也不收紧。
+- **helper emit 的 ctx 来源**：按钮路径构造 ctx 时挂了 `observer` + `trace_id`，`events.reconnect_port` 落到 obs；LLM 路径用裸 `RunnerContext(executor=..., port=...)`，事件只走 `_emit` 的 logging 分支。这是符合预期的——LLM 路径靠 `attach_tool_meta` 写到 tool_completed。
+- **`reconnect_one_port` 字段契约**：`action / state / initial_state / final_state / steps` 是新增对外契约，被 `_reconnect_sync` 与新 tool 共用。obs adapter (`obs/api/app/adapters/omnibot_jsonl.py`) 当前消费的是 `reconnect_result` 事件 schema 与 tool meta，不读 helper 返回值，无需联动改 adapter。
+
+---
 
 ## 不做的事
 
-- 不为新工具加 timeout 参数（避免 LLM 乱填）。
-- 不并发执行批量重连。
-- 不改 `diagnose_instance` 的隐式重连逻辑（与新 tool 形成"体检"vs"恢复"的
-  互补，不需要合并）。
-- 不新增 `reconnect_*` 类的 Telegram inline 按钮 —— "🔌 掉线重连"已经存在。
+- 不为新工具暴露 `timeout_sec` 参数（避免 LLM 乱填；按钮路径与 LLM 路径都硬编码 60s）。
+- 不并发执行批量重连（ADB / OCR 顺序读屏，并发会触发 executor 限流）。
+- 不改 `diagnose_instance` 的 `attempt_reconnect` 默认值（保持 `check_instance_health` 纯只读语义；恢复职责由新 tool 独立承担）。
+- 不新增 Telegram inline 按钮（「🔌 掉线重连」已存在）。
+- 不写新单测脚本作为方案落地的硬要求；如需要回归，按 CLAUDE.md 容器内 pytest 流程补即可。
+
+---
+
+## codex 实施 checklist
+
+- [ ] `mhxy_bot/runner/instance_recovery.py`：新增 `RECONNECTABLE_STATES` 常量 + `reconnect_one_port` helper（含 `events.reconnect_port` emit 与 `steps` 采集）。
+- [ ] `mhxy_bot/tg_main.py::_reconnect_sync`：替换为 helper 调用，删除原本的状态判断与 `events.reconnect_port` 调用（避免 helper 双写）。
+- [ ] `mhxy_bot/tools/game_tools.py`：
+  - 在 `make_game_tools` 内新增 `reconnect_instances` `@tool`，加入返回列表。
+  - 修改 `check_instance_health` 批量分支输出，每行追加 `[需恢复] / [正常]` 标签。
+- [ ] `mhxy_bot/tg_main.py::get_tool_status_map`：补 `reconnect_instances` 与 `check_instance_health` 文案。
+- [ ] `mhxy_bot/agent.py::GAME_SYSTEM_PROMPT`：补诊断 / 恢复族能力描述 + 操作准则 7、8。
+- [ ] **回归自测**（容器内，参考 CLAUDE.md 约束）：
+  ```bash
+  # 重建并重启 mhxy bot
+  docker compose up -d --build mhxy-tg-bot
+  # 跟踪日志确认启动无异常
+  docker compose logs -f mhxy-tg-bot --tail=100
+  ```
+  随后在 Telegram 端：
+  1. 点「🔌 掉线重连」按钮，确认输出格式与改动前一致。
+  2. 对话发"把所有实例情况看一下，挂了的拉起来"，观察日志：
+     LLM 应先调 `check_instance_health(port="")`，再针对带 `[需恢复]` 的端口调
+     `reconnect_instances(ports="<csv>")`，不无差别全量。
+  3. 对话发"全部重连一下"（实例数 > 5 时），确认 tool 返回引导话术且未阻塞 60×N 秒。
+  4. obs 看板（http://localhost:3100）打开 mhxy 会话，确认能看到
+     `tool_started=reconnect_instances` 与 `kind="reconnect"` 的 metadata。

@@ -128,34 +128,27 @@ class GameBot(TelegramBotBase):
 
     def _reconnect_sync(self, ports: list[str], observer=None,
                         trace_id: str | None = None) -> list[dict]:
-        """Try reconnect on DISCONNECTED ports; skip others. Blocks — run in thread."""
+        """Try reconnect on recoverable ports; skip others. Blocks — run in thread."""
         from mhxy_bot.runner.task_loader import build_context, make_executor
-        from mhxy_bot.runner.perception import detect_screen_state
-        from mhxy_bot.runner.models import InstanceState
-        from mhxy_bot.runner.instance_recovery import try_reconnect
+        from mhxy_bot.runner.instance_recovery import reconnect_one_port
         from mhxy_bot.runner import events
         executor = make_executor()
-        _reconnectable = {InstanceState.DISCONNECTED, InstanceState.LOGIN_SCREEN,
-                          InstanceState.ANDROID_HOME}
         if observer:
             scan_ctx = build_context("*", executor, observer=observer, trace_id=trace_id)
             events.scan_started(scan_ctx, "reconnect", ports)
         results = []
         for port in ports:
             ctx = build_context(port, executor, observer=observer, trace_id=trace_id)
-            state = detect_screen_state(ctx)
-            if state not in _reconnectable:
-                events.reconnect_port(ctx, state.value, None, state.value)
-                results.append({"port": port, "action": "skipped", "state": state.value})
-                continue
-            ok = try_reconnect(ctx, timeout_sec=60)
-            final = detect_screen_state(ctx).value
-            events.reconnect_port(ctx, state.value, ok, final)
-            results.append({
-                "port": port,
-                "action": "reconnected" if ok else "failed",
-                "final_state": final,
-            })
+            outcome = reconnect_one_port(ctx, timeout_sec=60)
+            if outcome["action"] == "skipped":
+                results.append({"port": port, "action": "skipped",
+                                "state": outcome["state"]})
+            else:
+                results.append({
+                    "port": port,
+                    "action": outcome["action"],
+                    "final_state": outcome["final_state"],
+                })
         return results
 
     # ------------------------------------------------------------------
@@ -589,6 +582,8 @@ class GameBot(TelegramBotBase):
         return {
             "get_instances": "📋 正在读取模拟器实例配置...",
             "batch_recognize_schools": "🏯 正在批量识别所有实例门派，请耐心等待...",
+            "check_instance_health": "🩺 正在诊断模拟器实例...",
+            "reconnect_instances": "🔌 正在重连模拟器实例（最长每实例 60s，请耐心等待）...",
             "capture_screenshot": "📸 正在截取模拟器屏幕...",
             "sense_screen": "👁️ 正在截图并 OCR 识别屏幕...",
             "analyze_scene": "🔍 正在调用视觉模型分析游戏场景...",

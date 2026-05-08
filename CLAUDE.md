@@ -54,6 +54,53 @@ docker exec v2-omnimhxy-tg-bot python -m pytest tests/<file>.py -v
 
 ---
 
+## Windows Executor 运维
+
+MHXY Windows executor 默认运行在 Windows 主机 `192.168.100.149`，HTTP 服务地址：
+
+```text
+http://192.168.100.149:8765
+```
+
+Windows 侧工作目录：
+
+```text
+C:\Users\sdw\mhxy_executor
+```
+
+从当前宿主机连入 Windows executor：
+
+```bash
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149
+```
+
+通过 SSH 执行 Windows PowerShell 命令：
+
+```bash
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 "powershell -NoProfile -Command \"<PowerShell 命令>\""
+```
+
+同步文件到 Windows executor：
+
+```bash
+scp -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no <本地文件> sdw@192.168.100.149:C:/Users/sdw/mhxy_executor/<目标文件>
+```
+
+健康检查：
+
+```bash
+curl http://192.168.100.149:8765/health
+```
+
+相关默认配置位置：
+- `mhxy_bot/executor/watchdog.py`：`EXECUTOR_URL`、`REMOTE_HOST`、`WINDOWS_EXECUTOR_DIR`、容器内 `SSH_KEY`
+- `mhxy_bot/runner/task_loader.py`：runner 默认 `MHXY_EXECUTOR_URL`
+- `entrypoint.mhxy.sh`：容器内 SSH key 从 `/root/.ssh_host/id_towin` 复制到 `/root/.ssh_runtime/id_towin`
+
+注意：这里只记录 key 路径和命令模板，不能把私钥内容写入仓库。
+
+---
+
 ## 环境变量（`.env`）
 
 ```env

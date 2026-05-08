@@ -4,6 +4,9 @@ diagnose_instance: classify minimum actionable health state (callers decide
   whether to skip or ask for help).
 try_reconnect: advance through disconnect/update/launcher/login states and wait
   for main UI; returns False if the game cannot reach main UI before timeout.
+reconnect_one_port: high-level helper that decides skip/reconnect per current
+  state, emits events.reconnect_port, and collects try_reconnect steps.
+  Shared by the /reconnect button path and the LLM reconnect_instances tool.
 """
 from __future__ import annotations
 
@@ -18,6 +21,55 @@ from mhxy_bot.runner.models import (
 
 if TYPE_CHECKING:
     from mhxy_bot.runner.context import RunnerContext
+
+# 按钮 / LLM 工具两条路径共用的可重连状态集合
+RECONNECTABLE_STATES: frozenset[InstanceState] = frozenset({
+    InstanceState.DISCONNECTED,
+    InstanceState.LOGIN_SCREEN,
+    InstanceState.ANDROID_HOME,
+})
+
+
+def reconnect_one_port(
+    ctx: "RunnerContext",
+    *,
+    timeout_sec: int = 60,
+) -> dict:
+    """对单端口执行"按当前状态决定 skip / reconnect"流程，返回结构化结果。
+
+    内部会 emit `events.reconnect_port`（若 ctx 带 observer），所以调用方不应再
+    重复 emit，避免 obs 双写。
+
+    Args:
+        ctx: Runner context bound to one emulator instance.
+        timeout_sec: Max seconds for try_reconnect loop.
+
+    Returns:
+        dict 形如:
+        - {"action": "skipped",     "state": "<initial>",          "steps": []}
+        - {"action": "reconnected", "initial_state": "<s>",
+            "final_state": "<s>", "steps": [...]}
+        - {"action": "failed",      "initial_state": "<s>",
+            "final_state": "<s>", "steps": [...]}
+    """
+    from mhxy_bot.runner.perception import detect_screen_state
+    from mhxy_bot.runner import events
+
+    state = detect_screen_state(ctx)
+    if state not in RECONNECTABLE_STATES:
+        events.reconnect_port(ctx, state.value, None, state.value)
+        return {"action": "skipped", "state": state.value, "steps": []}
+
+    steps: list[str] = []
+    ok = try_reconnect(ctx, timeout_sec=timeout_sec, steps=steps)
+    final = detect_screen_state(ctx).value
+    events.reconnect_port(ctx, state.value, ok, final)
+    return {
+        "action": "reconnected" if ok else "failed",
+        "initial_state": state.value,
+        "final_state": final,
+        "steps": steps,
+    }
 
 
 def _tap_from_items(ctx: "RunnerContext", items: list[dict], candidates: list[str]) -> bool:
