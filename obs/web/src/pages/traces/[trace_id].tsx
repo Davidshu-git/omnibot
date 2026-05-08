@@ -212,10 +212,39 @@ function PayloadView({ event }: { event: NormalizedEvent }) {
       );
     }
 
+    if (subtype === "executor_request") {
+      return (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+          <span>🪟</span>
+          <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>executor_request</span>
+          {port && <span style={{ color: "var(--teal)", fontFamily: "var(--font-mono)" }}>:{port}</span>}
+          <span style={{ color: "var(--orange)", fontFamily: "var(--font-mono)" }}>{p.method as string} {p.path as string}</span>
+          {typeof p.status_code === "number" && (
+            <span style={{ color: (p.status_code as number) < 400 ? "var(--green)" : "var(--red)", fontFamily: "var(--font-mono)" }}>
+              {p.status_code as number}
+            </span>
+          )}
+          {elapsed && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{elapsed}</span>}
+        </div>
+      );
+    }
+
+    if (subtype === "executor_startup") {
+      return (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
+          <span>🚀</span>
+          <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>executor_startup</span>
+          <span style={{ color: "var(--green)" }}>executor 启动</span>
+          {p.host && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{p.host as string}</span>}
+        </div>
+      );
+    }
+
     return (
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
         <span>{subtype === "instance_status" ? "📊" : subtype === "reconnect_result" ? "🔌" :
                subtype === "executor_perf" ? "⏱" :
+               subtype === "executor_internal" ? "🔧" :
                subtype?.startsWith("task_started") ? "🎮" : subtype?.startsWith("task_completed") ? "✅" :
                subtype?.startsWith("task_failed") ? "❌" : subtype?.startsWith("task_step") ? "▶" :
                subtype === "scan_started" ? "🔍" : "⚙"}</span>

@@ -44,33 +44,44 @@ class TaskEngine:
         ctx = self.ctx
         t0 = time.monotonic()
         task_run_id = ctx.trace_id or f"{task.id}:{ctx.port}:{int(time.time() * 1000)}"
-        step_results: list[StepResult] = []
+        previous_trace_id = ctx.trace_id
+        ctx.trace_id = task_run_id
+        if hasattr(ctx.executor, "set_context"):
+            session_id = getattr(ctx.observer, "session_id", None)
+            ctx.executor.set_context(session_id=session_id, trace_id=task_run_id)
+        try:
+            step_results: list[StepResult] = []
 
-        ctx.info("task started: %s (%s) port=%s", task.id, task.name, ctx.port)
-        events.task_started(
-            ctx,
-            task.id,
-            task.name,
-            task_run_id=task_run_id,
-            total_steps=len(task.preflight) + len(task.steps),
-            preflight_steps=len(task.preflight),
-            description=task.description,
-        )
+            ctx.info("task started: %s (%s) port=%s", task.id, task.name, ctx.port)
+            events.task_started(
+                ctx,
+                task.id,
+                task.name,
+                task_run_id=task_run_id,
+                total_steps=len(task.preflight) + len(task.steps),
+                preflight_steps=len(task.preflight),
+                description=task.description,
+            )
 
-        for phase, steps in (("preflight", task.preflight), ("steps", task.steps)):
-            for step in steps:
-                result = self._run_task_step(task, step, phase, step_results, t0, task_run_id)
-                if result is not None:
-                    return result
+            for phase, steps in (("preflight", task.preflight), ("steps", task.steps)):
+                for step in steps:
+                    result = self._run_task_step(task, step, phase, step_results, t0, task_run_id)
+                    if result is not None:
+                        return result
 
-        elapsed = _elapsed_ms(t0)
-        ctx.info("task completed: %s in %.0fms", task.id, elapsed)
-        events.task_completed(ctx, task.id, elapsed, task_run_id=task_run_id, step_results=step_results)
-        return TaskResult(
-            task_id=task.id,
-            status=TaskStatus.COMPLETED,
-            step_results=step_results,
-        )
+            elapsed = _elapsed_ms(t0)
+            ctx.info("task completed: %s in %.0fms", task.id, elapsed)
+            events.task_completed(ctx, task.id, elapsed, task_run_id=task_run_id, step_results=step_results)
+            return TaskResult(
+                task_id=task.id,
+                status=TaskStatus.COMPLETED,
+                step_results=step_results,
+            )
+        finally:
+            ctx.trace_id = previous_trace_id
+            if hasattr(ctx.executor, "set_context"):
+                session_id = getattr(ctx.observer, "session_id", None)
+                ctx.executor.set_context(session_id=session_id, trace_id=previous_trace_id)
 
     def _run_task_step(
         self,

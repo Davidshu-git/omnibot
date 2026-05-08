@@ -39,6 +39,9 @@ def build_context(
     trace_id: str | None = None,
     extra: dict | None = None,
 ) -> RunnerContext:
+    session_id = getattr(observer, "session_id", None)
+    if hasattr(executor, "set_context"):
+        executor.set_context(session_id=session_id, trace_id=trace_id)
     return RunnerContext(
         executor=executor,
         port=str(port),

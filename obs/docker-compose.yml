@@ -28,6 +28,7 @@ services:
       API_HOST: 0.0.0.0
       API_PORT: 8000
       MHXY_LOG_DIR: /logs/mhxy/sessions
+      MHXY_EXECUTOR_LOG_DIR: /logs/omnibot/mhxy-executor
       MHXY_EXECUTOR_STATUS_FILE: /logs/omnibot/mhxy/executor_status.json
       OMNIBOT_STOCK_LOG_DIR: /logs/omnibot/stock/sessions
       OMNIBOT_EHS_LOG_DIR: /logs/omnibot/ehs/sessions
@@ -38,6 +39,7 @@ services:
       - ./api:/app
       - ${MHXY_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy/observability/sessions}:/logs/mhxy/sessions:ro
       - ${OMNIBOT_MHXY_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/logs/mhxy}:/logs/omnibot/mhxy:ro
+      - ${OMNIBOT_MHXY_EXECUTOR_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy/observability/executor}:/logs/omnibot/mhxy-executor:ro
       - ${OMNIBOT_STOCK_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/stock/observability/sessions}:/logs/omnibot/stock/sessions:ro
       - ${OMNIBOT_EHS_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/ehs/observability/sessions}:/logs/omnibot/ehs/sessions:ro
       - ${MHXY_HOST_DATA_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy}:/runtime/mhxy:ro

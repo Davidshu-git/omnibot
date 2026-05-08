@@ -824,6 +824,20 @@ async def run_mhxy_ingest(force: bool = False) -> dict:
     )
 
 
+async def run_mhxy_executor_ingest(force: bool = False) -> dict:
+    from app.adapters.mhxy_executor_jsonl import MhxyExecutorJsonlAdapter
+    log_dir = os.getenv("MHXY_EXECUTOR_LOG_DIR", "/logs/omnibot/mhxy/executor")
+    return await run_jsonl_ingest(
+        project_id="mhxy",
+        source_type="mhxy_executor_jsonl",
+        display_name="MHXY Windows executor JSONL logs",
+        log_dir=log_dir,
+        adapter=MhxyExecutorJsonlAdapter(log_dir=log_dir),
+        agents=[{"id": "windows-executor", "name": "windows-executor", "display_name": "Windows Executor", "kind": "executor"}],
+        force=force,
+    )
+
+
 async def run_stock_bot_ingest(force: bool = False) -> dict:
     from app.adapters.omnibot_jsonl import OmnibotJsonlAdapter
     stock_dir = os.getenv("OMNIBOT_STOCK_LOG_DIR", "/logs/omnibot/stock/sessions")
@@ -871,6 +885,12 @@ async def ingest_mhxy(
     force: bool = Query(False, description="Force full re-scan even if file unchanged"),
 ):
     result = await run_mhxy_ingest(force=force)
+    return {"status": "ok", **result}
+
+
+@router.post("/ingest/mhxy-executor")
+async def ingest_mhxy_executor(force: bool = Query(False)):
+    result = await run_mhxy_executor_ingest(force=force)
     return {"status": "ok", **result}
 
 

@@ -39,6 +39,9 @@ const TASK_EVENT_ICONS: Record<string, string> = {
   instance_status:        "📊",
   reconnect_result:       "🔌",
   executor_perf:          "⏱",
+  executor_request:       "🪟",
+  executor_internal:      "🔧",
+  executor_startup:       "🚀",
 };
 
 const AGENT_PALETTE = ["var(--blue)", "var(--green)", "var(--amber)", "var(--purple)", "var(--orange)", "var(--teal)"];
@@ -352,6 +355,7 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
     const extra = p.extra as Record<string, unknown> | undefined;
     const hasExpandedDetails =
       !!p.task_run_id || !!p.phase || !!p.timeout_sec || !!p.max_attempts ||
+      !!p.request_id || !!p.log_file || !!p.events_dir ||
       hasObjectContent(target) || hasObjectContent(detail) ||
       hasObjectContent(errorDetails) || hasObjectContent(extra) ||
       (Array.isArray(stepResults) && stepResults.length > 0);
@@ -370,7 +374,7 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
         <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
           <span>{icon}</span>
           <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{subtype}</span>
-          <span style={{ color: "var(--teal)", fontFamily: "var(--font-mono)" }}>:{port}</span>
+          {port && <span style={{ color: "var(--teal)", fontFamily: "var(--font-mono)" }}>:{port}</span>}
           {p.phase != null && <span style={{ color: "var(--purple)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{String(p.phase)}</span>}
 
           {subtype === "task_started" && <>
@@ -447,6 +451,29 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
             </button>
           </>}
 
+          {subtype === "executor_request" && <>
+            <span style={{ color: "var(--orange)", fontFamily: "var(--font-mono)" }}>
+              {p.method as string} {p.path as string}
+            </span>
+            {typeof p.status_code === "number" && (
+              <span style={{
+                color: (p.status_code as number) < 400 ? "var(--green)" : "var(--red)",
+                fontFamily: "var(--font-mono)",
+              }}>
+                {p.status_code as number}
+              </span>
+            )}
+            {fmtMsValue(p.duration_ms) && (
+              <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{fmtMsValue(p.duration_ms)}</span>
+            )}
+            {p.slow === true && <span style={chipStyle("warn")}>慢请求</span>}
+          </>}
+
+          {subtype === "executor_startup" && <>
+            <span style={{ color: "var(--green)" }}>executor 启动</span>
+            {p.host && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{p.host as string}</span>}
+          </>}
+
           {hasExpandedDetails && (
             <button onClick={() => setExpanded(!expanded)} style={{
               background: "none", border: "none", color: "var(--text-dim)",
@@ -489,11 +516,15 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
           }}>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>
               {p.task_run_id != null && <span>run:{String(p.task_run_id).slice(-28)}</span>}
+              {p.request_id != null && <span>req:{String(p.request_id).slice(-20)}</span>}
               {p.timeout_sec != null && <span>timeout:{String(p.timeout_sec)}s</span>}
               {p.retries != null && <span>retries:{String(p.retries)}</span>}
               {typeof p.preflight_steps === "number" && <span>preflight:{p.preflight_steps as number}</span>}
               {typeof p.main_steps === "number" && <span>main:{p.main_steps as number}</span>}
             </div>
+            {(p.log_file != null || p.events_dir != null || p.adb_path != null) && (
+              <JsonBlock value={{ log_file: p.log_file, events_dir: p.events_dir, adb_path: p.adb_path }} />
+            )}
             {hasObjectContent(target) && <JsonBlock value={{ target }} />}
             {hasObjectContent(detail) && <JsonBlock value={{ detail }} />}
             {hasObjectContent(errorDetails) && <JsonBlock value={{ error_details: errorDetails }} />}

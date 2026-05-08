@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import base64
 import faulthandler
+import json as _json
 import logging
 import os
 import random
+import socket
 from pathlib import Path
 import subprocess
 import threading
 import time
-from typing import Optional
+from datetime import datetime, timezone
+from typing import Any, Optional
 import uuid
 
 import cv2
@@ -54,6 +57,33 @@ log.propagate = False
 log.addHandler(_handler_stderr)
 log.addHandler(_handler_file)
 
+EVENTS_DIR = Path(os.getenv("EXECUTOR_EVENTS_DIR", str(LOG_DIR)))
+EVENTS_DIR.mkdir(parents=True, exist_ok=True)
+HOSTNAME = socket.gethostname()
+_events_lock = threading.Lock()
+
+
+def _events_path() -> Path:
+    """返回当前 UTC 日期对应的 executor 事件 JSONL 文件路径。"""
+    return EVENTS_DIR / f"executor_events_{datetime.now(timezone.utc):%Y%m%d}.jsonl"
+
+
+def emit_event(event: dict) -> None:
+    """线程安全追加 executor JSONL 事件；写入失败只记录文本日志。"""
+    event.setdefault("timestamp", datetime.now(timezone.utc).isoformat())
+    event.setdefault("host", HOSTNAME)
+    try:
+        line = _json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        if len(line.encode("utf-8")) > 16 * 1024:
+            event["detail"] = {"truncated": True}
+            line = _json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        with _events_lock:
+            with _events_path().open("a", encoding="utf-8") as f:
+                f.write(line + "\n")
+    except OSError as exc:
+        log.warning("emit_event failed: %s", exc)
+
+
 app = FastAPI(title="MuMu Executor", version="1.0")
 
 faulthandler.enable()
@@ -69,6 +99,7 @@ class _StatsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         started = time.monotonic()
         request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        request.state.request_id = request_id
         status_code = 500
         response: Response | None = None
         try:
@@ -97,6 +128,19 @@ class _StatsMiddleware(BaseHTTPMiddleware):
                     request_id, request.method, request.url.path, status_code, elapsed,
                 )
 
+            emit_event({
+                "type": "executor_request",
+                "request_id": request_id,
+                "session_id": request.headers.get("x-session-id"),
+                "trace_id": request.headers.get("x-trace-id"),
+                "method": request.method,
+                "path": request.url.path,
+                "status_code": status_code,
+                "duration_ms": round(elapsed * 1000, 2),
+                "slow": elapsed >= _SLOW_REQ_THRESHOLD,
+                "port": getattr(request.state, "port", None),
+            })
+
             now = time.monotonic()
             with _req_lock:
                 _req_state["total"] += 1
@@ -121,6 +165,13 @@ async def _startup():
         log.addHandler(_handler_stderr)
         log.addHandler(_handler_file)
     log.info("executor started, log_file=%s", LOG_FILE)
+    emit_event({
+        "type": "executor_startup",
+        "request_id": uuid.uuid4().hex[:12],
+        "log_file": LOG_FILE,
+        "events_dir": str(EVENTS_DIR),
+        "adb_path": ADB_PATH,
+    })
 
 ADB_PATH = os.getenv("ADB_PATH", "adb")
 W, H = 1600, 900
@@ -156,68 +207,184 @@ def _port_to_addr(port: str) -> str:
         return port
 
 
-def _adb(port: str, *args: str, timeout: int = 15) -> subprocess.CompletedProcess:
+def _event_context(request: Request, port: str | None = None) -> dict[str, Any]:
+    """从 FastAPI request 提取 executor 内部事件关联字段。"""
+    return {
+        "request_id": getattr(request.state, "request_id", "unknown"),
+        "session_id": request.headers.get("x-session-id"),
+        "trace_id": request.headers.get("x-trace-id"),
+        "port": port or getattr(request.state, "port", None),
+    }
+
+
+def _emit_internal(
+    event_ctx: dict[str, Any] | None,
+    *,
+    op: str,
+    port: str,
+    duration_ms: float,
+    success: bool,
+    detail: dict[str, Any] | None = None,
+    error: str | None = None,
+) -> None:
+    """写入 executor_internal 事件。"""
+    ctx = event_ctx or {}
+    emit_event({
+        "type": "executor_internal",
+        "request_id": ctx.get("request_id") or "unknown",
+        "session_id": ctx.get("session_id"),
+        "trace_id": ctx.get("trace_id"),
+        "op": op,
+        "port": str(ctx.get("port") or port),
+        "duration_ms": round(duration_ms, 2),
+        "detail": detail or {},
+        "success": success,
+        "error": error[:200] if error else None,
+    })
+
+
+def _adb(
+    port: str,
+    *args: str,
+    timeout: int = 15,
+    event_ctx: dict[str, Any] | None = None,
+) -> subprocess.CompletedProcess:
     cmd = [ADB_PATH, "-s", _port_to_addr(port)] + list(args)
+    started = time.monotonic()
+    detail = {"args": list(args)[:6], "timeout": timeout}
     try:
         r = subprocess.run(cmd, capture_output=True, timeout=timeout)
     except subprocess.TimeoutExpired:
+        elapsed_ms = (time.monotonic() - started) * 1000
         log.warning("adb timeout port=%s cmd=%s timeout=%ds", port, " ".join(args), timeout)
+        _emit_internal(
+            event_ctx,
+            op="adb",
+            port=port,
+            duration_ms=elapsed_ms,
+            success=False,
+            detail=detail,
+            error=f"timeout after {timeout}s",
+        )
         raise
+    elapsed_ms = (time.monotonic() - started) * 1000
     if r.returncode != 0:
         log.warning("adb fail port=%s cmd=%s rc=%d stderr=%s",
                      port, " ".join(args), r.returncode,
                      r.stderr.decode(errors="replace").strip()[:200])
+    stderr = r.stderr.decode(errors="replace").strip()
+    _emit_internal(
+        event_ctx,
+        op="adb",
+        port=port,
+        duration_ms=elapsed_ms,
+        success=r.returncode == 0,
+        detail={**detail, "rc": r.returncode, "stdout_bytes": len(r.stdout or b""), "stderr_bytes": len(r.stderr or b"")},
+        error=stderr if r.returncode != 0 else None,
+    )
     return r
 
 
-def _screenshot_png(port: str) -> bytes:
-    r = _adb(port, "exec-out", "screencap", "-p")
-    if r.returncode != 0 or not r.stdout:
-        raise RuntimeError(f"ADB 截图失败：{r.stderr.decode(errors='replace')}")
-    return r.stdout
+def _screenshot_png(port: str, event_ctx: dict[str, Any] | None = None) -> bytes:
+    started = time.monotonic()
+    try:
+        r = _adb(port, "exec-out", "screencap", "-p", event_ctx=event_ctx)
+        if r.returncode != 0 or not r.stdout:
+            raise RuntimeError(f"ADB 截图失败：{r.stderr.decode(errors='replace')}")
+        elapsed_ms = (time.monotonic() - started) * 1000
+        _emit_internal(
+            event_ctx,
+            op="screenshot",
+            port=port,
+            duration_ms=elapsed_ms,
+            success=True,
+            detail={"bytes": len(r.stdout)},
+        )
+        return r.stdout
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - started) * 1000
+        _emit_internal(
+            event_ctx,
+            op="screenshot",
+            port=port,
+            duration_ms=elapsed_ms,
+            success=False,
+            detail={},
+            error=str(exc),
+        )
+        raise
 
 
 # OCR 结果缓存：{(port,): (timestamp, items)}，TTL 500ms
 _ocr_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
-def _ocr_items(port: str) -> tuple[list[dict], dict]:
+def _ocr_items(port: str, event_ctx: dict[str, Any] | None = None) -> tuple[list[dict], dict]:
     """截图 + OCR，返回 (文字结果列表, timing dict)。"""
     t0 = time.monotonic()
     cached = _ocr_cache.get(port)
     if cached and t0 - cached[0] < 0.5:
         log.debug("ocr cache hit port=%s", port)
+        _emit_internal(
+            event_ctx,
+            op="ocr",
+            port=port,
+            duration_ms=0,
+            success=True,
+            detail={"cache_hit": True, "text_count": len(cached[1])},
+        )
         return cached[1], {}
 
     t1 = time.monotonic()
-    png = _screenshot_png(port)
-    t2 = time.monotonic()
-    arr = np.frombuffer(png, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise RuntimeError("图像解码失败")
-    img = cv2.resize(img, (1200, 675))
-    ocr = _get_ocr()
-    result, _ = ocr(img)
-    t3 = time.monotonic()
-    items = []
-    if result:
-        for box, text, conf in result:
-            xs = [p[0] for p in box]
-            ys = [p[1] for p in box]
-            cx = float(sum(xs) / 4) * 4 / 3
-            cy = float(sum(ys) / 4) * 4 / 3
-            items.append({
-                "text": text,
-                "center_x": cx,
-                "center_y": cy,
-                "confidence": float(conf),
-            })
-    timing = {"screenshot_s": round(t2 - t1, 3), "ocr_s": round(t3 - t2, 3), "total_s": round(t3 - t0, 3)}
-    _ocr_cache[port] = (t0, items)
-    log.info("ocr port=%s text_count=%d screenshot=%.2fs ocr=%.2fs total=%.2fs",
-             port, len(items), t2 - t1, t3 - t2, t3 - t0)
-    return items, timing
+    try:
+        png = _screenshot_png(port, event_ctx=event_ctx)
+        t2 = time.monotonic()
+        arr = np.frombuffer(png, np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if img is None:
+            raise RuntimeError("图像解码失败")
+        img = cv2.resize(img, (1200, 675))
+        ocr = _get_ocr()
+        result, _ = ocr(img)
+        t3 = time.monotonic()
+        items = []
+        if result:
+            for box, text, conf in result:
+                xs = [p[0] for p in box]
+                ys = [p[1] for p in box]
+                cx = float(sum(xs) / 4) * 4 / 3
+                cy = float(sum(ys) / 4) * 4 / 3
+                items.append({
+                    "text": text,
+                    "center_x": cx,
+                    "center_y": cy,
+                    "confidence": float(conf),
+                })
+        timing = {"screenshot_s": round(t2 - t1, 3), "ocr_s": round(t3 - t2, 3), "total_s": round(t3 - t0, 3)}
+        _ocr_cache[port] = (t0, items)
+        log.info("ocr port=%s text_count=%d screenshot=%.2fs ocr=%.2fs total=%.2fs",
+                 port, len(items), t2 - t1, t3 - t2, t3 - t0)
+        _emit_internal(
+            event_ctx,
+            op="ocr",
+            port=port,
+            duration_ms=(t3 - t0) * 1000,
+            success=True,
+            detail={"cache_hit": False, "text_count": len(items), "timing": timing},
+        )
+        return items, timing
+    except Exception as exc:
+        elapsed_ms = (time.monotonic() - t0) * 1000
+        _emit_internal(
+            event_ctx,
+            op="ocr",
+            port=port,
+            duration_ms=elapsed_ms,
+            success=False,
+            detail={"cache_hit": False},
+            error=str(exc),
+        )
+        raise
 
 
 # ---------------------------------------------------------------------------
@@ -276,10 +443,12 @@ def health():
 
 
 @app.post("/screenshot")
-def screenshot(req: PortReq):
+def screenshot(req: PortReq, request: Request):
     """截图，返回 base64 编码的 PNG 字节。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        png = _screenshot_png(req.port)
+        png = _screenshot_png(req.port, event_ctx=event_ctx)
         return {
             "image_b64": base64.b64encode(png).decode(),
             "width": W,
@@ -291,10 +460,12 @@ def screenshot(req: PortReq):
 
 
 @app.post("/sense")
-def sense(req: PortReq):
+def sense(req: PortReq, request: Request):
     """截图 + OCR，返回文字和归一化坐标列表。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        items, timing = _ocr_items(req.port)
+        items, timing = _ocr_items(req.port, event_ctx=event_ctx)
         return {"results": items, "count": len(items), "timing": timing}
     except Exception as e:
         log.exception("sense error port=%s", req.port)
@@ -302,10 +473,12 @@ def sense(req: PortReq):
 
 
 @app.post("/tap")
-def tap(req: TapReq):
+def tap(req: TapReq, request: Request):
     """ADB 点击像素坐标。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        r = _adb(req.port, "shell", "input", "tap", str(req.px), str(req.py))
+        r = _adb(req.port, "shell", "input", "tap", str(req.px), str(req.py), event_ctx=event_ctx)
         ok = r.returncode == 0
         time.sleep(random.uniform(0.2, 0.4))
         return {"success": ok, "port": req.port, "px": req.px, "py": req.py}
@@ -315,10 +488,12 @@ def tap(req: TapReq):
 
 
 @app.post("/back")
-def back(req: PortReq):
+def back(req: PortReq, request: Request):
     """ADB 返回键。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        r = _adb(req.port, "shell", "input", "keyevent", "4")
+        r = _adb(req.port, "shell", "input", "keyevent", "4", event_ctx=event_ctx)
         ok = r.returncode == 0
         time.sleep(0.3)
         return {"success": ok, "port": req.port}
@@ -328,12 +503,17 @@ def back(req: PortReq):
 
 
 @app.post("/batch_tap")
-def batch_tap(req: BatchTapReq):
+def batch_tap(req: BatchTapReq, request: Request):
     """批量 ADB 点击，顺序执行。"""
+    request.state.port = ",".join(req.ports)
     results: dict[str, bool] = {}
     for port in req.ports:
         try:
-            r = _adb(port, "shell", "input", "tap", str(req.px), str(req.py))
+            r = _adb(
+                port,
+                "shell", "input", "tap", str(req.px), str(req.py),
+                event_ctx=_event_context(request, port),
+            )
             results[port] = r.returncode == 0
         except Exception as e:
             log.warning("batch_tap port=%s error: %s", port, e)
@@ -343,12 +523,13 @@ def batch_tap(req: BatchTapReq):
 
 
 @app.post("/batch_back")
-def batch_back(req: BatchBackReq):
+def batch_back(req: BatchBackReq, request: Request):
     """批量 ADB 返回键，顺序执行。"""
+    request.state.port = ",".join(req.ports)
     results: dict[str, bool] = {}
     for port in req.ports:
         try:
-            r = _adb(port, "shell", "input", "keyevent", "4")
+            r = _adb(port, "shell", "input", "keyevent", "4", event_ctx=_event_context(request, port))
             results[port] = r.returncode == 0
         except Exception as e:
             log.warning("batch_back port=%s error: %s", port, e)
@@ -358,12 +539,15 @@ def batch_back(req: BatchBackReq):
 
 
 @app.post("/swipe")
-def swipe(req: SwipeReq):
+def swipe(req: SwipeReq, request: Request):
     """ADB 滑动手势。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
         r = _adb(
             req.port, "shell", "input", "swipe",
             str(req.x1), str(req.y1), str(req.x2), str(req.y2), str(req.duration_ms),
+            event_ctx=event_ctx,
         )
         ok = r.returncode == 0
         time.sleep(req.duration_ms / 1000 + 0.2)
@@ -374,15 +558,17 @@ def swipe(req: SwipeReq):
 
 
 @app.post("/tap_text")
-def tap_text(req: TapTextReq):
+def tap_text(req: TapTextReq, request: Request):
     """截图 + OCR，找到第一个匹配文本后点击，返回点击坐标和匹配文本。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        items, _ = _ocr_items(req.port)
+        items, _ = _ocr_items(req.port, event_ctx=event_ctx)
         for item in items:
             if any(cand in item["text"] for cand in req.text_candidates):
                 px = int(item["center_x"])
                 py = int(item["center_y"])
-                r = _adb(req.port, "shell", "input", "tap", str(px), str(py))
+                r = _adb(req.port, "shell", "input", "tap", str(px), str(py), event_ctx=event_ctx)
                 if r.returncode != 0:
                     raise RuntimeError(f"ADB tap 失败：{r.stderr.decode(errors='replace')}")
                 time.sleep(random.uniform(0.2, 0.4))
@@ -395,14 +581,16 @@ def tap_text(req: TapTextReq):
 
 
 @app.post("/tap_text_near")
-def tap_text_near(req: TapTextNearReq):
+def tap_text_near(req: TapTextNearReq, request: Request):
     """截图 + OCR，找到与锚点同行的目标文字并点击。
 
     先找锚点文字确定行的 center_y，再找所有匹配目标文字中
     y 距离最近（且 prefer_right 时 x > 锚点）的那个点击。
     """
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        items, _ = _ocr_items(req.port)
+        items, _ = _ocr_items(req.port, event_ctx=event_ctx)
 
         anchor = next(
             (it for it in items if any(c in it["text"] for c in req.anchor_candidates)),
@@ -428,7 +616,7 @@ def tap_text_near(req: TapTextNearReq):
         target = min(candidates, key=lambda it: abs(it["center_y"] - anchor_y))
         px = int(target["center_x"])
         py = int(target["center_y"])
-        r = _adb(req.port, "shell", "input", "tap", str(px), str(py))
+        r = _adb(req.port, "shell", "input", "tap", str(px), str(py), event_ctx=event_ctx)
         if r.returncode != 0:
             raise RuntimeError(f"ADB tap 失败：{r.stderr.decode(errors='replace')}")
         time.sleep(random.uniform(0.2, 0.4))
@@ -441,12 +629,14 @@ def tap_text_near(req: TapTextNearReq):
 
 
 @app.post("/wait_text")
-def wait_text(req: WaitTextReq):
+def wait_text(req: WaitTextReq, request: Request):
     """循环 OCR 直到任一候选文本出现或超时，返回是否命中、命中文本和坐标。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     deadline = time.monotonic() + req.timeout_sec
     try:
         while time.monotonic() < deadline:
-            items, _ = _ocr_items(req.port)
+            items, _ = _ocr_items(req.port, event_ctx=event_ctx)
             for item in items:
                 if any(cand in item["text"] for cand in req.text_candidates):
                     log.info("wait_text port=%s matched=%r", req.port, item["text"])
@@ -465,20 +655,22 @@ def wait_text(req: WaitTextReq):
 
 
 @app.post("/close_common_popups")
-def close_common_popups(req: PortReq):
+def close_common_popups(req: PortReq, request: Request):
     """识别并点击常见弹窗按钮，返回关闭了哪些弹窗。
 
     只点击明确按钮型文本；断线/服务器关闭类文本作为状态信号处理，
     不在这里点击，避免误触。
     """
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     try:
-        items, _ = _ocr_items(req.port)
+        items, _ = _ocr_items(req.port, event_ctx=event_ctx)
         closed: list[dict] = []
         for item in items:
             if any(popup in item["text"] for popup in COMMON_POPUP_TEXTS):
                 px = int(item["center_x"])
                 py = int(item["center_y"])
-                r = _adb(req.port, "shell", "input", "tap", str(px), str(py))
+                r = _adb(req.port, "shell", "input", "tap", str(px), str(py), event_ctx=event_ctx)
                 if r.returncode == 0:
                     closed.append({"text": item["text"], "px": px, "py": py})
                     log.info("close_common_popups port=%s closed=%r", req.port, item["text"])
@@ -490,15 +682,17 @@ def close_common_popups(req: PortReq):
 
 
 @app.post("/app_health")
-def app_health(req: PortReq):
+def app_health(req: PortReq, request: Request):
     """检查 ADB 连通性、截图和 OCR 是否可用，返回实例健康状态。"""
+    request.state.port = req.port
+    event_ctx = _event_context(request, req.port)
     adb_ok = False
     screenshot_ok = False
     ocr_ok = False
     details: dict[str, str] = {}
 
     try:
-        r = _adb(req.port, "get-state", timeout=5)
+        r = _adb(req.port, "get-state", timeout=5, event_ctx=event_ctx)
         adb_ok = r.returncode == 0 and b"device" in r.stdout
         if not adb_ok:
             details["adb"] = (r.stdout.decode(errors="replace").strip()
@@ -508,7 +702,7 @@ def app_health(req: PortReq):
 
     if adb_ok:
         try:
-            _screenshot_png(req.port)
+            _screenshot_png(req.port, event_ctx=event_ctx)
             screenshot_ok = True
         except Exception as e:
             details["screenshot"] = str(e)

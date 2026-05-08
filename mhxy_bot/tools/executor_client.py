@@ -1,26 +1,72 @@
 """NAS 侧执行器 HTTP 客户端，封装对 Windows 执行器服务的调用。"""
 from __future__ import annotations
 
+import contextvars
+import uuid
+from typing import Callable
+
 import httpx
 
 
+_session_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mhxy_executor_session_id", default=None
+)
+_trace_id_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "mhxy_executor_trace_id", default=None
+)
+
+
+def set_executor_context(*, session_id: str | None = None, trace_id: str | None = None) -> None:
+    """设置当前上下文的 executor trace/session header。"""
+    _session_id_ctx.set(session_id)
+    _trace_id_ctx.set(trace_id)
+
+
 class ExecutorClient:
-    def __init__(self, base_url: str, timeout: int = 30) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 30,
+        *,
+        session_id: str | None = None,
+        trace_id_provider: Callable[[], str | None] | None = None,
+    ) -> None:
         self._base = base_url.rstrip("/")
         self._timeout = timeout
+        self._session_id = session_id
+        self._trace_id_provider = trace_id_provider
+
+    def set_context(self, *, session_id: str | None = None, trace_id: str | None = None) -> None:
+        """设置当前执行上下文，用于向 Windows executor 透传 obs 关联 header。"""
+        set_executor_context(session_id=session_id, trace_id=trace_id)
+
+    def _headers(self) -> dict[str, str]:
+        """构造每次请求的 trace/session header。"""
+        headers = {"X-Request-ID": uuid.uuid4().hex[:12]}
+        session_id = _session_id_ctx.get() or self._session_id
+        if session_id:
+            headers["X-Session-Id"] = session_id
+
+        trace_id = _trace_id_ctx.get()
+        if trace_id is None and self._trace_id_provider is not None:
+            trace_id = self._trace_id_provider()
+        if trace_id:
+            headers["X-Trace-Id"] = trace_id
+        return headers
 
     def _post(self, path: str, *, _timeout: int | None = None, **body) -> dict:
         r = httpx.post(
             f"{self._base}{path}",
             json=body,
             timeout=_timeout if _timeout is not None else self._timeout,
+            headers=self._headers(),
         )
         r.raise_for_status()
         return r.json()
 
     def health(self) -> bool:
         try:
-            r = httpx.get(f"{self._base}/health", timeout=5)
+            r = httpx.get(f"{self._base}/health", timeout=5, headers=self._headers())
             return r.status_code == 200
         except Exception:
             return False

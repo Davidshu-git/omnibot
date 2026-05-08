@@ -158,6 +158,7 @@ export const api = {
   runtimeModels: () => get<ProjectRuntimeModels[]>("/api/projects/runtime-models"),
 
   ingestMhxy: () => post<{ status: string; events_inserted: number }>("/api/ingest/mhxy"),
+  ingestMhxyExecutor: () => post<{ status: string; events_inserted: number }>("/api/ingest/mhxy-executor"),
   ingestStockBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/stock-bot"),
   ingestEhsBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/ehs-bot"),
 };

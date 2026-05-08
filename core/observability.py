@@ -423,6 +423,11 @@ class OmnibotObsCallbackHandler(AsyncCallbackHandler):
             set_trace_id(self._trace_id)
         except Exception:
             pass
+        try:
+            from mhxy_bot.tools.executor_client import set_executor_context
+            set_executor_context(session_id=self._obs.session_id, trace_id=self._trace_id)
+        except Exception:
+            pass
 
         # LangChain passes tool input as Python repr string; try multiple parse strategies
         arguments: Any = None

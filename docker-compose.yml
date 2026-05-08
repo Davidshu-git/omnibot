@@ -113,9 +113,11 @@ services:
       MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD: ${MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD:-3}
       MHXY_EXECUTOR_STATUS_FILE: /app/logs/executor_status.json
       MHXY_EXECUTOR_WATCHDOG_EVENT_LOG: /app/logs/executor_watchdog.jsonl
+      MHXY_EXECUTOR_EVENTS_LOCAL_DIR: /logs/omnibot/mhxy/executor
     volumes:
       - ./mhxy_bot:/app/mhxy_bot
       - ./data/mhxy/config:/app/data/mhxy/config
+      - ./data/mhxy/observability/executor:/logs/omnibot/mhxy/executor
       - ./logs/mhxy:/app/logs
       - ./.env:/app/.env
       - /home/shudawei/.ssh:/root/.ssh_host:ro
