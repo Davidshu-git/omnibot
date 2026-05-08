@@ -12,7 +12,7 @@ class InstanceState(str, Enum):
     UNKNOWN = "unknown"
     OFFLINE = "offline"
     LOGIN_SCREEN = "login_screen"
-    DISCONNECTED = "disconnected"
+    GAME_DISCONNECTED = "game_disconnected"
     UPDATE_RESTART = "update_restart"
     ANDROID_HOME = "android_home"
     APP_LOADING = "app_loading"
@@ -28,7 +28,7 @@ class InstanceIssue(str, Enum):
     SCREENSHOT_FAILED = "screenshot_failed"
     OCR_FAILED = "ocr_failed"
     LOGIN_SCREEN = "login_screen"
-    DISCONNECTED = "disconnected"
+    GAME_DISCONNECTED = "game_disconnected"
     UNKNOWN_OK = "unknown_ok"
 
 

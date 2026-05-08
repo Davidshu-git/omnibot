@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 # 按钮 / LLM 工具两条路径共用的可重连状态集合
 RECONNECTABLE_STATES: frozenset[InstanceState] = frozenset({
-    InstanceState.DISCONNECTED,
+    InstanceState.GAME_DISCONNECTED,
     InstanceState.LOGIN_SCREEN,
     InstanceState.ANDROID_HOME,
 })
@@ -115,7 +115,7 @@ def try_reconnect(ctx: "RunnerContext", timeout_sec: int = 90, steps: list[str] 
             if steps is not None:
                 steps.append("自动恢复成功，回到主界面")
             return True
-        if state == InstanceState.DISCONNECTED:
+        if state == InstanceState.GAME_DISCONNECTED:
             try:
                 if not _tap_from_items(ctx, items, reconnect_actions):
                     ctx.warning("reconnect: disconnect action button not found")
@@ -296,12 +296,12 @@ def diagnose_instance(ctx: "RunnerContext", attempt_reconnect: bool = False) -> 
                 message=f"instance is not ready for tasks: {state.value}",
                 steps=steps,
             )
-        if state == InstanceState.DISCONNECTED:
+        if state == InstanceState.GAME_DISCONNECTED:
             if not attempt_reconnect:
                 steps.append("检测到掉线，未执行自动重连")
                 _cap_steps()
                 return InstanceDiagnosis(
-                    code=InstanceIssue.DISCONNECTED,
+                    code=InstanceIssue.GAME_DISCONNECTED,
                     state=InstanceState.DISCONNECTED,
                     needs_human=True,
                     message="game disconnected; reconnect not attempted",
@@ -323,7 +323,7 @@ def diagnose_instance(ctx: "RunnerContext", attempt_reconnect: bool = False) -> 
                 )
             _cap_steps()
             return InstanceDiagnosis(
-                code=InstanceIssue.DISCONNECTED,
+                code=InstanceIssue.GAME_DISCONNECTED,
                 state=InstanceState.DISCONNECTED,
                 needs_human=True,
                 message="game disconnected and auto-reconnect failed",

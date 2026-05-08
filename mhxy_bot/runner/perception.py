@@ -59,11 +59,11 @@ def detect_with_texts(ctx: "RunnerContext") -> tuple[InstanceState, list[str], l
     items = _sense(ctx)
     texts = _texts(items)
     if not items:
-        return InstanceState.OFFLINE, texts, items
+        return InstanceState.UNKNOWN, texts, items
 
     joined = "".join(texts)
     if any(m in joined for m in _DISCONNECTED_MARKERS):
-        return InstanceState.DISCONNECTED, texts, items
+        return InstanceState.GAME_DISCONNECTED, texts, items
     if any(m in joined for m in _UPDATE_RESTART_MARKERS):
         return InstanceState.UPDATE_RESTART, texts, items
     if any(m in joined for m in _APP_LOADING_MARKERS):

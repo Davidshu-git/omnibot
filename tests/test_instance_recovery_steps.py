@@ -89,15 +89,15 @@ def test_disconnected_diagnosis_does_not_try_reconnect_by_default():
     executor.app_health.return_value = {"adb": True, "screenshot": True, "ocr": True}
     executor.sense.return_value = []
 
-    with patch("mhxy_bot.runner.perception.detect_screen_state", return_value=InstanceState.DISCONNECTED), \
+    with patch("mhxy_bot.runner.perception.detect_screen_state", return_value=InstanceState.GAME_DISCONNECTED), \
          patch("mhxy_bot.runner.instance_recovery.try_reconnect") as mock_reconnect:
         ctx = _make_ctx(executor)
         diag = diagnose_instance(ctx)
 
     mock_reconnect.assert_not_called()
     assert any("检测到掉线，未执行自动重连" in s for s in diag.steps)
-    assert diag.code == InstanceIssue.DISCONNECTED
-    assert diag.state == InstanceState.DISCONNECTED
+    assert diag.code == InstanceIssue.GAME_DISCONNECTED
+    assert diag.state == InstanceState.GAME_DISCONNECTED
     assert diag.needs_human is True
 
 
@@ -131,7 +131,7 @@ def test_attempt_reconnect_success_writes_step_when_explicitly_enabled():
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return InstanceState.DISCONNECTED
+            return InstanceState.GAME_DISCONNECTED
         return InstanceState.MAIN_UI
 
     with patch("mhxy_bot.runner.perception.detect_screen_state", side_effect=_detect_side_effect), \

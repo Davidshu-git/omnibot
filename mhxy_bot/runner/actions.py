@@ -150,7 +150,7 @@ def _wait_not_battle(ctx: "RunnerContext", step: "TaskStep") -> dict:
             entered_battle = True
             break
         if state in (
-            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.GAME_DISCONNECTED,
             InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
             InstanceState.ACTIVITY_POPUP,
         ):
@@ -173,7 +173,7 @@ def _wait_not_battle(ctx: "RunnerContext", step: "TaskStep") -> dict:
         if state == InstanceState.IN_BATTLE:
             stable_not_battle = 0
         elif state in (
-            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.GAME_DISCONNECTED,
             InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
             InstanceState.ACTIVITY_POPUP,
         ):
@@ -221,7 +221,7 @@ def _detect_screen_state(ctx: "RunnerContext", step: "TaskStep") -> dict:
 
     state = detect_screen_state(ctx)
     if state in (
-        InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+        InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.GAME_DISCONNECTED,
         InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
         InstanceState.ACTIVITY_POPUP,
     ):

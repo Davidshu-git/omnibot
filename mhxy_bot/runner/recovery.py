@@ -60,7 +60,7 @@ def return_to_main_ui(ctx: "RunnerContext", max_backs: int = 5) -> bool:
         if state == InstanceState.MAIN_UI:
             return True
         if state in (
-            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.DISCONNECTED,
+            InstanceState.OFFLINE, InstanceState.LOGIN_SCREEN, InstanceState.GAME_DISCONNECTED,
             InstanceState.UPDATE_RESTART, InstanceState.ANDROID_HOME, InstanceState.APP_LOADING,
             
         ):
@@ -96,7 +96,7 @@ def attempt(ctx: "RunnerContext", step_id: str, attempt_num: int) -> bool:
 
     state = detect_screen_state(ctx)
 
-    if state == InstanceState.DISCONNECTED:
+    if state == InstanceState.GAME_DISCONNECTED:
         ctx.info("recovery: disconnected, attempting auto-reconnect for step '%s'", step_id)
         from mhxy_bot.runner.instance_recovery import try_reconnect
         if try_reconnect(ctx):
