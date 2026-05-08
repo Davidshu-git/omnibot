@@ -90,6 +90,16 @@ def write_status(status: dict[str, Any]) -> None:
     tmp.replace(STATUS_FILE)
 
 
+def read_status() -> dict[str, Any]:
+    try:
+        return json.loads(STATUS_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        log.warning("read previous status failed path=%s error=%s", STATUS_FILE, exc)
+        return {}
+
+
 def append_event(event: dict[str, Any]) -> None:
     ensure_dirs()
     with EVENT_LOG.open("a", encoding="utf-8") as f:
@@ -248,10 +258,18 @@ def restart_executor(reason: str) -> dict[str, Any]:
 
 def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tuple[int, dict[str, Any]]:
     checked_at = utc_now()
+    previous = read_status()
     health_ok, health = http_get_health()
-    app_results: list[dict[str, Any]] = []
-    if health_ok and APP_HEALTH_EVERY > 0 and (iteration == 1 or iteration % APP_HEALTH_EVERY == 0):
+    previous_app_results = previous.get("app_health")
+    app_results: list[dict[str, Any]] = previous_app_results if isinstance(previous_app_results, list) else []
+    app_health_checked_at = previous.get("app_health_checked_at")
+
+    should_check_app_health = health_ok and APP_HEALTH_EVERY > 0 and (
+        iteration == 1 or iteration % APP_HEALTH_EVERY == 0
+    )
+    if should_check_app_health:
         app_results = [http_app_health(port) for port in ports]
+        app_health_checked_at = checked_at
         health_ok = all(r.get("healthy") is True for r in app_results)
 
     consecutive_failures = 0 if health_ok else consecutive_failures + 1
@@ -264,6 +282,10 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
         consecutive_failures = 0
         time.sleep(5)
         health_ok, health = http_get_health()
+        if health_ok and APP_HEALTH_EVERY > 0:
+            app_results = [http_app_health(port) for port in ports]
+            app_health_checked_at = utc_now()
+            health_ok = all(r.get("healthy") is True for r in app_results)
         process = get_remote_process()
 
     status = {
@@ -276,6 +298,7 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
         "interval_sec": INTERVAL_SEC,
         "health": health,
         "app_health": app_results,
+        "app_health_checked_at": app_health_checked_at,
         "process": process,
         "last_restart": restart,
     }
