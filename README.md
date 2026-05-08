@@ -1,222 +1,187 @@
-# OmniBot：多智能体 Monorepo 框架
+# OmniBot
 
-OmniBot 是一个基于 **Monorepo + 共享 Core** 设计的多领域 AI Agent 平台。
-
-通过 `core/` 共享层统一封装 Telegram Bot 基础设施、RAG 引擎、记忆系统和沙箱安全，各领域 Bot（OmniStock、OmniEHS）只需聚焦业务逻辑，以子类继承的方式接入统一平台。
+> 生产级多智能体平台 — 共享 Core 架构，三个领域 Bot，全栈可观测性
 
 ---
 
-## 架构概览
+## 这是什么
+
+OmniBot 是一个部署在家庭 NAS 上、**持续运行中的多 Agent 生产系统**。
+
+三个 Telegram Bot 共用同一套 `core/` 基础设施，覆盖量化分析、安全合规、游戏自动化三个完全不同的业务领域，并配套一个 **FastAPI + Next.js 可观测性平台**，实时追踪每次 LLM 调用的 Token 消耗与费用。
+
+---
+
+## 系统架构
 
 ```
-omnibot/
-├── core/                        # 共享基础层（各 Bot 公用）
-│   ├── tg_base.py               # TelegramBotBase：渲染、鉴权、Agent 调度
-│   ├── agent_base.py            # build_agent()：LangChain Agent 工厂
-│   ├── notifier.py              # SMTP 邮件推送（Markdown → HTML）
-│   ├── job_runner.py            # 独立子进程研报任务调度器
-│   └── tools/
-│       ├── file_tools.py        # 沙箱 I/O + L1/L2 混合 RAG 引擎
-│       ├── memory_tools.py      # LTM 长期记忆 KV 状态机
-│       └── job_tools.py        # 后台任务投递与状态查询
-│
-├── stock_bot/                   # OmniStock：A股/港股/美股量化助理
-│   ├── agent.py                 # Agent 组装入口
-│   ├── tg_main.py               # StockBot(TelegramBotBase) 子类
-│   ├── daily_job.py             # 盘后调度器（每日 15:30）
-│   ├── valuation_engine.py      # 多币种估值引擎
-│   └── tools/stock_tools.py     # 股票领域专属工具
-│
-├── ehs_bot/                     # OmniEHS：EHS 安全合规专业助理
-│   ├── agent.py                 # Agent 组装入口
-│   ├── tg_main.py               # EHSBot(TelegramBotBase) 子类
-│   ├── daily_job.py             # EHS 定期简报调度器
-│   └── tools/ehs_tools.py       # EHS 领域专属工具
-│
-├── data/
-│   ├── stock/                   # OmniStock 持久化数据
-│   │   ├── memory/              # LTM（user_profile.json、alerts.json）
-│   │   ├── knowledge_base/      # RAG 原始文件（PDF/MD）+ 归档日报
-│   │   ├── embeddings/          # FAISS 向量库 L2 缓存
-│   │   └── agent_workspace/     # Agent 沙箱（报告、K 线图）
-│   └── ehs/                     # OmniEHS 持久化数据（结构同上）
-│
-├── jobs/
-│   ├── status/                  # 研报任务状态（{job_id}.json）
-│   └── logs/                    # 研报任务日志（{job_id}.log）
-│
-├── Dockerfile.base              # 重型基础镜像（pip 依赖 + Playwright）
-├── Dockerfile                   # 轻量业务镜像（FROM base + COPY . .）
-├── docker-compose.yml           # 三服务编排
-└── .env                         # 环境变量（不打入镜像）
+┌─────────────────────────────────────────────────────────────┐
+│                        omnibot monorepo                     │
+│                                                             │
+│  ┌──────────┐  ┌──────────┐  ┌──────────────────────────┐  │
+│  │ stock_bot│  │  ehs_bot │  │        mhxy_bot          │  │
+│  │ 量化助理  │  │ 安全合规  │  │  游戏自动化（Windows远程）│  │
+│  └────┬─────┘  └────┬─────┘  └────────────┬─────────────┘  │
+│       │              │                      │               │
+│  ─────┴──────────────┴──────────────────────┴─────────────  │
+│                      core/  共享基础层                       │
+│   TelegramBotBase · AgentFactory · RAG · Memory · Sandbox   │
+│  ─────────────────────────────────────────────────────────  │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │              obs/  可观测性平台                        │   │
+│  │     JSONL → FastAPI → PostgreSQL → Next.js Dashboard │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## Bot 功能说明
+## 三个 Agent
 
 ### OmniStock — 量化股票助理
 
-| Telegram 命令 | 说明 |
-|--------------|------|
-| `/start` | 打开 Inline Keyboard 操控面板 |
-| `/portfolio` | 实时持仓估值（多币种折算 CNY，Playwright 渲染表格图） |
-| `/report` | 投递盘后研报生成任务至独立子进程 |
-| `/status` | 查询最近一次研报任务状态 |
-| `/kb` | 列出知识库文件 |
-| `/alert` | 设定盯盘价格预警（跌破/突破，5 分钟轮询） |
-| 普通文本 | Agent 推理：查价、K 线图、RAG 研报分析 |
-| 文件上传 | 自动入库知识库并触发 RAG 总结 |
+实时对话式股票分析，覆盖 A 股 / 港股 / 美股，每日 15:30 自动执行盘后研报。
 
-**领域专属工具：**
+| 能力 | 实现 |
+|------|------|
+| 多市场查价 | yfinance + akshare 双源，自动识别市场后缀 |
+| K 线图 | mplfinance 生成，Telegram 直接发送 |
+| 持仓估值 | 多币种实时折算 CNY，Playwright 渲染表格图 |
+| 价格预警 | 5 分钟轮询，跌破/突破触发 Telegram 推送 |
+| 盘后研报 | 多源资讯聚合去重 → LLM 生成 → 邮件+Telegram 双渠道推送 |
+| RAG 知识库 | 历史日报自动归档，支持 PDF/MD 上传即用 |
 
-- `get_universal_stock_price` — 美股/A股/港股查价（yfinance + akshare 双源）
-- `get_etf_price` — A股 ETF 实时行情
-- `draw_universal_stock_chart` — K 线图生成（mplfinance，支持自定义周期）
-- `search_company_ticker` — 联网搜索公司股票代码（DDGS）
-- `calculate_exact_portfolio_value` — 多币种持仓精确估值（禁止 LLM 心算）
-- `create_price_alert` — 创建价格预警规则写入 alerts.json
+### OmniEHS — 安全合规助理
+
+EHS（环境健康安全）领域专业 Agent，覆盖法规查询、化学品 GHS 数据、隐患管理。
+
+| 能力 | 实现 |
+|------|------|
+| 法规检索 | 联网搜索 GB/ISO 标准解读 |
+| GHS 查询 | 按化学品名称或 CAS 号查危害分类及 SDS |
+| 隐患日志 | 6 级严重度追记，支持按日期/等级/关键词查询 |
+| 作业许可 | 内置动火/高处/有限空间/临时用电/吊装检查清单 |
+
+### OmniMHXY — 游戏自动化 Bot
+
+通过 SSH 控制 Windows 端 Executor，结合 OCR + VL 大模型，实现梦幻西游日常任务的无人值守。
+
+| 能力 | 实现 |
+|------|------|
+| 远程执行 | SSH 免密连接 Windows，HTTP API 控制点击/截图 |
+| 视觉感知 | Qwen3-VL 多模态模型识别游戏界面 |
+| 状态机 Runner | 确定性主流程 + VL 兜底，可重试、可观测 |
+| Watchdog | 独立容器健康监测，失败自动重启 Executor |
 
 ---
 
-### OmniEHS — EHS 安全合规助理
-
-**领域专属工具：**
-
-- `search_ehs_regulation` — 联网搜索 GB/ISO 标准及法规解读（DDGS）
-- `query_chemical_ghs_info` — 按化学品名称/CAS 号查询 GHS 危害分类及 SDS
-- `log_incident` — 追加记录隐患/事故至 incident_log.jsonl（6 级严重度）
-- `query_incident_log` — 按日期/等级/关键词查询历史隐患统计
-- `get_work_permit_checklist` — 获取标准作业许可证检查项（动火/高处/有限空间/临时用电/吊装）
-
----
-
-## 核心设计亮点
+## 核心设计
 
 ### 共享 Core + 领域子类
-`TelegramBotBase` 封装所有 Bot 通用基础设施（渲染管道、白名单鉴权、Agent 异步调度、文件上传入库、跨进程广播接收）。领域 Bot 仅需通过钩子方法注入差异：
+
+所有 Bot 继承 `TelegramBotBase`，通过钩子方法注入业务差异，无需重复实现鉴权、渲染、Agent 调度等基础设施。
 
 ```python
 class StockBot(TelegramBotBase):
     def get_bot_name(self) -> str: return "OmniStock"
-    def get_tool_status_map(self) -> dict: ...   # 工具调用状态文案
-    def setup_job_queue(self, app): ...          # 价格预警轮询
-    def handle_custom_cmd(self, cmd, ...): ...   # /portfolio /report /alert
+    def setup_job_queue(self, app): ...    # 价格预警轮询
+    def handle_custom_cmd(self, cmd, ...): ...  # /portfolio /report /alert
 ```
 
-### Telegram 渲染管道
-LLM 输出 → `translate_to_telegram_html()` → 检测 Markdown 表格 → Playwright 渲染高分辨率 PNG（3x DSF）→ `send_with_caption_split()` 自动分段。Agent 推理全程通过 `AsyncTelegramCallbackHandler` 实时上报工具调用状态。
+新增一个 Bot 只需实现业务钩子，复用全部 `core/` 能力。
 
 ### L1/L2 混合 RAG 缓存
-进程内 `lru_cache`（L1）→ FAISS 硬盘（L2，mtime 校验热更新）→ 均未命中则重建并双向写入。每日盘后报告自动归档至 knowledge_base，持续扩充 RAG 数据飞轮。
 
-### 双轨记忆架构
-- **STM**：`FileChatMessageHistory` 滑动窗口（10 条）
-- **LTM**：`user_profile.json` KV 状态机，`filelock` 保障并发原子写入
+```
+查询请求
+  → L1: 进程内 lru_cache（毫秒级）
+  → L2: FAISS 硬盘索引（mtime 校验热更新）
+  → miss: 重建向量库，双向写入 L1 + L2
+```
+
+每日盘后报告自动归档进 `knowledge_base/`，RAG 数据随时间持续累积。
+
+### 双轨记忆
+
+- **STM**：`FileChatMessageHistory` 滑动窗口（10 条），跨重启持久化
+- **LTM**：`user_profile.json` KV 状态机，`filelock` 保障并发原子写
 
 ### 研报独立子进程
-`trigger_job` 工具以 `subprocess.Popen` 启动 `core/job_runner.py`，任务状态写入 `jobs/status/{job_id}.json`，不阻塞主线程。`query_job_status` 工具异步轮询进度。
 
-### Observability JSONL
-`TelegramBotBase` 在提供 `obs_dir` 与 `agent_id` 时写入本地 JSONL：`{obs_dir}/tg_session_{agent_slug}_{user_id}_{YYYYMMDD}.jsonl`。记录类型保持与 mhxy 日志兼容：`session`、`message`、`thought`、`model_call`、`tool_call`、`tool_result`，供 `agent-observability` 第一阶段通过本地 JSONL adapter 摄取；当前不要求 Bot 直接依赖 FastAPI/Postgres 服务。
+`trigger_job` 通过 `subprocess.Popen` 投递研报任务至独立进程，Agent 不阻塞；`query_job_status` 工具异步轮询状态文件，用户随时查询进度。
 
-迁移的 mhxy VL 工具若需要记录 `prompt` / `raw_output`，应把当前 `OmniObserver` 传给 `mhxy_bot.game_core.cloud_vision.set_log_callback(observer)`，并在任务结束后清空。`OmniObserver` 同时提供 `write_raw_event()` 与 mhxy 兼容的 `_write_log()` shim，用于接收这些预成形 JSONL 事件。
+### Telegram 渲染管道
 
-### 沙箱安全防御
-所有 Agent I/O 使用 `pathlib.is_relative_to()` 校验路径层级，强制 sandbox 限制在 `agent_workspace/`，知识库操作限制在 `knowledge_base/` 内。
+```
+LLM 输出 → Markdown → HTML 方言转换
+  → 检测表格 → Playwright 3x DSF 高清 PNG
+  → 自动分段发送（消息长度限制）
+```
+
+全程 `AsyncTelegramCallbackHandler` 实时上报工具调用状态，"正在输入"心跳不断。
+
+### 全链路可观测性
+
+每次 `execute_agent_task` 自动写 JSONL 日志（`session / message / thought / model_call / tool_call / tool_result`），由 `obs/` 摄取入 PostgreSQL，Next.js 看板展示 Token 趋势与费用分布。
 
 ---
 
-## 部署
+## obs/ 可观测性平台
 
-### 环境变量（`.env`）
-
-```env
-# 必填
-MINIMAX_API_KEY=                    # 主模型推理（MiniMax-M2.7 via MiniMax）
-DASHSCOPE_APIMODE_KEY=     # RAG 向量化（text-embedding-v3）
-
-# Stock Bot
-TG_BOT_TOKEN=                # BotFather 获取
-ALLOWED_TG_USERS=            # 白名单用户 ID，逗号分隔
-
-# EHS Bot
-EHS_TG_BOT_TOKEN=
-EHS_ALLOWED_TG_USERS=
-
-# MHXY Bot
-MHXY_TG_BOT_TOKEN=
-MHXY_ALLOWED_TG_USERS=
-MHXY_REMOTE_MODE=true
-MHXY_REMOTE_HOST=192.168.x.x
-MHXY_REMOTE_USER=your_windows_ssh_user
-VL_DASHSCOPE_API_KEY=
-VL_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-
-# 可选（邮件推送）
-SMTP_SERVER=
-SMTP_PORT=465
-SENDER_EMAIL=
-SENDER_PASSWORD=
-RECEIVER_EMAIL=
+```
+obs/
+├── api/         FastAPI + SQLAlchemy async + PostgreSQL
+└── web/         Next.js 统计看板（端口 3100）
 ```
 
-### Docker 部署（推荐）
-
-```bash
-# 首次或依赖变更时，构建基础镜像（含 pip + Playwright，耗时较长）
-docker build -f Dockerfile.base -t omnibot-base:latest .
-
-# 启动所有服务
-docker compose up -d --build
-
-# 查看日志
-docker compose logs -f
-
-# 仅重启某个服务
-docker compose restart stock-tg-bot
-```
-
-四个服务：
-
-| 服务 | 容器名 | 说明 |
-|------|--------|------|
-| `stock-daily-job` | `v2-omnistock-daily-job` | 盘后调度器，每日 15:30 自动执行 |
-| `stock-tg-bot` | `v2-omnistock-tg-bot` | OmniStock Telegram Bot |
-| `ehs-tg-bot` | `v2-omniehs-tg-bot` | OmniEHS Telegram Bot |
-| `mhxy-tg-bot` | `v2-omnimhxy-tg-bot` | OmniMHXY 游戏控制 Bot |
-
-### 本地开发
-
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-.venv/bin/playwright install chromium
-
-# 启动 Stock Bot
-.venv/bin/python -m stock_bot.tg_main
-
-# 启动 EHS Bot
-.venv/bin/python -m ehs_bot.tg_main
-
-# 手动触发一次盘后任务（测试）
-.venv/bin/python -m stock_bot.daily_job --test
-```
+- **幂等摄取**：按内容 hash 去重，重复执行安全
+- **增量同步**：cursor 记录文件 mtime，未变更文件直接跳过
+- **SSE 推送**：ingest 完成后实时通知前端刷新
+- **费用计算**：按量计费模型精确到分，包月模型标注"包月"
 
 ---
 
 ## 技术栈
 
-| 类别 | 库 |
-|------|----|
-| Agent 编排 | LangChain, LangGraph |
-| LLM | Qwen3.5-Plus（DashScope，OpenAI 兼容协议） |
-| Telegram Bot | python-telegram-bot ~= 22.6 |
-| 无头浏览器渲染 | Playwright ~= 1.58.0（表格 → PNG） |
-| 金融数据 | yfinance, akshare, mplfinance |
-| 向量检索 | FAISS, DashScope Embeddings |
-| 网络搜索 | ddgs（DuckDuckGo） |
-| 容错重试 | tenacity（指数退避） |
-| 并发安全 | filelock |
-| 邮件推送 | smtplib + markdown |
-| 容器化 | Docker, Docker Compose |
+| 类别 | 技术 |
+|------|------|
+| Agent 编排 | LangChain · LangChain Callbacks |
+| LLM | MiniMax-M2.7 · Qwen3-VL（DashScope） |
+| Telegram | python-telegram-bot 22.x |
+| 渲染 | Playwright（表格 → 高清 PNG） |
+| 金融数据 | yfinance · akshare · mplfinance |
+| 向量检索 | FAISS · DashScope Embeddings |
+| 可观测性 | FastAPI · PostgreSQL · Next.js · SQLAlchemy async |
+| 容错 | tenacity 指数退避 · filelock 原子写 |
+| 部署 | Docker · Docker Compose |
+
+---
+
+## 快速启动
+
+```bash
+# 1. 配置环境变量
+cp .env.example .env   # 填入 API Key 和 Bot Token
+
+# 2. 构建并启动 Bot 服务
+docker build -f Dockerfile.base -t omnibot-base:latest .
+docker compose up -d
+
+# 3. 启动可观测性平台（独立 Compose）
+docker compose -f obs/docker-compose.yml up -d
+
+# 查看日志
+docker compose logs -f
+docker compose -f obs/docker-compose.yml logs api -f
+```
+
+Bot 服务容器：
+
+| 容器 | 说明 |
+|------|------|
+| `v2-omnistock-tg-bot` | OmniStock Telegram Bot |
+| `v2-omnistock-daily-job` | 盘后调度器（每日 15:30） |
+| `v2-omniehs-tg-bot` | OmniEHS Telegram Bot |
+| `v2-omnimhxy-tg-bot` | OmniMHXY 游戏控制 Bot |
+| `obs-api-1 / obs-web-1 / obs-db-1` | 可观测性平台 |
