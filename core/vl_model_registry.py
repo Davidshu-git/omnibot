@@ -4,9 +4,17 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 log = logging.getLogger(__name__)
+
+
+_SETTINGS_REQUIRED_FIELDS = {"model_key", "model", "display_name", "provider", "updated_at"}
+
+
+def _settings_has_runtime_fields(data: object) -> bool:
+    return isinstance(data, dict) and _SETTINGS_REQUIRED_FIELDS.issubset(data.keys())
 
 
 @dataclass
@@ -29,6 +37,17 @@ class VlModelRegistry:
         settings_path.parent.mkdir(parents=True, exist_ok=True)
         self._current_key = self._load_key()
 
+        # 首次启动 / 旧格式升级：确保 settings 文件包含完整信息
+        try:
+            if self._settings_path.exists():
+                existing = json.loads(self._settings_path.read_text(encoding="utf-8"))
+            else:
+                existing = {}
+            if not _settings_has_runtime_fields(existing):
+                self._save_key(self._current_key)
+        except Exception:
+            self._save_key(self._current_key)
+
     def _load_key(self) -> str:
         try:
             if self._settings_path.exists():
@@ -41,9 +60,19 @@ class VlModelRegistry:
         return self._default_key
 
     def _save_key(self, key: str) -> None:
+        """写入完整 settings JSON（含 model/display_name/provider/updated_at）。
+        注意：绝不写入 api_key，obs 端不可见密钥。"""
         try:
+            cfg = self._configs[key]
+            payload = {
+                "model_key": key,
+                "model": cfg.model,
+                "display_name": cfg.display_name,
+                "provider": "dashscope",
+                "updated_at": datetime.now(timezone(timedelta(hours=8))).isoformat(timespec="seconds"),
+            }
             self._settings_path.write_text(
-                json.dumps({"model_key": key}, ensure_ascii=False, indent=2),
+                json.dumps(payload, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception as e:

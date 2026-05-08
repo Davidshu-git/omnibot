@@ -161,6 +161,50 @@ async def list_agents(project_id: str, db: AsyncSession = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
+# Runtime models — 读取各 Bot 当前配置的文本模型 / 视觉模型
+# ---------------------------------------------------------------------------
+
+_RUNTIME_MODEL_FIELDS = ("model_key", "model", "display_name", "provider", "updated_at")
+
+
+def _read_settings_safe(path: Path) -> dict | None:
+    """安全读取 settings JSON，文件不存在 / 损坏 / 字段缺失返回 None。"""
+    try:
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        values = {field: data.get(field) for field in _RUNTIME_MODEL_FIELDS}
+        if not all(isinstance(value, str) and value for value in values.values()):
+            return None
+        return values
+    except Exception:
+        return None
+
+
+@router.get("/projects/runtime-models")
+async def projects_runtime_models():
+    """读取每个 project 的 model_settings.json / vl_model_settings.json，
+    返回当前配置的文本模型 / 视觉模型。"""
+    runtime_dirs = {
+        "mhxy": os.getenv("RUNTIME_DIR_MHXY") or "/runtime/mhxy",
+        "stock-bot": os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot",
+        "ehs-bot": os.getenv("RUNTIME_DIR_EHS_BOT") or "/runtime/ehs-bot",
+    }
+    out = []
+    for project_id, base in runtime_dirs.items():
+        text = _read_settings_safe(Path(base) / "model_settings.json")
+        vl = _read_settings_safe(Path(base) / "vl_model_settings.json")
+        out.append({
+            "project_id": project_id,
+            "text_model": text,
+            "vl_model": vl,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
 # External service status
 # ---------------------------------------------------------------------------
 

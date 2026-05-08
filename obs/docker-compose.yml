@@ -31,12 +31,18 @@ services:
       MHXY_EXECUTOR_STATUS_FILE: /logs/omnibot/mhxy/executor_status.json
       OMNIBOT_STOCK_LOG_DIR: /logs/omnibot/stock/sessions
       OMNIBOT_EHS_LOG_DIR: /logs/omnibot/ehs/sessions
+      RUNTIME_DIR_MHXY: /runtime/mhxy
+      RUNTIME_DIR_STOCK_BOT: /runtime/stock-bot
+      RUNTIME_DIR_EHS_BOT: /runtime/ehs-bot
     volumes:
       - ./api:/app
       - ${MHXY_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy/observability/sessions}:/logs/mhxy/sessions:ro
       - ${OMNIBOT_MHXY_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/logs/mhxy}:/logs/omnibot/mhxy:ro
       - ${OMNIBOT_STOCK_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/stock/observability/sessions}:/logs/omnibot/stock/sessions:ro
       - ${OMNIBOT_EHS_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/ehs/observability/sessions}:/logs/omnibot/ehs/sessions:ro
+      - ${MHXY_HOST_DATA_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy}:/runtime/mhxy:ro
+      - ${OMNIBOT_STOCK_HOST_DATA_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/stock}:/runtime/stock-bot:ro
+      - ${OMNIBOT_EHS_HOST_DATA_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/ehs}:/runtime/ehs-bot:ro
     depends_on:
       db:
         condition: service_healthy

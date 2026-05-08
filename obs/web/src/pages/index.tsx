@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type MhxyExecutorStatus, type ProjectOverview } from "@/lib/api";
+import { api, type MhxyExecutorStatus, type ProjectOverview, type ProjectRuntimeModels } from "@/lib/api";
 import { SkeletonCard } from "@/components/Skeleton";
 import { fmt, fmtCost, fmtTime } from "@/lib/format";
 
@@ -22,8 +22,13 @@ export default function OverviewPage() {
   const [err, setErr] = useState("");
   const [executorStatus, setExecutorStatus] = useState<MhxyExecutorStatus | null>(null);
   const [executorErr, setExecutorErr] = useState("");
+  const [runtime, setRuntime] = useState<ProjectRuntimeModels[]>([]);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
   const [syncMsgs, setSyncMsgs] = useState<Record<string, string>>({});
+
+  const loadRuntime = useCallback(() => {
+    return api.runtimeModels().then(setRuntime).catch(() => {});
+  }, []);
 
   const loadExecutorStatus = useCallback(() => {
     api.mhxyExecutorStatus()
@@ -34,22 +39,24 @@ export default function OverviewPage() {
       .catch((e) => setExecutorErr(String(e)));
   }, []);
 
-  function load() {
+  const load = useCallback(() => {
     api.overview().then(setRows).catch((e) => setErr(String(e)));
+    loadRuntime();
     loadExecutorStatus();
-  }
+  }, [loadExecutorStatus, loadRuntime]);
 
   useEffect(() => {
     setLoading(true);
-    api.overview()
-      .then(setRows)
-      .catch((e) => setErr(String(e)))
-      .finally(() => setLoading(false));
+    Promise.all([
+      api.overview().then(setRows).catch((e) => setErr(String(e))),
+      loadRuntime(),
+    ]).finally(() => setLoading(false));
     loadExecutorStatus();
-  }, [loadExecutorStatus]);
+  }, [loadExecutorStatus, loadRuntime]);
 
   useEffect(() => {
-    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let executorPollTimer: ReturnType<typeof setInterval> | null = null;
+    const runtimePollTimer = setInterval(loadRuntime, 30000);
 
     const apiOrigin = typeof window !== "undefined"
       ? `${window.location.protocol}//${window.location.hostname}:8000`
@@ -57,9 +64,9 @@ export default function OverviewPage() {
     const es = new EventSource(`${apiOrigin}/api/stream`);
 
     es.onopen = () => {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+      if (executorPollTimer) {
+        clearInterval(executorPollTimer);
+        executorPollTimer = null;
       }
     };
 
@@ -67,19 +74,23 @@ export default function OverviewPage() {
       if (e.data === "executor_status") {
         loadExecutorStatus();
       }
+      if (e.data === "model_switched") {
+        loadRuntime();
+      }
     };
 
     es.onerror = () => {
-      if (!pollTimer) {
-        pollTimer = setInterval(loadExecutorStatus, 30000);
+      if (!executorPollTimer) {
+        executorPollTimer = setInterval(loadExecutorStatus, 30000);
       }
     };
 
     return () => {
       es.close();
-      if (pollTimer) clearInterval(pollTimer);
+      if (executorPollTimer) clearInterval(executorPollTimer);
+      clearInterval(runtimePollTimer);
     };
-  }, [loadExecutorStatus]);
+  }, [loadExecutorStatus, loadRuntime]);
 
   async function handleSync(projectId: string) {
     const fn = SYNC_FN_MAP[projectId];
@@ -105,6 +116,8 @@ export default function OverviewPage() {
   const outPct = 100 - inPct;
   const totalCost = rows.reduce((s, r) => s + (r.total_cost ?? 0), 0);
   const hasCost = rows.some((r) => r.total_cost !== null);
+
+  const runtimeMap = new Map(runtime.map((r) => [r.project_id, r]));
 
   return (
     <div>
@@ -167,7 +180,7 @@ export default function OverviewPage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
         {loading
           ? [0, 1, 2].map((i) => <SkeletonCard key={i} />)
-          : rows.map((p) => <ProjectCard key={p.project_id} p={p} syncingKey={syncingKey} syncMsg={syncMsgs[p.project_id]} onSync={handleSync} />)
+          : rows.map((p) => <ProjectCard key={p.project_id} p={p} rt={runtimeMap.get(p.project_id)} syncingKey={syncingKey} syncMsg={syncMsgs[p.project_id]} onSync={handleSync} />)
         }
       </div>
     </div>
@@ -282,9 +295,10 @@ function summarizeAppHealth(appHealth: MhxyExecutorStatus["app_health"]) {
 }
 
 function ProjectCard({
-  p, syncingKey, syncMsg, onSync,
+  p, rt, syncingKey, syncMsg, onSync,
 }: {
   p: ProjectOverview;
+  rt?: ProjectRuntimeModels;
   syncingKey: string | null;
   syncMsg?: string;
   onSync: (id: string) => void;
@@ -342,6 +356,18 @@ function ProjectCard({
         <Stat label="输入 Token" value={fmt(p.total_input_tokens)} />
         <Stat label="输出 Token" value={fmt(p.total_output_tokens)} />
       </div>
+
+      {/* runtime models */}
+      {(rt?.text_model || rt?.vl_model) && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: "1rem" }}>
+          {rt.text_model && (
+            <ModelPill icon="🧠" label={rt.text_model.display_name} sub={rt.text_model.provider} />
+          )}
+          {rt.vl_model && (
+            <ModelPill icon="👁️" label={rt.vl_model.display_name} sub={rt.vl_model.provider} />
+          )}
+        </div>
+      )}
 
       {/* token bar with tooltip */}
       {totalTok > 0 && (
@@ -406,6 +432,21 @@ function ProjectCard({
         </div>
       </div>
     </div>
+  );
+}
+
+function ModelPill({ icon, label, sub }: { icon: string; label: string; sub: string }) {
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 4,
+      padding: "2px 8px", borderRadius: "var(--r-sm)",
+      background: "var(--bg2)", border: "1px solid var(--border-hi)",
+      fontSize: 11, lineHeight: "20px",
+    }}>
+      <span>{icon}</span>
+      <span style={{ color: "var(--text)", fontWeight: 600 }}>{label}</span>
+      <span style={{ color: "var(--text-dim)" }}>{sub}</span>
+    </span>
   );
 }
 

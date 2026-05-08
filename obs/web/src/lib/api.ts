@@ -112,6 +112,20 @@ export interface MhxyExecutorStatus {
   } | null;
 }
 
+export interface RuntimeModelInfo {
+  model_key: string;
+  model: string;
+  display_name: string;
+  provider: string;
+  updated_at: string;
+}
+
+export interface ProjectRuntimeModels {
+  project_id: string;
+  text_model: RuntimeModelInfo | null;
+  vl_model: RuntimeModelInfo | null;
+}
+
 export const api = {
   projects: () => get<Project[]>("/api/projects"),
   overview: () => get<ProjectOverview[]>("/api/stats/overview"),
@@ -140,6 +154,8 @@ export const api = {
   mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/status"),
   think: (params: { project_id?: string; session_id?: string; limit?: number }) =>
     get<NormalizedEvent[]>("/api/think", params),
+
+  runtimeModels: () => get<ProjectRuntimeModels[]>("/api/projects/runtime-models"),
 
   ingestMhxy: () => post<{ status: string; events_inserted: number }>("/api/ingest/mhxy"),
   ingestStockBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/stock-bot"),
