@@ -148,13 +148,13 @@ def _screenshot_png(port: str) -> bytes:
 _ocr_cache: dict[str, tuple[float, list[dict]]] = {}
 
 
-def _ocr_items(port: str) -> list[dict]:
-    """截图 + OCR，返回文字结果列表，每项含 text / center_x / center_y / confidence。"""
+def _ocr_items(port: str) -> tuple[list[dict], dict]:
+    """截图 + OCR，返回 (文字结果列表, timing dict)。"""
     t0 = time.monotonic()
     cached = _ocr_cache.get(port)
     if cached and t0 - cached[0] < 0.5:
         log.debug("ocr cache hit port=%s", port)
-        return cached[1]
+        return cached[1], {}
 
     t1 = time.monotonic()
     png = _screenshot_png(port)
@@ -180,10 +180,11 @@ def _ocr_items(port: str) -> list[dict]:
                 "center_y": cy,
                 "confidence": float(conf),
             })
+    timing = {"screenshot_s": round(t2 - t1, 3), "ocr_s": round(t3 - t2, 3), "total_s": round(t3 - t0, 3)}
     _ocr_cache[port] = (t0, items)
     log.info("ocr port=%s text_count=%d screenshot=%.2fs ocr=%.2fs total=%.2fs",
              port, len(items), t2 - t1, t3 - t2, t3 - t0)
-    return items
+    return items, timing
 
 
 # ---------------------------------------------------------------------------
@@ -260,8 +261,8 @@ def screenshot(req: PortReq):
 def sense(req: PortReq):
     """截图 + OCR，返回文字和归一化坐标列表。"""
     try:
-        items = _ocr_items(req.port)
-        return {"results": items, "count": len(items)}
+        items, timing = _ocr_items(req.port)
+        return {"results": items, "count": len(items), "timing": timing}
     except Exception as e:
         log.error("sense error port=%s: %s", req.port, e)
         raise HTTPException(500, str(e))
@@ -343,7 +344,7 @@ def swipe(req: SwipeReq):
 def tap_text(req: TapTextReq):
     """截图 + OCR，找到第一个匹配文本后点击，返回点击坐标和匹配文本。"""
     try:
-        items = _ocr_items(req.port)
+        items, _ = _ocr_items(req.port)
         for item in items:
             if any(cand in item["text"] for cand in req.text_candidates):
                 px = int(item["center_x"])
@@ -368,7 +369,7 @@ def tap_text_near(req: TapTextNearReq):
     y 距离最近（且 prefer_right 时 x > 锚点）的那个点击。
     """
     try:
-        items = _ocr_items(req.port)
+        items, _ = _ocr_items(req.port)
 
         anchor = next(
             (it for it in items if any(c in it["text"] for c in req.anchor_candidates)),
@@ -412,7 +413,7 @@ def wait_text(req: WaitTextReq):
     deadline = time.monotonic() + req.timeout_sec
     try:
         while time.monotonic() < deadline:
-            items = _ocr_items(req.port)
+            items, _ = _ocr_items(req.port)
             for item in items:
                 if any(cand in item["text"] for cand in req.text_candidates):
                     log.info("wait_text port=%s matched=%r", req.port, item["text"])
@@ -438,7 +439,7 @@ def close_common_popups(req: PortReq):
     不在这里点击，避免误触。
     """
     try:
-        items = _ocr_items(req.port)
+        items, _ = _ocr_items(req.port)
         closed: list[dict] = []
         for item in items:
             if any(popup in item["text"] for popup in COMMON_POPUP_TEXTS):

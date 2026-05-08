@@ -36,7 +36,15 @@ _POPUP_MARKERS   = ["确定", "关闭", "取消", "我知道了"]
 def _sense(ctx: "RunnerContext") -> list[dict]:
     """调用执行器 OCR，返回文字列表；失败时返回空列表。"""
     try:
-        return ctx.executor.sense(ctx.port)
+        resp = ctx.executor.sense_with_timing(ctx.port)
+        timing = resp.get("timing")
+        if timing and ctx.observer:
+            from mhxy_bot.runner import events
+            events.executor_perf(
+                ctx, "sense", timing,
+                len(resp.get("results", [])), ctx.port,
+            )
+        return resp.get("results", [])
     except Exception as exc:
         ctx.warning("sense failed: %s", exc)
         return []

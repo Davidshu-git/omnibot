@@ -229,3 +229,16 @@ def reconnect_port(ctx: "RunnerContext", initial_state: str,
         "final_state": final_state,
         "port": ctx.port,
     })
+
+
+def executor_perf(ctx: "RunnerContext", operation: str,
+                  timing: dict[str, float], text_count: int, *,
+                  trace_id: str | None = None) -> None:
+    """记录 executor 操作性能指标（OCR 分段耗时等）。"""
+    _emit(ctx, "executor_perf", {
+        "operation": operation,
+        "timing": timing,
+        "text_count": text_count,
+        "port": ctx.port,
+        "trace_id": trace_id or ctx.trace_id,
+    })

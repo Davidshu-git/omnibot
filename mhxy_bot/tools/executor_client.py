@@ -37,6 +37,10 @@ class ExecutorClient:
         """返回 OCR 结果列表，每项含 text / center_x / center_y / confidence。"""
         return self._post("/sense", port=port)["results"]
 
+    def sense_with_timing(self, port: str) -> dict:
+        """返回完整 /sense 响应（含 results / count / timing）。"""
+        return self._post("/sense", port=port)
+
     def tap(self, port: str, px: int, py: int) -> bool:
         return self._post("/tap", port=port, px=px, py=py)["success"]
 
