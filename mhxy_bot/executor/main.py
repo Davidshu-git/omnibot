@@ -12,6 +12,7 @@ NAS 侧 agent 通过 HTTP 调用，自身不再直接执行 ADB 或本地推理�
 from __future__ import annotations
 
 import base64
+import faulthandler
 import logging
 import os
 import random
@@ -20,6 +21,7 @@ import subprocess
 import threading
 import time
 from typing import Optional
+import uuid
 
 import cv2
 import numpy as np
@@ -54,28 +56,59 @@ log.addHandler(_handler_file)
 
 app = FastAPI(title="MuMu Executor", version="1.0")
 
+faulthandler.enable()
+
 # 请求统计：每 5 分钟写入日志（用 dict 避免闭包赋值问题）
 _req_lock = threading.Lock()
 _req_state = {"total": 0, "error": 0, "last_log": time.monotonic()}
 _REQ_LOG_INTERVAL = 300
+_SLOW_REQ_THRESHOLD = float(os.getenv("EXECUTOR_SLOW_REQ_THRESHOLD_SEC", "8"))
 
 
 class _StatsMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
-        response = await call_next(request)
-        now = time.monotonic()
-        with _req_lock:
-            _req_state["total"] += 1
-            if response.status_code >= 400:
-                _req_state["error"] += 1
-            if now - _req_state["last_log"] >= _REQ_LOG_INTERVAL:
-                log.info("req_stats total=%d errors=%d interval=%.0fs",
-                         _req_state["total"], _req_state["error"],
-                         now - _req_state["last_log"])
-                _req_state["total"] = 0
-                _req_state["error"] = 0
-                _req_state["last_log"] = now
-        return response
+        started = time.monotonic()
+        request_id = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+        status_code = 500
+        response: Response | None = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+        except Exception:
+            elapsed = time.monotonic() - started
+            log.exception(
+                "request error id=%s method=%s path=%s status=%d duration=%.3fs",
+                request_id, request.method, request.url.path, status_code, elapsed,
+            )
+            raise
+        finally:
+            elapsed = time.monotonic() - started
+            if response is not None:
+                response.headers["X-Request-ID"] = request_id
+            if elapsed >= _SLOW_REQ_THRESHOLD or status_code >= 400:
+                log.warning(
+                    "request slow_or_error id=%s method=%s path=%s status=%d duration=%.3fs",
+                    request_id, request.method, request.url.path, status_code, elapsed,
+                )
+            elif request.url.path != "/health":
+                log.info(
+                    "request id=%s method=%s path=%s status=%d duration=%.3fs",
+                    request_id, request.method, request.url.path, status_code, elapsed,
+                )
+
+            now = time.monotonic()
+            with _req_lock:
+                _req_state["total"] += 1
+                if status_code >= 400:
+                    _req_state["error"] += 1
+                if now - _req_state["last_log"] >= _REQ_LOG_INTERVAL:
+                    log.info("req_stats total=%d errors=%d interval=%.0fs",
+                             _req_state["total"], _req_state["error"],
+                             now - _req_state["last_log"])
+                    _req_state["total"] = 0
+                    _req_state["error"] = 0
+                    _req_state["last_log"] = now
 
 
 app.add_middleware(_StatsMiddleware)
@@ -253,7 +286,7 @@ def screenshot(req: PortReq):
             "height": H,
         }
     except Exception as e:
-        log.error("screenshot error port=%s: %s", req.port, e)
+        log.exception("screenshot error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -264,7 +297,7 @@ def sense(req: PortReq):
         items, timing = _ocr_items(req.port)
         return {"results": items, "count": len(items), "timing": timing}
     except Exception as e:
-        log.error("sense error port=%s: %s", req.port, e)
+        log.exception("sense error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -277,7 +310,7 @@ def tap(req: TapReq):
         time.sleep(random.uniform(0.2, 0.4))
         return {"success": ok, "port": req.port, "px": req.px, "py": req.py}
     except Exception as e:
-        log.error("tap error port=%s: %s", req.port, e)
+        log.exception("tap error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -290,7 +323,7 @@ def back(req: PortReq):
         time.sleep(0.3)
         return {"success": ok, "port": req.port}
     except Exception as e:
-        log.error("back error port=%s: %s", req.port, e)
+        log.exception("back error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -336,7 +369,7 @@ def swipe(req: SwipeReq):
         time.sleep(req.duration_ms / 1000 + 0.2)
         return {"success": ok, "port": req.port}
     except Exception as e:
-        log.error("swipe error port=%s: %s", req.port, e)
+        log.exception("swipe error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -357,7 +390,7 @@ def tap_text(req: TapTextReq):
                 return {"found": True, "text": item["text"], "px": px, "py": py}
         return {"found": False, "text": None, "px": None, "py": None}
     except Exception as e:
-        log.error("tap_text error port=%s: %s", req.port, e)
+        log.exception("tap_text error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -403,7 +436,7 @@ def tap_text_near(req: TapTextNearReq):
                  req.port, anchor["text"], target["text"], px, py)
         return {"found": True, "text": target["text"], "px": px, "py": py}
     except Exception as e:
-        log.error("tap_text_near error port=%s: %s", req.port, e)
+        log.exception("tap_text_near error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -427,7 +460,7 @@ def wait_text(req: WaitTextReq):
         log.info("wait_text port=%s timeout after %ds", req.port, req.timeout_sec)
         return {"found": False, "text": None, "px": None, "py": None}
     except Exception as e:
-        log.error("wait_text error port=%s: %s", req.port, e)
+        log.exception("wait_text error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 
@@ -452,7 +485,7 @@ def close_common_popups(req: PortReq):
                     time.sleep(random.uniform(0.3, 0.5))
         return {"closed": closed, "count": len(closed)}
     except Exception as e:
-        log.error("close_common_popups error port=%s: %s", req.port, e)
+        log.exception("close_common_popups error port=%s", req.port)
         raise HTTPException(500, str(e))
 
 

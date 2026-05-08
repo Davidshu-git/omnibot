@@ -90,3 +90,28 @@ services:
       - ./logs/mhxy:/app/logs
       - ./.env:/app/.env
       - /home/shudawei/.ssh:/root/.ssh_host:ro
+
+  # -----------------------------------------------------------
+  # OmniMHXY - Windows Executor Watchdog（健康检查 + 自动重启）
+  # -----------------------------------------------------------
+  mhxy-executor-watchdog:
+    build: .
+    image: omnibot:latest
+    container_name: v2-omnimhxy-executor-watchdog
+    mem_limit: 256m
+    entrypoint: /app/entrypoint.mhxy.sh
+    command: ["python", "-m", "mhxy_bot.executor.watchdog"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      MHXY_EXECUTOR_WATCHDOG_INTERVAL_SEC: ${MHXY_EXECUTOR_WATCHDOG_INTERVAL_SEC:-60}
+      MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD: ${MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD:-3}
+      MHXY_EXECUTOR_STATUS_FILE: /app/logs/executor_status.json
+      MHXY_EXECUTOR_WATCHDOG_EVENT_LOG: /app/logs/executor_watchdog.jsonl
+    volumes:
+      - ./mhxy_bot:/app/mhxy_bot
+      - ./data/mhxy/config:/app/data/mhxy/config
+      - ./logs/mhxy:/app/logs
+      - ./.env:/app/.env
+      - /home/shudawei/.ssh:/root/.ssh_host:ro
