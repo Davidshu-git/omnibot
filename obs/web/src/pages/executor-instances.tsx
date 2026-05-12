@@ -191,28 +191,26 @@ function ScreenshotModal({
         )}
       </div>
 
-      {/* Broadcast result */}
-      {broadcastStatus && (
-        <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)" }}>
-          {broadcastStatus.pending ? (
-            <span style={{ color: "var(--text-dim)" }}>
-              {broadcastMode ? `广播中… (${allPorts.length} 个实例)` : "点击中…"}
+      {/* Broadcast result — always occupies space to prevent layout shift */}
+      <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)", height: 20 }}>
+        {broadcastStatus && (broadcastStatus.pending ? (
+          <span style={{ color: "var(--text-dim)" }}>
+            {broadcastMode ? `广播中… (${allPorts.length} 个实例)` : "点击中…"}
+          </span>
+        ) : (
+          <span>
+            <span style={{ color: broadcastStatus.fail === 0 ? "var(--green)" : "var(--amber)" }}>
+              ✓ {broadcastStatus.ok} 成功
             </span>
-          ) : (
-            <span>
-              <span style={{ color: broadcastStatus.fail === 0 ? "var(--green)" : "var(--amber)" }}>
-                ✓ {broadcastStatus.ok} 成功
-              </span>
-              {broadcastStatus.fail > 0 && (
-                <span style={{ color: "var(--red)", marginLeft: 8 }}>✗ {broadcastStatus.fail} 失败</span>
-              )}
-              <span style={{ color: "var(--text-dim)", marginLeft: 12 }}>
-                @ ({broadcastStatus.px}, {broadcastStatus.py})
-              </span>
+            {broadcastStatus.fail > 0 && (
+              <span style={{ color: "var(--red)", marginLeft: 8 }}>✗ {broadcastStatus.fail} 失败</span>
+            )}
+            <span style={{ color: "var(--text-dim)", marginLeft: 12 }}>
+              @ ({broadcastStatus.px}, {broadcastStatus.py})
             </span>
-          )}
-        </div>
-      )}
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
