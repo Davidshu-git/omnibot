@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type MhxyExecutorStatus, type ProjectOverview, type ProjectRuntimeModels } from "@/lib/api";
+import { api, type AvailableModelInfo, type MhxyExecutorStatus, type ProjectOverview, type ProjectRuntimeModels } from "@/lib/api";
 import { SkeletonCard } from "@/components/Skeleton";
 import { fmt, fmtCost, fmtTime } from "@/lib/format";
 
@@ -363,13 +363,13 @@ function ProjectCard({
       </div>
 
       {/* runtime models */}
-      {(rt?.text_model || rt?.vl_model) && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: "1rem" }}>
-          {rt.text_model && (
-            <ModelPill icon="🧠" label={rt.text_model.display_name} sub={rt.text_model.provider} />
+      {rt && (rt.available_text_models?.length > 0 || rt.available_vl_models?.length > 0) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: "1rem" }}>
+          {rt.available_text_models?.length > 0 && (
+            <ModelChipsRow icon="🧠" models={rt.available_text_models} activeKey={rt.text_model?.model_key ?? null} />
           )}
-          {rt.vl_model && (
-            <ModelPill icon="👁️" label={rt.vl_model.display_name} sub={rt.vl_model.provider} />
+          {rt.available_vl_models?.length > 0 && (
+            <ModelChipsRow icon="👁" models={rt.available_vl_models} activeKey={rt.vl_model?.model_key ?? null} />
           )}
         </div>
       )}
@@ -440,18 +440,35 @@ function ProjectCard({
   );
 }
 
-function ModelPill({ icon, label, sub }: { icon: string; label: string; sub: string }) {
+function ModelChipsRow({ icon, models, activeKey }: {
+  icon: string;
+  models: AvailableModelInfo[];
+  activeKey: string | null;
+}) {
   return (
-    <span style={{
-      display: "inline-flex", alignItems: "center", gap: 4,
-      padding: "2px 8px", borderRadius: "var(--r-sm)",
-      background: "var(--bg2)", border: "1px solid var(--border-hi)",
-      fontSize: 11, lineHeight: "20px",
-    }}>
-      <span>{icon}</span>
-      <span style={{ color: "var(--text)", fontWeight: 600 }}>{label}</span>
-      <span style={{ color: "var(--text-dim)" }}>{sub}</span>
-    </span>
+    <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 11, lineHeight: 1, flexShrink: 0 }}>{icon}</span>
+      {models.map((m) => {
+        const active = m.key === activeKey;
+        return (
+          <span key={m.key} style={{
+            display: "inline-flex", alignItems: "center", gap: 3,
+            padding: "2px 7px", borderRadius: 4,
+            fontSize: 10, lineHeight: "16px",
+            fontWeight: active ? 700 : 400,
+            color: active ? "var(--blue)" : "var(--text-dim)",
+            background: active ? "rgba(96,165,250,.1)" : "transparent",
+            border: `1px solid ${active ? "rgba(96,165,250,.35)" : "var(--border)"}`,
+            transition: "all 0.2s",
+          }}>
+            {active && (
+              <span style={{ width: 4, height: 4, borderRadius: "50%", background: "var(--blue)", flexShrink: 0 }} />
+            )}
+            {m.display_name}
+          </span>
+        );
+      })}
+    </div>
   );
 }
 

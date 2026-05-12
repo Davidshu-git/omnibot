@@ -130,10 +130,18 @@ export interface RuntimeModelInfo {
   updated_at: string;
 }
 
+export interface AvailableModelInfo {
+  key: string;
+  display_name: string;
+  provider: string;
+}
+
 export interface ProjectRuntimeModels {
   project_id: string;
   text_model: RuntimeModelInfo | null;
   vl_model: RuntimeModelInfo | null;
+  available_text_models: AvailableModelInfo[];
+  available_vl_models: AvailableModelInfo[];
 }
 
 export interface MhxyInstanceDetail {

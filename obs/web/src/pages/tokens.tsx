@@ -20,7 +20,7 @@ export default function TokensPage() {
   const [daily, setDaily] = useState<TokenDailyStat[]>([]);
   const [byModel, setByModel] = useState<TokenByModel[]>([]);
   const [projectStats, setProjectStats] = useState<Record<string, TokenOverview>>({});
-  const [days, setDays] = useState(14);
+  const [days, setDays] = useState(30);
   const [err, setErr] = useState("");
 
   useEffect(() => {

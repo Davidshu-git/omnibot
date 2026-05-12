@@ -166,6 +166,35 @@ async def list_agents(project_id: str, db: AsyncSession = Depends(get_db)):
 
 _RUNTIME_MODEL_FIELDS = ("model_key", "model", "display_name", "provider", "updated_at")
 
+# 各 project 全量可用模型（与 core/model_registry.py 保持同步）
+_AVAILABLE_TEXT_MODELS: dict[str, list[dict]] = {
+    "mhxy": [
+        {"key": "qwen",     "display_name": "Qwen 3.5 Plus",     "provider": "dashscope"},
+        {"key": "qwen36",   "display_name": "Qwen 3.6 Plus",     "provider": "dashscope"},
+        {"key": "minimax",  "display_name": "MiniMax M2.7",      "provider": "minimax"},
+        {"key": "deepseek", "display_name": "DeepSeek V4 Flash", "provider": "deepseek"},
+    ],
+    "stock-bot": [
+        {"key": "minimax",  "display_name": "MiniMax M2.7",      "provider": "minimax"},
+        {"key": "qwen",     "display_name": "Qwen 3.5 Plus",     "provider": "dashscope"},
+        {"key": "qwen36",   "display_name": "Qwen 3.6 Plus",     "provider": "dashscope"},
+        {"key": "deepseek", "display_name": "DeepSeek V4 Flash", "provider": "deepseek"},
+    ],
+    "ehs-bot": [
+        {"key": "minimax",  "display_name": "MiniMax M2.7",      "provider": "minimax"},
+        {"key": "qwen",     "display_name": "Qwen 3.5 Plus",     "provider": "dashscope"},
+        {"key": "qwen36",   "display_name": "Qwen 3.6 Plus",     "provider": "dashscope"},
+        {"key": "deepseek", "display_name": "DeepSeek V4 Flash", "provider": "deepseek"},
+    ],
+}
+
+_AVAILABLE_VL_MODELS: dict[str, list[dict]] = {
+    "mhxy": [
+        {"key": "plus",  "display_name": "Qwen3-VL Plus",  "provider": "dashscope"},
+        {"key": "flash", "display_name": "Qwen3-VL Flash", "provider": "dashscope"},
+    ],
+}
+
 
 def _read_settings_safe(path: Path) -> dict | None:
     """安全读取 settings JSON，文件不存在 / 损坏 / 字段缺失返回 None。"""
@@ -186,7 +215,7 @@ def _read_settings_safe(path: Path) -> dict | None:
 @router.get("/projects/runtime-models")
 async def projects_runtime_models():
     """读取每个 project 的 model_settings.json / vl_model_settings.json，
-    返回当前配置的文本模型 / 视觉模型。"""
+    返回当前配置的文本模型 / 视觉模型，以及各 project 的全量可用模型列表。"""
     runtime_dirs = {
         "mhxy": os.getenv("RUNTIME_DIR_MHXY") or "/runtime/mhxy",
         "stock-bot": os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot",
@@ -200,6 +229,8 @@ async def projects_runtime_models():
             "project_id": project_id,
             "text_model": text,
             "vl_model": vl,
+            "available_text_models": _AVAILABLE_TEXT_MODELS.get(project_id, []),
+            "available_vl_models": _AVAILABLE_VL_MODELS.get(project_id, []),
         })
     return out
 
