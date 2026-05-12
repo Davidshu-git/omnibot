@@ -9,6 +9,7 @@ jobs/
 .DS_Store
 .claude/
 logs/
+docs/
 
 # obs/web
 obs/web/node_modules/
