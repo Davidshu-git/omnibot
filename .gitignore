@@ -15,3 +15,4 @@ docs/
 obs/web/node_modules/
 obs/web/.next/
 obs/web/.env*
+obs/web/tsconfig.tsbuildinfo
