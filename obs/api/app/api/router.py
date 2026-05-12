@@ -285,6 +285,38 @@ async def mhxy_executor_screenshot(port: str = Query(..., description="Emulator 
     return {"port": port, "image_b64": image_b64}
 
 
+@router.post("/external/mhxy-executor/batch-tap")
+async def mhxy_executor_batch_tap(body: dict):
+    """Proxy batch-tap to the Windows executor. body: {ports: [str], px: int, py: int}"""
+    import httpx as _httpx
+    ports = body.get("ports") or []
+    px = body.get("px")
+    py = body.get("py")
+    if px is None or py is None:
+        raise HTTPException(status_code=400, detail="px and py are required")
+    if not ports:
+        # Fall back to all known ports from instances
+        status_path = Path(settings.mhxy_executor_status_file)
+        if status_path.exists():
+            try:
+                raw = json.loads(status_path.read_text(encoding="utf-8"))
+                ports = [str(item.get("port", "")) for item in (raw.get("app_health") or []) if item.get("port")]
+            except Exception:
+                pass
+    if not ports:
+        raise HTTPException(status_code=400, detail="No ports specified and none found in status file")
+    executor_url = settings.mhxy_executor_url.rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=len(ports) * 2 + 10) as client:
+            r = await client.post(f"{executor_url}/batch_tap", json={"ports": ports, "px": int(px), "py": int(py)})
+            r.raise_for_status()
+            return r.json()
+    except _httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Executor HTTP error: {exc.response.status_code}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach executor: {exc}")
+
+
 @router.get("/external/mhxy-executor/status")
 async def mhxy_executor_status():
     path = Path(settings.mhxy_executor_status_file)

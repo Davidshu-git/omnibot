@@ -26,6 +26,16 @@ async function post<T>(path: string): Promise<T> {
   return res.json();
 }
 
+async function postJson<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  return res.json();
+}
+
 export interface ProjectOverview {
   project_id: string;
   display_name: string;
@@ -173,6 +183,8 @@ export const api = {
   mhxyExecutorInstances: () => get<MhxyExecutorInstances>("/api/external/mhxy-executor/instances"),
   mhxyExecutorScreenshot: (port: string) =>
     get<{ port: string; image_b64: string }>("/api/external/mhxy-executor/screenshot", { port }),
+  mhxyExecutorBatchTap: (ports: string[], px: number, py: number) =>
+    postJson<{ results: Record<string, boolean> }>("/api/external/mhxy-executor/batch-tap", { ports, px, py }),
   think: (params: { project_id?: string; session_id?: string; limit?: number }) =>
     get<NormalizedEvent[]>("/api/think", params),
 

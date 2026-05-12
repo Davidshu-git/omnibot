@@ -25,27 +25,73 @@ function CheckIcon({ ok }: { ok: boolean | null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Screenshot modal (full size)
+// Screenshot modal (full size) — with optional broadcast-click mode
 // ---------------------------------------------------------------------------
+
+type BroadcastStatus =
+  | null
+  | { pending: true }
+  | { pending: false; ok: number; fail: number; px: number; py: number };
 
 function ScreenshotModal({
   port,
   state,
+  allPorts,
   onClose,
 }: {
   port: string;
   state: ScreenshotState;
+  allPorts: string[];
   onClose: () => void;
 }) {
+  const [broadcastMode, setBroadcastMode] = useState(false);
+  const [broadcastStatus, setBroadcastStatus] = useState<BroadcastStatus>(null);
+  const [hoverXY, setHoverXY] = useState<{ x: number; y: number } | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (broadcastMode) { setBroadcastMode(false); setBroadcastStatus(null); }
+        else onClose();
+      }
+    };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [onClose]);
+  }, [onClose, broadcastMode]);
+
+  const handleImgMouseMove = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    if (!broadcastMode || !imgRef.current) return;
+    const rect = imgRef.current.getBoundingClientRect();
+    setHoverXY({
+      x: Math.round((e.clientX - rect.left) / rect.width * imgRef.current.naturalWidth),
+      y: Math.round((e.clientY - rect.top) / rect.height * imgRef.current.naturalHeight),
+    });
+  }, [broadcastMode]);
+
+  const handleImgClick = useCallback((e: React.MouseEvent<HTMLImageElement>) => {
+    if (!broadcastMode || !imgRef.current || allPorts.length === 0) return;
+    e.stopPropagation();
+    const rect = imgRef.current.getBoundingClientRect();
+    const px = Math.round((e.clientX - rect.left) / rect.width * imgRef.current.naturalWidth);
+    const py = Math.round((e.clientY - rect.top) / rect.height * imgRef.current.naturalHeight);
+    setBroadcastStatus({ pending: true });
+    api.mhxyExecutorBatchTap(allPorts, px, py)
+      .then((d) => {
+        const ok = Object.values(d.results).filter(Boolean).length;
+        setBroadcastStatus({ pending: false, ok, fail: allPorts.length - ok, px, py });
+      })
+      .catch(() => {
+        setBroadcastStatus({ pending: false, ok: 0, fail: allPorts.length, px, py });
+      });
+  }, [broadcastMode, allPorts]);
+
+  const isImage = state !== "loading" && state !== "error" && state !== "idle";
+  const canBroadcast = isImage && allPorts.length > 1;
 
   return (
     <div
-      onClick={onClose}
+      onClick={broadcastMode ? undefined : onClose}
       style={{
         position: "fixed", inset: 0,
         background: "rgba(0,0,0,0.88)",
@@ -54,9 +100,37 @@ function ScreenshotModal({
         zIndex: 9999,
       }}
     >
-      <div style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 10 }}>
-        端口 {port} — 点击任意处或按 Esc 关闭
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
+          端口 {port} —{" "}
+          {broadcastMode
+            ? `点击截图广播到全部 ${allPorts.length} 个实例，Esc 退出广播模式`
+            : "点击任意处或按 Esc 关闭"}
+        </span>
+        {canBroadcast && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setBroadcastMode((m) => !m);
+              setBroadcastStatus(null);
+              setHoverXY(null);
+            }}
+            style={{
+              padding: "3px 10px",
+              borderRadius: "var(--r-sm)",
+              border: `1px solid ${broadcastMode ? "var(--amber)" : "var(--border-hi)"}`,
+              background: broadcastMode ? "rgba(246,173,85,0.15)" : "transparent",
+              color: broadcastMode ? "var(--amber)" : "var(--text-muted)",
+              fontSize: 11, cursor: "pointer",
+            }}
+          >
+            {broadcastMode ? "📡 广播模式 ON" : "📡 广播点击"}
+          </button>
+        )}
       </div>
+
+      {/* Image */}
       <div
         onClick={(e) => e.stopPropagation()}
         style={{ maxWidth: "90vw", maxHeight: "85vh", display: "flex", alignItems: "center", justifyContent: "center" }}
@@ -67,14 +141,59 @@ function ScreenshotModal({
         {state === "error" && (
           <span style={{ color: "var(--red)", fontSize: 13 }}>截图获取失败</span>
         )}
-        {state !== "loading" && state !== "error" && state !== "idle" && (
-          <img
-            src={`data:image/png;base64,${state}`}
-            alt={`port-${port}-screenshot`}
-            style={{ maxWidth: "100%", maxHeight: "85vh", borderRadius: 4, display: "block" }}
-          />
+        {isImage && (
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <img
+              ref={imgRef}
+              src={`data:image/png;base64,${state}`}
+              alt={`port-${port}-screenshot`}
+              style={{
+                maxWidth: "100%", maxHeight: "85vh",
+                borderRadius: 4, display: "block",
+                cursor: broadcastMode ? "crosshair" : "default",
+              }}
+              onMouseMove={handleImgMouseMove}
+              onMouseLeave={() => setHoverXY(null)}
+              onClick={handleImgClick}
+            />
+            {/* Coordinate badge */}
+            {broadcastMode && hoverXY && (
+              <div style={{
+                position: "absolute", bottom: 6, left: 6,
+                background: "rgba(0,0,0,0.75)",
+                color: "var(--amber)",
+                fontFamily: "var(--font-mono)", fontSize: 11,
+                padding: "2px 8px", borderRadius: 4,
+                pointerEvents: "none",
+                userSelect: "none",
+              }}>
+                {hoverXY.x}, {hoverXY.y}
+              </div>
+            )}
+          </div>
         )}
       </div>
+
+      {/* Broadcast result */}
+      {broadcastStatus && (
+        <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)" }}>
+          {broadcastStatus.pending ? (
+            <span style={{ color: "var(--text-dim)" }}>广播中… ({allPorts.length} 个实例)</span>
+          ) : (
+            <span>
+              <span style={{ color: broadcastStatus.fail === 0 ? "var(--green)" : "var(--amber)" }}>
+                ✓ {broadcastStatus.ok} 成功
+              </span>
+              {broadcastStatus.fail > 0 && (
+                <span style={{ color: "var(--red)", marginLeft: 8 }}>✗ {broadcastStatus.fail} 失败</span>
+              )}
+              <span style={{ color: "var(--text-dim)", marginLeft: 12 }}>
+                @ ({broadcastStatus.px}, {broadcastStatus.py})
+              </span>
+            </span>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -502,7 +621,12 @@ export default function ExecutorInstancesPage() {
     <div>
       {/* Modal overlay */}
       {modalPort && (
-        <ScreenshotModal port={modalPort} state={modalState} onClose={closeModal} />
+        <ScreenshotModal
+          port={modalPort}
+          state={modalState}
+          allPorts={instances.map((i) => i.port)}
+          onClose={closeModal}
+        />
       )}
 
       {/* Page header */}
