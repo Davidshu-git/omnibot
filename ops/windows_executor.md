@@ -7,6 +7,27 @@ Windows executor 运行在 `192.168.100.149`，HTTP 端口 `8765`。
 
 ## 部署 / 更新代码
 
+**推荐方式**：使用 `ops/deploy_executor.sh`，一步完成同步 + 重启 + 验证。
+
+```bash
+# 从项目根执行（默认只同步 main.py）
+bash ops/deploy_executor.sh
+
+# 同步多个文件
+bash ops/deploy_executor.sh mhxy_bot/executor/main.py mhxy_bot/executor/requirements.txt
+```
+
+脚本执行顺序：
+1. SCP 指定文件到 `C:\Users\sdw\mhxy_executor\`
+2. `taskkill /IM python.exe /F`（只杀 python，不杀 cmd.exe，见坑 5）
+3. 轮询确认端口 8765 释放（最多 3 次重试）
+4. `cscript //NoLogo //B launch_executor.vbs`（VBScript 完全脱离 SSH 会话后台拉起）
+5. 轮询 `/health` 最多 40s，超时打印日志并退出非零
+
+注意：executor 启动约需 15s（RapidOCR 加载 ONNX 模型），健康检查 3 次尝试内通常能通过。
+
+**手动方式**（排查或脚本不可用时）：
+
 ```bash
 # 同步单个文件
 scp -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
@@ -30,13 +51,13 @@ ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
 # 第 2 步：等进程退出
 sleep 3
 
-# 第 3 步：用 cmd.exe 后台启动，不能直接调 .cmd 文件
+# 第 3 步：通过 VBScript 后台启动（推荐，比 Start-Process 可靠）
 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
   sdw@192.168.100.149 \
-  "powershell -NoProfile -Command \"Start-Process cmd.exe -ArgumentList '/c C:\\Users\\sdw\\mhxy_executor\\start_executor.cmd' -WindowStyle Hidden\""
+  "cscript //NoLogo //B C:\\Users\\sdw\\mhxy_executor\\launch_executor.vbs"
 
-# 验证
-sleep 6
+# 验证（executor 启动约 15s，等待时间要足够）
+sleep 15
 curl http://192.168.100.149:8765/health
 ```
 
@@ -115,6 +136,16 @@ ssh ... "powershell -NoProfile -Command \"netstat -ano | findstr :8765\""
 ```
 
 无输出才可以启动新进程。
+
+---
+
+### 坑 5：不能 `taskkill /IM cmd.exe /F`（2026-05-12 实测）
+
+**现象**：deploy 脚本同时杀 `python.exe` 和 `cmd.exe` 后，VBScript 启动的新进程进入 cmd.exe 但 python 进程始终不出现，log 文件也无新写入。
+
+**原因**：`start_executor.cmd` 使用 `>> stderr-watchdog.log` 追加重定向。强杀 cmd.exe（`/F`）导致该文件的 OS 写句柄未经正常 flush/close 直接释放。后续新 cmd.exe 运行同一 batch 文件时，`>>` 追加操作失败（写入目标处于不一致状态），cmd 以非零退出但不输出任何错误，整个进程静默消失。
+
+**正确做法**：只杀 `python.exe`。start_executor.cmd 的父 cmd.exe 会在 python 退出后自然退出，log 文件句柄得到正常释放。
 
 ---
 
