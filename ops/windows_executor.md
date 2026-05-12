@@ -75,11 +75,40 @@ http://192.168.100.149:8000
 
 | 路径 | 说明 |
 |---|---|
+| `ops/ws_scrcpy_web_run.bat` | 仓库内版本化的 `run.bat` 模板 |
+| `ops/setup_ws_scrcpy_web.ps1` | 仓库内版本化的 Windows 侧安装/修复脚本 |
 | `C:\Users\sdw\ws-scrcpy-web\current\start.cmd` | 应用原始启动脚本 |
 | `C:\Users\sdw\ws-scrcpy-web\run.bat` | 计划任务引用的包装脚本 |
 | `C:\ProgramData\WsScrcpyWeb\config.json` | ws-scrcpy-web 持久化配置 |
 | `C:\Users\sdw\ws-scrcpy-web\out.log` | 包装脚本输出日志 |
 | `C:\Users\sdw\ws-scrcpy-web\current\ws-scrcpy-web.log` | 应用内日志 |
+
+### 安装 / 修复启动配置
+
+仓库内保留了 Windows 侧可重复生成的脚本，不要只在远端机器手改。
+
+从 NAS 同步修复脚本到 Windows：
+
+```bash
+scp -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
+  ops/setup_ws_scrcpy_web.ps1 \
+  sdw@192.168.100.149:C:/Users/sdw/ws-scrcpy-web/setup_ws_scrcpy_web.ps1
+```
+
+在 Windows 侧执行修复，并可选立即启动：
+
+```bash
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
+  sdw@192.168.100.149 \
+  "powershell -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\sdw\\ws-scrcpy-web\\setup_ws_scrcpy_web.ps1 -Start"
+```
+
+脚本会：
+
+1. 写入 `C:\Users\sdw\ws-scrcpy-web\run.bat`
+2. 用 ASCII 写入 `C:\ProgramData\WsScrcpyWeb\config.json`
+3. 将计划任务 `ws-scrcpy-web` 的 Action 指向 `cmd /c C:\Users\sdw\ws-scrcpy-web\run.bat`
+4. 传入 `-Start` 时，通过 WMI `Win32_Process.Create()` 拉起服务
 
 ### 启动脚本
 
@@ -93,10 +122,16 @@ cmd /c C:\Users\sdw\ws-scrcpy-web\run.bat
 
 ```bat
 @echo off
-cd /d C:\Users\sdw\ws-scrcpy-web\current
-set PORT=8000
-set WS_SCRCPY_CONFIG=C:\ProgramData\WsScrcpyWeb\config.json
-call start.cmd >> C:\Users\sdw\ws-scrcpy-web\out.log 2>>&1
+setlocal
+
+set "INSTALL_DIR=C:\Users\sdw\ws-scrcpy-web"
+set "CURRENT_DIR=%INSTALL_DIR%\current"
+set "CONFIG_PATH=C:\ProgramData\WsScrcpyWeb\config.json"
+set "PORT=8000"
+set "WS_SCRCPY_CONFIG=%CONFIG_PATH%"
+
+cd /d "%CURRENT_DIR%"
+call start.cmd >> "%INSTALL_DIR%\out.log" 2>>&1
 ```
 
 `C:\ProgramData\WsScrcpyWeb\config.json` 必须固定 `webPort=8000`，并且必须是无 BOM JSON：
