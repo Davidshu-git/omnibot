@@ -53,11 +53,21 @@ function ScreenshotModal({
   const [broadcastStatus, setBroadcastStatus] = useState<BroadcastStatus>(null);
   const [hoverXY, setHoverXY] = useState<{ x: number; y: number } | null>(null);
   const [clickRipple, setClickRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
+  const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
   const imgRef = useRef<HTMLImageElement>(null);
 
   // ADB device ID: MuMu emulator port is odd (5557), ADB port is port-1 (5556)
   const adbDevice = `emulator-${parseInt(port) - 1}`;
   const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
+
+  // Extract device resolution from screenshot for accurate coordinate mapping
+  useEffect(() => {
+    const isImage = state !== "loading" && state !== "error" && state !== "idle";
+    if (!isImage) return;
+    const img = new Image();
+    img.onload = () => setDeviceSize({ w: img.naturalWidth, h: img.naturalHeight });
+    img.src = `data:image/png;base64,${state}`;
+  }, [state]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -101,8 +111,36 @@ function ScreenshotModal({
       });
   }, [broadcastMode, allPorts, port, onRefreshScreenshot]);
 
+  const handleStreamMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    setHoverXY({
+      x: Math.round((e.clientX - rect.left) / rect.width * deviceSize.w),
+      y: Math.round((e.clientY - rect.top) / rect.height * deviceSize.h),
+    });
+  }, [deviceSize]);
+
+  const handleStreamClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = Math.round((e.clientX - rect.left) / rect.width * deviceSize.w);
+    const py = Math.round((e.clientY - rect.top) / rect.height * deviceSize.h);
+    const pctX = (e.clientX - rect.left) / rect.width * 100;
+    const pctY = (e.clientY - rect.top) / rect.height * 100;
+    setClickRipple({ pctX, pctY, key: Date.now() });
+    const targets = broadcastMode ? allPorts : [port];
+    setBroadcastStatus({ pending: true });
+    api.mhxyExecutorBatchTap(targets, px, py)
+      .then((d) => {
+        const ok = Object.values(d.results).filter(Boolean).length;
+        setBroadcastStatus({ pending: false, ok, fail: targets.length - ok, px, py });
+      })
+      .catch(() => {
+        setBroadcastStatus({ pending: false, ok: 0, fail: targets.length, px, py });
+      });
+  }, [deviceSize, broadcastMode, allPorts, port]);
+
   const isImage = state !== "loading" && state !== "error" && state !== "idle";
-  const canBroadcast = isImage && allPorts.length > 1;
+  const canBroadcast = allPorts.length > 1;
 
   return (
     <div
@@ -142,13 +180,14 @@ function ScreenshotModal({
 
         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
           端口 {port}
-          {viewMode === "screenshot" && (broadcastMode
-            ? ` — 点击截图广播到全部 ${allPorts.length} 个实例，Esc 退出广播模式`
-            : " — 点击截图操作当前实例，点击外侧或 Esc 关闭")}
-          {viewMode === "stream" && " — 实时流（ws-scrcpy-web），点击外侧关闭"}
+          {broadcastMode
+            ? ` — 点击广播到全部 ${allPorts.length} 个实例，Esc 退出广播模式`
+            : viewMode === "screenshot"
+              ? " — 点击截图操作当前实例，点击外侧或 Esc 关闭"
+              : ` — 点击操作当前实例（${deviceSize.w}×${deviceSize.h}），点击外侧关闭`}
         </span>
 
-        {viewMode === "screenshot" && canBroadcast && (
+        {canBroadcast && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -176,15 +215,51 @@ function ScreenshotModal({
         style={{ maxWidth: "90vw", maxHeight: "85vh", display: "flex", alignItems: "center", justifyContent: "center" }}
       >
         {viewMode === "stream" ? (
-          <iframe
-            src={streamUrl}
-            style={{
-              width: "720px", height: "480px",
-              border: "1px solid var(--border-hi)",
-              borderRadius: 4,
-            }}
-            allow="autoplay"
-          />
+          <div style={{ position: "relative", display: "inline-block" }}>
+            <iframe
+              src={streamUrl}
+              style={{
+                width: "720px", height: "480px",
+                border: "1px solid var(--border-hi)",
+                borderRadius: 4,
+                display: "block",
+                pointerEvents: "none",
+              }}
+              allow="autoplay"
+            />
+            {/* Transparent overlay: captures clicks and sends ADB tap (with broadcast support) */}
+            <div
+              style={{
+                position: "absolute", inset: 0,
+                cursor: "crosshair",
+                borderRadius: 4,
+              }}
+              onMouseMove={handleStreamMouseMove}
+              onMouseLeave={() => setHoverXY(null)}
+              onClick={handleStreamClick}
+            >
+              {clickRipple && (
+                <div
+                  key={clickRipple.key}
+                  className="broadcast-ripple"
+                  style={{ left: `${clickRipple.pctX}%`, top: `${clickRipple.pctY}%` }}
+                  onAnimationEnd={() => setClickRipple(null)}
+                />
+              )}
+              {hoverXY && (
+                <div style={{
+                  position: "absolute", bottom: 6, left: 6,
+                  background: "rgba(0,0,0,0.75)",
+                  color: "var(--amber)",
+                  fontFamily: "var(--font-mono)", fontSize: 11,
+                  padding: "2px 8px", borderRadius: 4,
+                  pointerEvents: "none", userSelect: "none",
+                }}>
+                  {hoverXY.x}, {hoverXY.y}
+                </div>
+              )}
+            </div>
+          </div>
         ) : (
           <>
             {state === "loading" && (
@@ -235,8 +310,8 @@ function ScreenshotModal({
       </div>
 
       {/* Status bar — always occupies space to prevent layout shift */}
-      <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)", height: 20 }}>
-        {viewMode === "screenshot" && broadcastStatus && (broadcastStatus.pending ? (
+      <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)", height: 20, display: "flex", alignItems: "center", gap: 12 }}>
+        {broadcastStatus ? (broadcastStatus.pending ? (
           <span style={{ color: "var(--text-dim)" }}>
             {broadcastMode ? `广播中… (${allPorts.length} 个实例)` : "点击中…"}
           </span>
@@ -252,9 +327,11 @@ function ScreenshotModal({
               @ ({broadcastStatus.px}, {broadcastStatus.py})
             </span>
           </span>
-        ))}
+        )) : (
+          <span style={{ color: "var(--text-dim)" }}>&nbsp;</span>
+        )}
         {viewMode === "stream" && (
-          <span style={{ color: "var(--text-dim)" }}>
+          <span style={{ color: "var(--text-dim)", marginLeft: "auto" }}>
             {adbDevice} · <a href={streamUrl} target="_blank" rel="noreferrer" style={{ color: "var(--blue)", textDecoration: "none" }}>在新标签打开 ↗</a>
           </span>
         )}
