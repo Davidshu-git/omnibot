@@ -18,6 +18,8 @@ FILES=("${@:-mhxy_bot/executor/main.py}")
 
 # ── 1. 同步文件 ──────────────────────────────────────────────────────────────
 echo "[1/4] 同步文件到 Windows executor ..."
+# 无条件同步 VBScript 启动器（它是重启的前提，始终保持最新）
+scp $SSH_OPTS "ops/launch_executor.vbs" "$WIN:$REMOTE_DIR/launch_executor.vbs"
 for f in "${FILES[@]}"; do
   filename=$(basename "$f")
   echo "  scp $f → $REMOTE_DIR/$filename"
