@@ -489,60 +489,6 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
         except Exception as e:
             return f"❌ 删除失败：{type(e).__name__} - {e}"
 
-    @tool
-    def batch_recognize_schools() -> str:
-        """批量识别所有实例门派并更新 instances.json。"""
-        try:
-            data = _load_instances()
-            instances = data.get("instances", [])
-            if not instances:
-                return "❌ instances.json 中没有实例，请先配置端口"
-            school_names = [
-                "大唐官府", "方寸山", "化生寺", "女儿村", "须弥海",
-                "月宫", "龙宫", "普陀山", "花果山",
-                "阴曹地府", "魔王寨", "狮驼岭", "小雷音", "盘丝洞",
-            ]
-            aliases = {
-                "大唐": "大唐官府", "方寸": "方寸山", "化生": "化生寺",
-                "女儿": "女儿村", "须弥": "须弥海", "普陀": "普陀山",
-                "花果": "花果山", "地府": "阴曹地府", "魔王": "魔王寨",
-                "狮驼": "狮驼岭", "雷音": "小雷音", "盘丝": "盘丝洞",
-            }
-
-            def match_school(text: str) -> str | None:
-                for name in school_names:
-                    if name in text or name == text:
-                        return name
-                for alias, full in aliases.items():
-                    if alias in text or alias == text:
-                        return full
-                return None
-
-            results = []
-            for inst in instances:
-                port = str(inst.get("port"))
-                try:
-                    ocr_text = sense_screen.invoke({"port": port})
-                    school = None
-                    for line in ocr_text.splitlines():
-                        school = match_school(line)
-                        if school:
-                            break
-                    if school:
-                        inst["school"] = school
-                        results.append(f"  ✅ 端口 {port} → {school}")
-                    else:
-                        results.append(f"  ❌ 端口 {port} → 识别失败")
-                except Exception as e:
-                    results.append(f"  ⚠️ 端口 {port} → 异常：{type(e).__name__}")
-                time.sleep(random.uniform(0.5, 1.0))
-            data["scan_time"] = datetime.now().isoformat()
-            INSTANCES_JSON.parent.mkdir(parents=True, exist_ok=True)
-            INSTANCES_JSON.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            return "批量识别完成：\n" + "\n".join(results)
-        except Exception as e:
-            return f"❌ 批量识别失败：{type(e).__name__} - {e}"
-
     def _cleanup_groups(data: dict, removed_ports: set[int]) -> None:
         """从 groups 中移除已不存在端口的引用；leader 被移除则整组删除。"""
         groups = data.get("groups", [])
@@ -606,7 +552,6 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
     return [
         get_instances,
         sync_instances,
-        batch_recognize_schools,
         check_instance_health,
         reconnect_instances,
         capture_screenshot,

@@ -55,6 +55,7 @@ function ScreenshotModal({
   const [clickRipple, setClickRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
   const imgRef = useRef<HTMLImageElement>(null);
+  const tapPendingRef = useRef(false);
 
   // ADB device ID: MuMu emulator port is odd (5557), ADB port is port-1 (5556)
   const adbDevice = `emulator-${parseInt(port) - 1}`;
@@ -98,7 +99,9 @@ function ScreenshotModal({
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
+    if (tapPendingRef.current) return;
     const targets = broadcastMode ? allPorts : [port];
+    tapPendingRef.current = true;
     setBroadcastStatus({ pending: true });
     api.mhxyExecutorBatchTap(targets, px, py)
       .then((d) => {
@@ -108,7 +111,8 @@ function ScreenshotModal({
       })
       .catch(() => {
         setBroadcastStatus({ pending: false, ok: 0, fail: targets.length, px, py });
-      });
+      })
+      .finally(() => { tapPendingRef.current = false; });
   }, [broadcastMode, allPorts, port, onRefreshScreenshot]);
 
   const handleStreamMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -127,7 +131,9 @@ function ScreenshotModal({
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
+    if (tapPendingRef.current) return;
     const targets = broadcastMode ? allPorts : [port];
+    tapPendingRef.current = true;
     setBroadcastStatus({ pending: true });
     api.mhxyExecutorBatchTap(targets, px, py)
       .then((d) => {
@@ -136,7 +142,8 @@ function ScreenshotModal({
       })
       .catch(() => {
         setBroadcastStatus({ pending: false, ok: 0, fail: targets.length, px, py });
-      });
+      })
+      .finally(() => { tapPendingRef.current = false; });
   }, [deviceSize, broadcastMode, allPorts, port]);
 
   const isImage = state !== "loading" && state !== "error" && state !== "idle";
@@ -345,7 +352,7 @@ function ScreenshotModal({
 // ---------------------------------------------------------------------------
 
 const LIST_COLS = "60px 80px 56px 48px 48px 48px 64px 1fr 120px";
-const LIST_HEADERS = ["端口", "门派", "身份", "ADB", "截图", "OCR", "延迟", "状态", "预览"];
+const LIST_HEADERS = ["端口", "门派", "身份", "ADB", "截图", "OCR", "OCR耗时", "状态", "预览"];
 
 function InstanceRow({
   inst,
@@ -527,6 +534,7 @@ function ScreenshotCard({
   allPorts?: string[];
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number } | null>(null);
+  const tapPendingRef = useRef(false);
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -560,7 +568,9 @@ function ScreenshotCard({
       pctY: (e.clientY - containerRect.top) / containerRect.height * 100,
       key: Date.now(),
     });
+    if (tapPendingRef.current) return;
     const targets = broadcastMode ? allPorts : [inst.port];
+    tapPendingRef.current = true;
     setTapStatus({ pending: true });
     api.mhxyExecutorBatchTap(targets, px, py)
       .then((d) => {
@@ -571,7 +581,8 @@ function ScreenshotCard({
       .catch(() => {
         setTapStatus({ pending: false, ok: 0, fail: targets.length });
         setTimeout(() => setTapStatus(null), 2500);
-      });
+      })
+      .finally(() => { tapPendingRef.current = false; });
   }, [tapMode, isImageLoaded, broadcastMode, allPorts, inst.port]);
 
   const statusColor = inst.healthy === true
