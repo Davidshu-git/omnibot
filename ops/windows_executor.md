@@ -63,6 +63,97 @@ curl http://192.168.100.149:8765/health
 
 ---
 
+## ws-scrcpy-web 实时流运维
+
+ws-scrcpy-web 运行在同一台 Windows 主机 `192.168.100.149`，用于 obs 截图巡检 Modal 的「实时流」模式。前端当前使用：
+
+```text
+http://192.168.100.149:8000
+```
+
+相关路径：
+
+| 路径 | 说明 |
+|---|---|
+| `C:\Users\sdw\ws-scrcpy-web\current\start.cmd` | 应用原始启动脚本 |
+| `C:\Users\sdw\ws-scrcpy-web\run.bat` | 计划任务引用的包装脚本 |
+| `C:\ProgramData\WsScrcpyWeb\config.json` | ws-scrcpy-web 持久化配置 |
+| `C:\Users\sdw\ws-scrcpy-web\out.log` | 包装脚本输出日志 |
+| `C:\Users\sdw\ws-scrcpy-web\current\ws-scrcpy-web.log` | 应用内日志 |
+
+### 启动脚本
+
+计划任务 `ws-scrcpy-web` 的 Action 应指向：
+
+```text
+cmd /c C:\Users\sdw\ws-scrcpy-web\run.bat
+```
+
+`run.bat` 内容：
+
+```bat
+@echo off
+cd /d C:\Users\sdw\ws-scrcpy-web\current
+set PORT=8000
+set WS_SCRCPY_CONFIG=C:\ProgramData\WsScrcpyWeb\config.json
+call start.cmd >> C:\Users\sdw\ws-scrcpy-web\out.log 2>>&1
+```
+
+`C:\ProgramData\WsScrcpyWeb\config.json` 必须固定 `webPort=8000`，并且必须是无 BOM JSON：
+
+```json
+{"installMode":null,"autoUpdate":true,"updateCheckIntervalMinutes":60,"channel":"stable","githubOwner":"bilbospocketses","serviceFirstRunSeen":false,"webPort":8000,"firstRunComplete":true}
+```
+
+### 手动重启 ws-scrcpy-web
+
+与 executor 一样，手动远程启动必须使用 WMI `Win32_Process.Create()`，不要通过普通 SSH 直接执行 `.cmd`。
+
+```bash
+# 第 1 步：杀旧 node 进程。注意不要 taskkill /IM cmd.exe /F
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
+  sdw@192.168.100.149 \
+  "powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Where-Object { \\\$_.CommandLine -like '*ws-scrcpy-web*' -or \\\$_.CommandLine -like '*dist\\\\index.js*' } | ForEach-Object { taskkill /PID \\\$_.ProcessId /F }\""
+
+# 第 2 步：等端口释放
+sleep 3
+
+# 第 3 步：通过 WMI 拉起包装脚本，脱离 SSH Job Object
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
+  sdw@192.168.100.149 \
+  "powershell -NoProfile -Command \"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd.exe /c C:\\Users\\sdw\\ws-scrcpy-web\\run.bat'} | Out-Null\""
+
+# 第 4 步：验证
+sleep 5
+curl -I --max-time 5 http://192.168.100.149:8000/
+```
+
+预期返回：
+
+```text
+HTTP/1.1 200 OK
+```
+
+Windows 侧检查监听与进程：
+
+```bash
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
+  sdw@192.168.100.149 \
+  "powershell -NoProfile -Command \"Get-NetTCPConnection -LocalPort 8000,8001 -ErrorAction SilentlyContinue | Select-Object LocalAddress,LocalPort,State,OwningProcess | Format-Table -AutoSize; Get-CimInstance Win32_Process -Filter \\\"name='node.exe'\\\" | Select-Object ProcessId,CommandLine | Format-List\""
+```
+
+### 开机自启验证
+
+```bash
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
+  sdw@192.168.100.149 \
+  "powershell -NoProfile -Command \"Get-ScheduledTask -TaskName 'ws-scrcpy-web' | Select-Object TaskName,State | Format-List; Get-ScheduledTaskInfo -TaskName 'ws-scrcpy-web' | Select-Object LastRunTime,LastTaskResult | Format-List\""
+```
+
+注意：计划任务状态显示 `Ready` 不一定代表异常。该任务如果以包装脚本拉起长期运行的 Node 进程，最终要以 `curl http://192.168.100.149:8000/` 和 `Get-NetTCPConnection` 为准。
+
+---
+
 ## 已知坑（2026-05-12 实测）
 
 ### 坑 1：PowerShell 多命令合并执行静默失败
@@ -173,6 +264,52 @@ ssh ... "python -m uvicorn ..."                  # 前台运行，SSH 断开即�
 **实测验证**：
 - 通过 WMI 启动后立即 SSH 断开 → 进程持续运行（已稳定 3+ 分钟，处理请求正常）
 - 通过 VBScript+Sleep 启动后立即 SSH 断开 → 进程在 10s 内消失，stderr 无报错
+
+---
+
+### 坑 7：ws-scrcpy-web 会把自动 shift 后的端口写回配置
+
+**现象**：日志出现：
+
+```text
+[Server] webPort 8000 busy; auto-shifted to 8001
+```
+
+之后即使 8000 已空闲，服务仍然监听 8001。
+
+**原因**：ws-scrcpy-web 的端口探测逻辑会从 `webPort` 起扫可用端口，并在实际端口变化后写回 `C:\ProgramData\WsScrcpyWeb\config.json`。一次自动 shift 会把 `webPort` 持久化成 `8001`。
+
+**正确做法**：启动前确认配置文件里是 `"webPort":8000`，并在 `run.bat` 中设置 `PORT=8000`。
+
+---
+
+### 坑 8：ws-scrcpy-web 的 `config.json` 不能带 UTF-8 BOM
+
+**现象**：Node 启动后立刻退出，`out.log` 中出现：
+
+```text
+SyntaxError: Unexpected token ..., is not valid JSON
+    at JSON.parse
+```
+
+**原因**：PowerShell `Set-Content -Encoding UTF8` 在部分 Windows PowerShell 版本中会写入 BOM，ws-scrcpy-web 直接 `JSON.parse()` 文件内容，不兼容 BOM。
+
+**正确做法**：用 ASCII 或明确的无 BOM UTF-8 写入配置。当前配置内容全是 ASCII 字符，推荐：
+
+```powershell
+$cfg='C:\ProgramData\WsScrcpyWeb\config.json'
+$obj=[ordered]@{
+  installMode=$null
+  autoUpdate=$true
+  updateCheckIntervalMinutes=60
+  channel='stable'
+  githubOwner='bilbospocketses'
+  serviceFirstRunSeen=$false
+  webPort=8000
+  firstRunComplete=$true
+}
+$obj | ConvertTo-Json -Compress | Set-Content -Path $cfg -Encoding ASCII
+```
 
 ---
 
