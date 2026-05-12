@@ -173,7 +173,7 @@ async def _startup():
         "adb_path": ADB_PATH,
     })
 
-ADB_PATH = os.getenv("ADB_PATH", "adb")
+ADB_PATH = os.getenv("ADB_PATH", r"C:\Program Files\Netease\MuMu\nx_main\adb.exe")
 W, H = 1600, 900
 
 COMMON_POPUP_TEXTS = ["确定", "关闭", "取消", "稍后", "跳过", "我知道了", "继续"]

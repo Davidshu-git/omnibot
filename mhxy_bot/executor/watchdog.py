@@ -45,7 +45,7 @@ WINDOWS_PYTHON = os.getenv(
 )
 WINDOWS_ADB_PATH = os.getenv(
     "MHXY_WINDOWS_ADB_PATH",
-    r"C:\Users\sdw\WorkBuddy\Claw\.workbuddy\mhxy\adb\platform-tools\adb.exe",
+    r"C:\Program Files\Netease\MuMu\nx_main\adb.exe",
 )
 WINDOWS_EXECUTOR_PORT = int(os.getenv("MHXY_WINDOWS_EXECUTOR_PORT", "8765"))
 EXECUTOR_EVENTS_REMOTE_DIR = os.getenv(
