@@ -33,6 +33,8 @@ type BroadcastStatus =
   | { pending: true }
   | { pending: false; ok: number; fail: number; px: number; py: number };
 
+const WS_SCRCPY_BASE = "http://192.168.100.149:8000";
+
 function ScreenshotModal({
   port,
   state,
@@ -46,11 +48,16 @@ function ScreenshotModal({
   onClose: () => void;
   onRefreshScreenshot: (port: string) => Promise<void>;
 }) {
+  const [viewMode, setViewMode] = useState<"screenshot" | "stream">("screenshot");
   const [broadcastMode, setBroadcastMode] = useState(false);
   const [broadcastStatus, setBroadcastStatus] = useState<BroadcastStatus>(null);
   const [hoverXY, setHoverXY] = useState<{ x: number; y: number } | null>(null);
   const [clickRipple, setClickRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
+
+  // ADB device ID: MuMu emulator port is odd (5557), ADB port is port-1 (5556)
+  const adbDevice = `emulator-${parseInt(port) - 1}`;
+  const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -110,13 +117,38 @@ function ScreenshotModal({
     >
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+        {/* 截图 / 实时流 切换 */}
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{ display: "flex", gap: 4 }}
+        >
+          {(["screenshot", "stream"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => { setViewMode(m); setBroadcastMode(false); setBroadcastStatus(null); }}
+              style={{
+                padding: "3px 10px",
+                borderRadius: "var(--r-sm)",
+                border: `1px solid ${viewMode === m ? "var(--blue)" : "var(--border-hi)"}`,
+                background: viewMode === m ? "rgba(99,179,237,0.15)" : "transparent",
+                color: viewMode === m ? "var(--blue)" : "var(--text-muted)",
+                fontSize: 11, cursor: "pointer",
+              }}
+            >
+              {m === "screenshot" ? "📷 截图" : "📺 实时流"}
+            </button>
+          ))}
+        </div>
+
         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>
-          端口 {port} —{" "}
-          {broadcastMode
-            ? `点击截图广播到全部 ${allPorts.length} 个实例，Esc 退出广播模式`
-            : "点击截图操作当前实例，点击外侧或 Esc 关闭"}
+          端口 {port}
+          {viewMode === "screenshot" && (broadcastMode
+            ? ` — 点击截图广播到全部 ${allPorts.length} 个实例，Esc 退出广播模式`
+            : " — 点击截图操作当前实例，点击外侧或 Esc 关闭")}
+          {viewMode === "stream" && " — 实时流（ws-scrcpy-web），点击外侧关闭"}
         </span>
-        {canBroadcast && (
+
+        {viewMode === "screenshot" && canBroadcast && (
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -138,62 +170,73 @@ function ScreenshotModal({
         )}
       </div>
 
-      {/* Image */}
+      {/* Content */}
       <div
         onClick={(e) => e.stopPropagation()}
         style={{ maxWidth: "90vw", maxHeight: "85vh", display: "flex", alignItems: "center", justifyContent: "center" }}
       >
-        {state === "loading" && (
-          <span style={{ color: "var(--text-dim)", fontSize: 13 }}>加载中…</span>
-        )}
-        {state === "error" && (
-          <span style={{ color: "var(--red)", fontSize: 13 }}>截图获取失败</span>
-        )}
-        {isImage && (
-          <div style={{ position: "relative", display: "inline-block" }}>
-            <img
-              ref={imgRef}
-              src={`data:image/png;base64,${state}`}
-              alt={`port-${port}-screenshot`}
-              style={{
-                maxWidth: "100%", maxHeight: "85vh",
-                borderRadius: 4, display: "block",
-                cursor: "crosshair",
-              }}
-              onMouseMove={handleImgMouseMove}
-              onMouseLeave={() => setHoverXY(null)}
-              onClick={handleImgClick}
-            />
-            {/* Click ripple */}
-            {clickRipple && (
-              <div
-                key={clickRipple.key}
-                className="broadcast-ripple"
-                style={{ left: `${clickRipple.pctX}%`, top: `${clickRipple.pctY}%` }}
-                onAnimationEnd={() => setClickRipple(null)}
-              />
+        {viewMode === "stream" ? (
+          <iframe
+            src={streamUrl}
+            style={{
+              width: "720px", height: "480px",
+              border: "1px solid var(--border-hi)",
+              borderRadius: 4,
+            }}
+            allow="autoplay"
+          />
+        ) : (
+          <>
+            {state === "loading" && (
+              <span style={{ color: "var(--text-dim)", fontSize: 13 }}>加载中…</span>
             )}
-            {/* Coordinate badge */}
-            {hoverXY && (
-              <div style={{
-                position: "absolute", bottom: 6, left: 6,
-                background: "rgba(0,0,0,0.75)",
-                color: "var(--amber)",
-                fontFamily: "var(--font-mono)", fontSize: 11,
-                padding: "2px 8px", borderRadius: 4,
-                pointerEvents: "none",
-                userSelect: "none",
-              }}>
-                {hoverXY.x}, {hoverXY.y}
+            {state === "error" && (
+              <span style={{ color: "var(--red)", fontSize: 13 }}>截图获取失败</span>
+            )}
+            {isImage && (
+              <div style={{ position: "relative", display: "inline-block" }}>
+                <img
+                  ref={imgRef}
+                  src={`data:image/png;base64,${state}`}
+                  alt={`port-${port}-screenshot`}
+                  style={{
+                    maxWidth: "100%", maxHeight: "85vh",
+                    borderRadius: 4, display: "block",
+                    cursor: "crosshair",
+                  }}
+                  onMouseMove={handleImgMouseMove}
+                  onMouseLeave={() => setHoverXY(null)}
+                  onClick={handleImgClick}
+                />
+                {clickRipple && (
+                  <div
+                    key={clickRipple.key}
+                    className="broadcast-ripple"
+                    style={{ left: `${clickRipple.pctX}%`, top: `${clickRipple.pctY}%` }}
+                    onAnimationEnd={() => setClickRipple(null)}
+                  />
+                )}
+                {hoverXY && (
+                  <div style={{
+                    position: "absolute", bottom: 6, left: 6,
+                    background: "rgba(0,0,0,0.75)",
+                    color: "var(--amber)",
+                    fontFamily: "var(--font-mono)", fontSize: 11,
+                    padding: "2px 8px", borderRadius: 4,
+                    pointerEvents: "none", userSelect: "none",
+                  }}>
+                    {hoverXY.x}, {hoverXY.y}
+                  </div>
+                )}
               </div>
             )}
-          </div>
+          </>
         )}
       </div>
 
-      {/* Broadcast result — always occupies space to prevent layout shift */}
+      {/* Status bar — always occupies space to prevent layout shift */}
       <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)", height: 20 }}>
-        {broadcastStatus && (broadcastStatus.pending ? (
+        {viewMode === "screenshot" && broadcastStatus && (broadcastStatus.pending ? (
           <span style={{ color: "var(--text-dim)" }}>
             {broadcastMode ? `广播中… (${allPorts.length} 个实例)` : "点击中…"}
           </span>
@@ -210,6 +253,11 @@ function ScreenshotModal({
             </span>
           </span>
         ))}
+        {viewMode === "stream" && (
+          <span style={{ color: "var(--text-dim)" }}>
+            {adbDevice} · <a href={streamUrl} target="_blank" rel="noreferrer" style={{ color: "var(--blue)", textDecoration: "none" }}>在新标签打开 ↗</a>
+          </span>
+        )}
       </div>
     </div>
   );
