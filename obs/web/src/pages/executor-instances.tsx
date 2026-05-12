@@ -495,15 +495,85 @@ function GroupBlock({
 // Grid view components
 // ---------------------------------------------------------------------------
 
+// Returns the pixel bounds of the actual image content inside an objectFit:contain img element.
+function getContainBounds(img: HTMLImageElement) {
+  const rect = img.getBoundingClientRect();
+  const imgAspect = img.naturalWidth / img.naturalHeight;
+  const elemAspect = rect.width / rect.height;
+  let cw: number, ch: number, cx: number, cy: number;
+  if (imgAspect > elemAspect) {
+    cw = rect.width; ch = rect.width / imgAspect;
+    cx = rect.left; cy = rect.top + (rect.height - ch) / 2;
+  } else {
+    ch = rect.height; cw = rect.height * imgAspect;
+    cx = rect.left + (rect.width - cw) / 2; cy = rect.top;
+  }
+  return { cx, cy, cw, ch };
+}
+
 function ScreenshotCard({
   inst,
   screenshot,
   onClick,
+  tapMode = false,
+  broadcastMode = false,
+  allPorts = [],
 }: {
   inst: MhxyInstanceDetail;
   screenshot: ScreenshotState;
   onClick: () => void;
+  tapMode?: boolean;
+  broadcastMode?: boolean;
+  allPorts?: string[];
 }) {
+  const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number } | null>(null);
+  const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
+  const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
+
+  const isImageLoaded = screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error";
+
+  const handleImgAreaMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!tapMode || !imgRef.current || !isImageLoaded) return;
+    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
+    const rx = e.clientX - cx;
+    const ry = e.clientY - cy;
+    if (rx < 0 || rx > cw || ry < 0 || ry > ch) { setHoverCoord(null); return; }
+    setHoverCoord({
+      x: Math.round(rx / cw * imgRef.current.naturalWidth),
+      y: Math.round(ry / ch * imgRef.current.naturalHeight),
+    });
+  }, [tapMode, isImageLoaded]);
+
+  const handleImgAreaClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!tapMode || !imgRef.current || !isImageLoaded) return;
+    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
+    const rx = e.clientX - cx;
+    const ry = e.clientY - cy;
+    if (rx < 0 || rx > cw || ry < 0 || ry > ch) return; // black bar → bubble up to card onClick (modal)
+    e.stopPropagation();
+    const px = Math.round(rx / cw * imgRef.current.naturalWidth);
+    const py = Math.round(ry / ch * imgRef.current.naturalHeight);
+    const containerRect = e.currentTarget.getBoundingClientRect();
+    setRipple({
+      pctX: (e.clientX - containerRect.left) / containerRect.width * 100,
+      pctY: (e.clientY - containerRect.top) / containerRect.height * 100,
+      key: Date.now(),
+    });
+    const targets = broadcastMode ? allPorts : [inst.port];
+    setTapStatus({ pending: true });
+    api.mhxyExecutorBatchTap(targets, px, py)
+      .then((d) => {
+        const ok = Object.values(d.results).filter(Boolean).length;
+        setTapStatus({ pending: false, ok, fail: targets.length - ok });
+        setTimeout(() => setTapStatus(null), 2500);
+      })
+      .catch(() => {
+        setTapStatus({ pending: false, ok: 0, fail: targets.length });
+        setTimeout(() => setTapStatus(null), 2500);
+      });
+  }, [tapMode, isImageLoaded, broadcastMode, allPorts, inst.port]);
+
   const statusColor = inst.healthy === true
     ? "var(--green)"
     : inst.healthy === false
@@ -546,12 +616,18 @@ function ScreenshotCard({
       </div>
 
       {/* screenshot area — fixed aspect ratio 16:9 */}
-      <div style={{
-        background: "#0d0d0d",
-        aspectRatio: "16/9",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        position: "relative",
-      }}>
+      <div
+        style={{
+          background: "#0d0d0d",
+          aspectRatio: "16/9",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          position: "relative",
+          cursor: tapMode && isImageLoaded ? "crosshair" : undefined,
+        }}
+        onMouseMove={handleImgAreaMouseMove}
+        onMouseLeave={() => setHoverCoord(null)}
+        onClick={handleImgAreaClick}
+      >
         {screenshot === "idle" && (
           <span style={{ color: "var(--text-dim)", fontSize: 11 }}>等待加载</span>
         )}
@@ -561,12 +637,49 @@ function ScreenshotCard({
         {screenshot === "error" && (
           <span style={{ color: "var(--red)", fontSize: 11 }}>获取失败</span>
         )}
-        {screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error" && (
+        {isImageLoaded && (
           <img
+            ref={imgRef}
             src={`data:image/png;base64,${screenshot}`}
             alt={`port-${inst.port}`}
             style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
           />
+        )}
+        {/* Tap ripple */}
+        {ripple && (
+          <div
+            key={ripple.key}
+            className="broadcast-ripple"
+            style={{ left: `${ripple.pctX}%`, top: `${ripple.pctY}%` }}
+            onAnimationEnd={() => setRipple(null)}
+          />
+        )}
+        {/* Hover coordinate */}
+        {tapMode && hoverCoord && (
+          <div style={{
+            position: "absolute", bottom: 4, left: 4,
+            background: "rgba(0,0,0,0.75)", color: "var(--amber)",
+            fontFamily: "var(--font-mono)", fontSize: 10,
+            padding: "1px 6px", borderRadius: 3,
+            pointerEvents: "none", userSelect: "none",
+          }}>
+            {hoverCoord.x}, {hoverCoord.y}
+          </div>
+        )}
+        {/* Tap result overlay */}
+        {tapStatus && (
+          <div style={{
+            position: "absolute", top: 4, right: 4,
+            background: "rgba(0,0,0,0.8)",
+            fontFamily: "var(--font-mono)", fontSize: 10,
+            padding: "2px 6px", borderRadius: 3,
+            pointerEvents: "none",
+            color: tapStatus.pending ? "var(--text-dim)" : tapStatus.fail === 0 ? "var(--green)" : "var(--amber)",
+          }}>
+            {tapStatus.pending
+              ? (broadcastMode ? `广播 ${allPorts.length}…` : "…")
+              : `✓${tapStatus.ok}${tapStatus.fail ? ` ✗${tapStatus.fail}` : ""}`}
+          </div>
         )}
       </div>
 
@@ -592,11 +705,17 @@ function GroupBlockGrid({
   instances,
   screenshots,
   onCardClick,
+  tapMode,
+  broadcastMode,
+  allPorts,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
   screenshots: Record<string, ScreenshotState>;
   onCardClick: (port: string) => void;
+  tapMode: boolean;
+  broadcastMode: boolean;
+  allPorts: string[];
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -625,6 +744,9 @@ function GroupBlockGrid({
             inst={inst}
             screenshot={screenshots[inst.port] ?? "idle"}
             onClick={() => onCardClick(inst.port)}
+            tapMode={tapMode}
+            broadcastMode={broadcastMode}
+            allPorts={allPorts}
           />
         ))}
       </div>
@@ -641,6 +763,8 @@ export default function ExecutorInstancesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [tapMode, setTapMode] = useState(false);
+  const [gridBroadcast, setGridBroadcast] = useState(false);
 
   // Modal state
   const [modalPort, setModalPort] = useState<string | null>(null);
@@ -767,6 +891,7 @@ export default function ExecutorInstancesPage() {
 
   const totalOk = instances.filter((i) => i.healthy === true).length;
   const totalAdb = instances.filter((i) => i.adb === true).length;
+  const allPorts = instances.map((i) => i.port);
 
   return (
     <div>
@@ -817,6 +942,38 @@ export default function ExecutorInstancesPage() {
           >
             截图巡检
           </button>
+          {viewMode === "grid" && (
+            <>
+              <button
+                onClick={() => { setTapMode((v) => !v); if (tapMode) setGridBroadcast(false); }}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: "var(--r-sm)",
+                  border: `1px solid ${tapMode ? "var(--green)" : "var(--border-hi)"}`,
+                  background: tapMode ? "rgba(72,187,120,0.15)" : "transparent",
+                  color: tapMode ? "var(--green)" : "var(--text-muted)",
+                  fontSize: 11, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                📍 点击操作{tapMode ? " ON" : ""}
+              </button>
+              {tapMode && allPorts.length > 1 && (
+                <button
+                  onClick={() => setGridBroadcast((v) => !v)}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: "var(--r-sm)",
+                    border: `1px solid ${gridBroadcast ? "var(--amber)" : "var(--border-hi)"}`,
+                    background: gridBroadcast ? "rgba(246,173,85,0.15)" : "transparent",
+                    color: gridBroadcast ? "var(--amber)" : "var(--text-muted)",
+                    fontSize: 11, fontWeight: 500, cursor: "pointer",
+                  }}
+                >
+                  📡 广播{gridBroadcast ? " ON" : ""}
+                </button>
+              )}
+            </>
+          )}
           <button
             onClick={refreshScreenshots}
             style={{
@@ -865,7 +1022,9 @@ export default function ExecutorInstancesPage() {
             {lastRefreshAt
               ? `截图刷新于 ${lastRefreshAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
               : "截图加载中…"}
-            {viewMode === "grid" && " · 点击卡片可放大"}
+            {viewMode === "grid" && (tapMode
+              ? (gridBroadcast ? ` · 广播模式：点击任意截图 → 同步到全部 ${allPorts.length} 个实例` : " · 点击截图操作当前实例，黑边区域打开详情")
+              : " · 点击卡片可放大")}
           </span>
         </p>
       )}
@@ -918,6 +1077,9 @@ export default function ExecutorInstancesPage() {
                 instances={insts}
                 screenshots={screenshots}
                 onCardClick={openModal}
+                tapMode={tapMode}
+                broadcastMode={gridBroadcast}
+                allPorts={allPorts}
               />
             ))}
 
@@ -937,6 +1099,9 @@ export default function ExecutorInstancesPage() {
                     inst={inst}
                     screenshot={screenshots[inst.port] ?? "idle"}
                     onClick={() => openModal(inst.port)}
+                    tapMode={tapMode}
+                    broadcastMode={gridBroadcast}
+                    allPorts={allPorts}
                   />
                 ))}
               </div>
