@@ -83,14 +83,16 @@ function ScreenshotModal({
 // List view components
 // ---------------------------------------------------------------------------
 
-const LIST_COLS = "60px 80px 56px 48px 48px 48px 64px 1fr 36px";
-const LIST_HEADERS = ["端口", "门派", "身份", "ADB", "截图", "OCR", "延迟", "状态", ""];
+const LIST_COLS = "60px 80px 56px 48px 48px 48px 64px 1fr 120px";
+const LIST_HEADERS = ["端口", "门派", "身份", "ADB", "截图", "OCR", "延迟", "状态", "预览"];
 
 function InstanceRow({
   inst,
+  screenshot,
   onScreenshot,
 }: {
   inst: MhxyInstanceDetail;
+  screenshot: ScreenshotState;
   onScreenshot: (port: string) => void;
 }) {
   const statusColor = inst.healthy === true
@@ -133,22 +135,42 @@ function InstanceRow({
       }}>
         {inst.error || (inst.healthy === true ? "正常" : inst.healthy === false ? "异常" : "未知")}
       </span>
-      <button
-        title="查看截图"
+      <div
+        title="点击放大查看截图"
         onClick={() => onScreenshot(inst.port)}
         style={{
-          padding: "2px 6px",
+          width: "100%",
+          aspectRatio: "16/9",
+          background: "#0d0d0d",
           borderRadius: "var(--r-sm)",
-          border: "1px solid var(--border-hi)",
-          background: "transparent",
-          color: "var(--blue)",
-          fontSize: 14,
+          overflow: "hidden",
           cursor: "pointer",
-          lineHeight: 1,
+          border: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          transition: "border-color 0.15s",
         }}
+        onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--blue)")}
+        onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
       >
-        🖼
-      </button>
+        {screenshot === "idle" && (
+          <span style={{ color: "var(--text-dim)", fontSize: 16, lineHeight: 1 }}>📷</span>
+        )}
+        {screenshot === "loading" && (
+          <span style={{ color: "var(--text-dim)", fontSize: 10 }}>加载中</span>
+        )}
+        {screenshot === "error" && (
+          <span style={{ color: "var(--red)", fontSize: 10 }}>失败</span>
+        )}
+        {screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error" && (
+          <img
+            src={`data:image/png;base64,${screenshot}`}
+            alt={`port-${inst.port}`}
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+          />
+        )}
+      </div>
     </div>
   );
 }
@@ -172,10 +194,12 @@ function ColumnHeaders() {
 function GroupBlock({
   groupId,
   instances,
+  screenshots,
   onScreenshot,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
+  screenshots: Record<string, ScreenshotState>;
   onScreenshot: (port: string) => void;
 }) {
   const leader = instances.find((i) => i.role === "leader");
@@ -199,8 +223,8 @@ function GroupBlock({
       </div>
       <ColumnHeaders />
       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-        {leader && <InstanceRow inst={leader} onScreenshot={onScreenshot} />}
-        {members.map((m) => <InstanceRow key={m.port} inst={m} onScreenshot={onScreenshot} />)}
+        {leader && <InstanceRow inst={leader} screenshot={screenshots[leader.port] ?? "idle"} onScreenshot={onScreenshot} />}
+        {members.map((m) => <InstanceRow key={m.port} inst={m} screenshot={screenshots[m.port] ?? "idle"} onScreenshot={onScreenshot} />)}
       </div>
     </div>
   );
@@ -408,9 +432,9 @@ export default function ExecutorInstancesPage() {
     setTimeout(() => fetchScreenshots(instances, true), 0);
   }, [fetchScreenshots, instances]);
 
-  // Fetch all screenshots when entering grid mode
+  // Fetch all screenshots when entering any view mode
   useEffect(() => {
-    if (viewMode !== "grid" || instances.length === 0) return;
+    if (instances.length === 0) return;
     fetchScreenshots(instances, false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, instances.length]);
@@ -517,21 +541,19 @@ export default function ExecutorInstancesPage() {
           >
             截图巡检
           </button>
-          {viewMode === "grid" && (
-            <button
-              onClick={refreshScreenshots}
-              style={{
-                padding: "4px 10px",
-                borderRadius: "var(--r-sm)",
-                border: "1px solid var(--border-hi)",
-                background: "transparent",
-                color: "var(--blue)",
-                fontSize: 11, fontWeight: 500, cursor: "pointer",
-              }}
-            >
-              刷新截图
-            </button>
-          )}
+          <button
+            onClick={refreshScreenshots}
+            style={{
+              padding: "4px 10px",
+              borderRadius: "var(--r-sm)",
+              border: "1px solid var(--border-hi)",
+              background: "transparent",
+              color: "var(--blue)",
+              fontSize: 11, fontWeight: 500, cursor: "pointer",
+            }}
+          >
+            刷新截图
+          </button>
           <button
             onClick={() => { setLoading(true); load().finally(() => setLoading(false)); }}
             style={{
@@ -563,14 +585,12 @@ export default function ExecutorInstancesPage() {
               <span style={{ marginLeft: 4 }}>ADB 正常</span>
             </span>
           )}
-          {viewMode === "grid" && (
-            <span style={{ marginLeft: 16, color: "var(--text-dim)" }}>
-              {lastRefreshAt
-                ? `截图刷新于 ${lastRefreshAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
-                : "截图加载中…"}
-              {" · "}点击卡片可放大
-            </span>
-          )}
+          <span style={{ marginLeft: 16, color: "var(--text-dim)" }}>
+            {lastRefreshAt
+              ? `截图刷新于 ${lastRefreshAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
+              : "截图加载中…"}
+            {viewMode === "grid" && " · 点击卡片可放大"}
+          </span>
         </p>
       )}
 
@@ -595,7 +615,7 @@ export default function ExecutorInstancesPage() {
           {Array.from(groups.entries())
             .sort(([a], [b]) => a - b)
             .map(([gid, insts]) => (
-              <GroupBlock key={gid} groupId={gid} instances={insts} onScreenshot={openModal} />
+              <GroupBlock key={gid} groupId={gid} instances={insts} screenshots={screenshots} onScreenshot={openModal} />
             ))}
 
           {standalone.length > 0 && (
@@ -605,7 +625,7 @@ export default function ExecutorInstancesPage() {
               </div>
               <ColumnHeaders />
               <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-                {standalone.map((inst) => <InstanceRow key={inst.port} inst={inst} onScreenshot={openModal} />)}
+                {standalone.map((inst) => <InstanceRow key={inst.port} inst={inst} screenshot={screenshots[inst.port] ?? "idle"} onScreenshot={openModal} />)}
               </div>
             </div>
           )}
