@@ -17,6 +17,7 @@ import json as _json
 import logging
 import os
 import random
+import re
 import socket
 from pathlib import Path
 import subprocess
@@ -440,6 +441,27 @@ class WaitTextReq(BaseModel):
 def health():
     log.info("health check")
     return {"status": "ok", "adb": ADB_PATH}
+
+
+@app.get("/list_devices")
+def list_devices():
+    """列出当前 ADB 可见的所有模拟器，返回 instances.json 格式的奇数端口列表。"""
+    try:
+        r = subprocess.run(
+            [ADB_PATH, "devices"],
+            capture_output=True,
+            timeout=10,
+        )
+        ports = []
+        for line in r.stdout.decode(errors="replace").splitlines():
+            m = re.match(r"emulator-(\d+)\s+device", line)
+            if m:
+                even = int(m.group(1))
+                ports.append(even + 1)
+        return {"ports": sorted(ports), "count": len(ports)}
+    except Exception as e:
+        log.exception("list_devices error")
+        raise HTTPException(500, str(e))
 
 
 @app.post("/screenshot")

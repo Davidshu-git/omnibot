@@ -64,12 +64,29 @@ class ExecutorClient:
         r.raise_for_status()
         return r.json()
 
+    def _get(self, path: str, *, _timeout: int | None = None) -> dict:
+        r = httpx.get(
+            f"{self._base}{path}",
+            timeout=_timeout if _timeout is not None else self._timeout,
+            headers=self._headers(),
+        )
+        r.raise_for_status()
+        return r.json()
+
     def health(self) -> bool:
         try:
             r = httpx.get(f"{self._base}/health", timeout=5, headers=self._headers())
             return r.status_code == 200
         except Exception:
             return False
+
+    def list_devices(self) -> dict:
+        """从 Windows executor 查询当前 ADB 可见的模拟器端口列表。
+
+        返回：
+            {"ports": list[int], "count": int}
+        """
+        return self._get("/list_devices", _timeout=15)
 
     # ------------------------------------------------------------------
     # 基础操作

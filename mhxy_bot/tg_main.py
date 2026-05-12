@@ -581,6 +581,7 @@ class GameBot(TelegramBotBase):
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "get_instances": "📋 正在读取模拟器实例配置...",
+            "sync_instances": "🔄 正在同步实例列表，请稍候...",
             "batch_recognize_schools": "🏯 正在批量识别所有实例门派，请耐心等待...",
             "check_instance_health": "🩺 正在诊断模拟器实例...",
             "reconnect_instances": "🔌 正在重连模拟器实例（最长每实例 60s，请耐心等待）...",

@@ -543,8 +543,69 @@ def make_game_tools(sandbox_dir: Path, vl_registry=None) -> list:
         except Exception as e:
             return f"❌ 批量识别失败：{type(e).__name__} - {e}"
 
+    def _cleanup_groups(data: dict, removed_ports: set[int]) -> None:
+        """从 groups 中移除已不存在端口的引用；leader 被移除则整组删除。"""
+        groups = data.get("groups", [])
+        cleaned = []
+        for group in groups:
+            leader = group.get("leader", {})
+            leader_port = leader.get("port")
+            if leader_port in removed_ports:
+                continue  # leader 掉线，整组删除
+            members = [m for m in group.get("members", []) if m.get("port") not in removed_ports]
+            cleaned_group = dict(group)
+            cleaned_group["members"] = members
+            cleaned.append(cleaned_group)
+        data["groups"] = cleaned
+
+    @tool
+    def sync_instances() -> str:
+        """同步 instances.json 与 ADB 实际在线设备，自动增删实例条目。"""
+        try:
+            # 1. 从 executor 拿在线端口
+            resp = executor.list_devices()
+            live_ports = set(resp.get("ports", []))
+
+            # 2. 读当前配置
+            data = _load_instances()
+            current = {inst["port"]: inst for inst in data.get("instances", [])}
+            current_ports = set(current.keys())
+
+            # 3. 计算 diff
+            to_add = live_ports - current_ports
+            to_remove = current_ports - live_ports
+
+            # 4. 执行变更
+            for p in sorted(to_add):
+                data.setdefault("instances", []).append({"port": p})
+            data["instances"] = [
+                inst for inst in data["instances"]
+                if inst["port"] not in to_remove
+            ]
+            _cleanup_groups(data, to_remove)
+
+            # 5. 写回
+            data["sync_time"] = datetime.now().isoformat()
+            INSTANCES_JSON.parent.mkdir(parents=True, exist_ok=True)
+            INSTANCES_JSON.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+
+            # 6. 返回摘要
+            lines = [f"同步完成（在线 {len(live_ports)} 个）："]
+            if to_add:
+                lines.append(f"  ✅ 新增：{sorted(to_add)}")
+            if to_remove:
+                lines.append(f"  🗑 移除：{sorted(to_remove)}")
+            if not to_add and not to_remove:
+                lines.append("  无变更，配置已是最新")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"❌ 同步失败：{type(e).__name__} - {e}"
+
     return [
         get_instances,
+        sync_instances,
         batch_recognize_schools,
         check_instance_health,
         reconnect_instances,
