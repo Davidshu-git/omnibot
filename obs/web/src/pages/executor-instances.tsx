@@ -38,11 +38,13 @@ function ScreenshotModal({
   state,
   allPorts,
   onClose,
+  onRefreshScreenshot,
 }: {
   port: string;
   state: ScreenshotState;
   allPorts: string[];
   onClose: () => void;
+  onRefreshScreenshot: (port: string) => Promise<void>;
 }) {
   const [broadcastMode, setBroadcastMode] = useState(false);
   const [broadcastStatus, setBroadcastStatus] = useState<BroadcastStatus>(null);
@@ -84,11 +86,12 @@ function ScreenshotModal({
       .then((d) => {
         const ok = Object.values(d.results).filter(Boolean).length;
         setBroadcastStatus({ pending: false, ok, fail: allPorts.length - ok, px, py });
+        setTimeout(() => onRefreshScreenshot(port), 600);
       })
       .catch(() => {
         setBroadcastStatus({ pending: false, ok: 0, fail: allPorts.length, px, py });
       });
-  }, [broadcastMode, allPorts]);
+  }, [broadcastMode, allPorts, onRefreshScreenshot, port]);
 
   const isImage = state !== "loading" && state !== "error" && state !== "idle";
   const canBroadcast = isImage && allPorts.length > 1;
@@ -615,6 +618,15 @@ export default function ExecutorInstancesPage() {
 
   const closeModal = useCallback(() => setModalPort(null), []);
 
+  const refreshModalScreenshot = useCallback((port: string) => {
+    return api.mhxyExecutorScreenshot(port)
+      .then((d) => {
+        setScreenshots((prev) => ({ ...prev, [port]: d.image_b64 }));
+        setModalState(d.image_b64);
+      })
+      .catch(() => {});
+  }, []);
+
   // Group instances
   const groups = new Map<number, MhxyInstanceDetail[]>();
   const standalone: MhxyInstanceDetail[] = [];
@@ -639,6 +651,7 @@ export default function ExecutorInstancesPage() {
           state={modalState}
           allPorts={instances.map((i) => i.port)}
           onClose={closeModal}
+          onRefreshScreenshot={refreshModalScreenshot}
         />
       )}
 
