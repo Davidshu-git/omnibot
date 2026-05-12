@@ -56,6 +56,8 @@ docker exec v2-omnimhxy-tg-bot python -m pytest tests/<file>.py -v
 
 ## Windows Executor 运维
 
+> 详细运维手册（重启流程、已知坑、adb 路径）：[ops/windows_executor.md](ops/windows_executor.md)
+
 MHXY Windows executor 默认运行在 Windows 主机 `192.168.100.149`，HTTP 服务地址：
 
 ```text

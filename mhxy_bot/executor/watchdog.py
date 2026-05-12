@@ -335,12 +335,11 @@ def get_remote_process() -> dict[str, Any]:
 
 
 def restart_executor(reason: str) -> dict[str, Any]:
+    # 第 1 步：裸 taskkill 杀进程（Stop-Process 在 SSH 会话下无效，实测确认）
+    kill_cmd = "taskkill /IM python.exe /F"
+    # 第 2 步：生成启动脚本并用 Start-Process cmd.exe 后台拉起（schtasks 方式不可靠，实测确认）
     remote_cmd = powershell_encoded(
         f"""
-        Get-CimInstance Win32_Process -Filter "name='python.exe'" |
-          Where-Object {{ $_.CommandLine -like '*uvicorn*' -and $_.CommandLine -like '*--port*{WINDOWS_EXECUTOR_PORT}*' }} |
-          ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }}
-        Start-Sleep -Seconds 1
         $cmdPath = '{WINDOWS_EXECUTOR_DIR}\\start_executor.cmd'
         $lines = @(
           '@echo off',
@@ -351,13 +350,12 @@ def restart_executor(reason: str) -> dict[str, Any]:
           '"{WINDOWS_PYTHON}" -m uvicorn main:app --host 0.0.0.0 --port {WINDOWS_EXECUTOR_PORT} >> "{WINDOWS_EXECUTOR_DIR}\\stdout-watchdog.log" 2>> "{WINDOWS_EXECUTOR_DIR}\\stderr-watchdog.log"'
         )
         Set-Content -Path $cmdPath -Value $lines -Encoding ASCII
-        & schtasks.exe /Create /TN '{WINDOWS_TASK_NAME}' /SC ONCE /ST 23:59 /TR $cmdPath /F
-        if ($LASTEXITCODE -ne 0) {{ exit $LASTEXITCODE }}
-        & schtasks.exe /Run /TN '{WINDOWS_TASK_NAME}'
-        exit $LASTEXITCODE
+        Start-Process cmd.exe -ArgumentList "/c $cmdPath" -WindowStyle Hidden
         """
     )
     started = time.monotonic()
+    ssh_run(kill_cmd, timeout=10)  # 杀进程，忽略返回值（进程不存在时也会报错）
+    time.sleep(3)                  # 等端口释放
     result = ssh_run(remote_cmd, timeout=30)
     elapsed = time.monotonic() - started
     payload = {
@@ -377,6 +375,7 @@ def restart_executor(reason: str) -> dict[str, Any]:
 
 
 def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tuple[int, dict[str, Any]]:
+    ports = load_ports()  # 每轮重新读取，instances.json 变更后自动生效
     checked_at = utc_now()
     previous = read_status()
     health_ok, health = http_get_health()
