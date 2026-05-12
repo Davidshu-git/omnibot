@@ -542,7 +542,7 @@ def batch_tap(req: BatchTapReq, request: Request):
         except Exception as e:
             log.warning("batch_tap port=%s error: %s", port, e)
             results[port] = False
-        time.sleep(random.uniform(0.3, 0.6))
+        time.sleep(random.uniform(0.08, 0.15))
     return {"results": results}
 
 

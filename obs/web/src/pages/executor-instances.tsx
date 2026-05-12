@@ -107,7 +107,7 @@ function ScreenshotModal({
       .then((d) => {
         const ok = Object.values(d.results).filter(Boolean).length;
         setBroadcastStatus({ pending: false, ok, fail: targets.length - ok, px, py });
-        setTimeout(() => onRefreshScreenshot(port), 600);
+        setTimeout(() => onRefreshScreenshot(port), 200);
       })
       .catch(() => {
         setBroadcastStatus({ pending: false, ok: 0, fail: targets.length, px, py });
