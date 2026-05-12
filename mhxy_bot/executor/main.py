@@ -466,13 +466,15 @@ def list_devices():
 
 @app.post("/screenshot")
 def screenshot(req: PortReq, request: Request):
-    """截图，返回 base64 编码的 PNG 字节。"""
+    """截图，返回 base64 编码的 JPEG 字节（quality=85，比 PNG 体积小约 70%）。"""
     request.state.port = req.port
     event_ctx = _event_context(request, req.port)
     try:
         png = _screenshot_png(req.port, event_ctx=event_ctx)
+        img = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+        _, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return {
-            "image_b64": base64.b64encode(png).decode(),
+            "image_b64": base64.b64encode(bytes(buf)).decode(),
             "width": W,
             "height": H,
         }

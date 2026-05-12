@@ -66,7 +66,7 @@ function ScreenshotModal({
     if (!isImage) return;
     const img = new Image();
     img.onload = () => setDeviceSize({ w: img.naturalWidth, h: img.naturalHeight });
-    img.src = `data:image/png;base64,${state}`;
+    img.src = `data:image/jpeg;base64,${state}`;
   }, [state]);
 
   useEffect(() => {
@@ -272,7 +272,7 @@ function ScreenshotModal({
               <div style={{ position: "relative", display: "inline-block" }}>
                 <img
                   ref={imgRef}
-                  src={`data:image/png;base64,${state}`}
+                  src={`data:image/jpeg;base64,${state}`}
                   alt={`port-${port}-screenshot`}
                   style={{
                     maxWidth: "100%", maxHeight: "85vh",
@@ -426,7 +426,7 @@ function InstanceRow({
         )}
         {screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error" && (
           <img
-            src={`data:image/png;base64,${screenshot}`}
+            src={`data:image/jpeg;base64,${screenshot}`}
             alt={`port-${inst.port}`}
             style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
           />
@@ -640,7 +640,7 @@ function ScreenshotCard({
         {isImageLoaded && (
           <img
             ref={imgRef}
-            src={`data:image/png;base64,${screenshot}`}
+            src={`data:image/jpeg;base64,${screenshot}`}
             alt={`port-${inst.port}`}
             style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
           />
@@ -846,7 +846,7 @@ export default function ExecutorInstancesPage() {
 
   useEffect(() => {
     if (viewMode !== "grid") return;
-    const id = setInterval(autoRefresh, 15_000);
+    const id = setInterval(autoRefresh, 3_000);
     return () => clearInterval(id);
   }, [viewMode, autoRefresh]);
 

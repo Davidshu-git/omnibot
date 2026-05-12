@@ -89,6 +89,35 @@ Start-Process cmd.exe -ArgumentList '/c C:\Users\sdw\mhxy_executor\start_executo
 
 ---
 
+### 坑 4：Start-Process 失败时无任何报错，需靠日志确认（2026-05-12 实测）
+
+**现象**：按三步流程重启，`Start-Process` 返回无输出（正常），但 `tasklist | findstr python` 无进程，`curl /health` 超时。原因不明，复现两次后消失——历史记录显示同样的 Start-Process 方式在其他时间点（PID 26248、10040）均正常工作，判断为偶发性故障。
+
+**关键教训**：`Start-Process` 失败时不会抛出任何错误，`tasklist` 也可能因进程瞬间退出而看不到。**唯一可靠的验证方式是检查日志**：
+
+```bash
+ssh ... "type C:\\Users\\sdw\\mhxy_executor\\stderr-watchdog.log" | tail -5
+```
+
+重启成功时日志末尾应出现：
+```
+INFO:     Started server process [XXXXX]
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://0.0.0.0:8765
+```
+
+如果日志没有新增内容，说明进程在写第一行日志之前就退出了，可能原因：端口未释放、瞬态状态。此时等待 5–10s 再重试一次。
+
+**补充：EADDRINUSE 错误**：若日志出现 `[Errno 10048] ... 端口只允许使用一次`，说明 8765 已被占用，需先确认旧进程已彻底退出再重启：
+
+```bash
+ssh ... "powershell -NoProfile -Command \"netstat -ano | findstr :8765\""
+```
+
+无输出才可以启动新进程。
+
+---
+
 ## adb 路径
 
 Windows 上有多个 adb.exe，**唯一可信路径**（实测能正确识别 MuMu 模拟器）：
