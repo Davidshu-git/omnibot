@@ -259,9 +259,14 @@ function ExecutorStatusCard({
               <span style={{ marginLeft: 6 }}>({formatAge(status.age_sec)})</span>
             )}
           </span>
-          <span style={{ color: error || status?.health?.error ? "var(--red)" : "var(--text-dim)", fontSize: 11, maxWidth: 520, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {error || status?.error || status?.health?.error || status?.last_restart?.reason || "watchdog 状态文件正常"}
-          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ color: error || status?.health?.error ? "var(--red)" : "var(--text-dim)", fontSize: 11, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {error || status?.error || status?.health?.error || status?.last_restart?.reason || "watchdog 状态文件正常"}
+            </span>
+            <Link href="/executor-instances" style={{ color: "var(--blue)", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>
+              实例详情 →
+            </Link>
+          </div>
         </div>
       </div>
     </div>

@@ -208,6 +208,63 @@ async def projects_runtime_models():
 # External service status
 # ---------------------------------------------------------------------------
 
+@router.get("/external/mhxy-executor/instances")
+async def mhxy_executor_instances():
+    """Merge app_health from executor status with instances.json metadata (school, group role)."""
+    status_path = Path(settings.mhxy_executor_status_file)
+    app_health: list[dict] = []
+    app_health_checked_at: str | None = None
+    if status_path.exists():
+        try:
+            raw = json.loads(status_path.read_text(encoding="utf-8"))
+            app_health = raw.get("app_health") or []
+            app_health_checked_at = raw.get("app_health_checked_at")
+        except Exception:
+            pass
+
+    instances_path = Path(settings.mhxy_instances_file)
+    meta: dict[str, dict] = {}
+    if instances_path.exists():
+        try:
+            inst_data = json.loads(instances_path.read_text(encoding="utf-8"))
+            for inst in inst_data.get("instances", []):
+                port = str(inst.get("port", ""))
+                if port:
+                    meta[port] = {"school": inst.get("school", ""), "role": "standalone", "group_id": None}
+            for gid, group in enumerate(inst_data.get("groups", [])):
+                leader = group.get("leader", {})
+                lp = str(leader.get("port", ""))
+                if lp in meta:
+                    meta[lp]["role"] = "leader"
+                    meta[lp]["group_id"] = gid
+                for member in group.get("members", []):
+                    mp = str(member.get("port", ""))
+                    if mp in meta:
+                        meta[mp]["role"] = "member"
+                        meta[mp]["group_id"] = gid
+        except Exception:
+            pass
+
+    result = []
+    for item in app_health:
+        port = str(item.get("port", ""))
+        m = meta.get(port, {})
+        result.append({
+            "port": port,
+            "school": m.get("school", ""),
+            "role": m.get("role", ""),
+            "group_id": m.get("group_id"),
+            "healthy": item.get("healthy"),
+            "adb": item.get("adb"),
+            "screenshot": item.get("screenshot"),
+            "ocr": item.get("ocr"),
+            "latency_ms": item.get("latency_ms"),
+            "error": item.get("error"),
+        })
+
+    return {"instances": result, "app_health_checked_at": app_health_checked_at}
+
+
 @router.get("/external/mhxy-executor/status")
 async def mhxy_executor_status():
     path = Path(settings.mhxy_executor_status_file)

@@ -126,6 +126,24 @@ export interface ProjectRuntimeModels {
   vl_model: RuntimeModelInfo | null;
 }
 
+export interface MhxyInstanceDetail {
+  port: string;
+  school: string;
+  role: "leader" | "member" | "standalone" | string;
+  group_id: number | null;
+  healthy: boolean | null;
+  adb: boolean | null;
+  screenshot: boolean | null;
+  ocr: boolean | null;
+  latency_ms: number | null;
+  error: string | null;
+}
+
+export interface MhxyExecutorInstances {
+  instances: MhxyInstanceDetail[];
+  app_health_checked_at: string | null;
+}
+
 export const api = {
   projects: () => get<Project[]>("/api/projects"),
   overview: () => get<ProjectOverview[]>("/api/stats/overview"),
@@ -152,6 +170,7 @@ export const api = {
   tools: (project_id?: string) =>
     get<ToolStat[]>("/api/stats/tools", project_id ? { project_id } : undefined),
   mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/status"),
+  mhxyExecutorInstances: () => get<MhxyExecutorInstances>("/api/external/mhxy-executor/instances"),
   think: (params: { project_id?: string; session_id?: string; limit?: number }) =>
     get<NormalizedEvent[]>("/api/think", params),
 
