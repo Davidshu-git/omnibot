@@ -35,6 +35,33 @@ type BroadcastStatus =
 
 const WS_SCRCPY_BASE = "http://192.168.100.149:8000";
 
+// ws-scrcpy embeds a sidebar toolbar on the RIGHT: width = 3.715rem at browser-default 16px ≈ 59px.
+// The .device-view uses justify-content:flex-end, so the (video + toolbar) group is flush-right.
+// The .video cell is content-sized and uses place-items:center, so the canvas is vertically centered.
+const SCRCPY_TOOLBAR_PX = 59;
+
+function streamVideoBounds(
+  overlayW: number,
+  overlayH: number,
+  deviceW: number,
+  deviceH: number,
+): { left: number; top: number; width: number; height: number } {
+  const maxVW = overlayW - SCRCPY_TOOLBAR_PX;
+  const dAspect = deviceW / deviceH;
+  let vw: number, vh: number;
+  if (dAspect >= maxVW / overlayH) {
+    vw = maxVW; vh = maxVW / dAspect;      // width-limited (letterboxed top/bottom)
+  } else {
+    vh = overlayH; vw = overlayH * dAspect; // height-limited (pillarboxed left/right)
+  }
+  return {
+    left: overlayW - vw - SCRCPY_TOOLBAR_PX, // video starts here (justify-end pushes right)
+    top: (overlayH - vh) / 2,               // centered vertically
+    width: vw,
+    height: vh,
+  };
+}
+
 function ScreenshotModal({
   port,
   state,
@@ -117,17 +144,25 @@ function ScreenshotModal({
 
   const handleStreamMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
+    const { left: vL, top: vT, width: vW, height: vH } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
+    const rx = e.clientX - rect.left - vL;
+    const ry = e.clientY - rect.top - vT;
+    if (rx < 0 || rx > vW || ry < 0 || ry > vH) { setHoverXY(null); return; }
     setHoverXY({
-      x: Math.round((e.clientX - rect.left) / rect.width * deviceSize.w),
-      y: Math.round((e.clientY - rect.top) / rect.height * deviceSize.h),
+      x: Math.round(rx / vW * deviceSize.w),
+      y: Math.round(ry / vH * deviceSize.h),
     });
   }, [deviceSize]);
 
   const handleStreamClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     e.stopPropagation();
     const rect = e.currentTarget.getBoundingClientRect();
-    const px = Math.round((e.clientX - rect.left) / rect.width * deviceSize.w);
-    const py = Math.round((e.clientY - rect.top) / rect.height * deviceSize.h);
+    const { left: vL, top: vT, width: vW, height: vH } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
+    const rx = e.clientX - rect.left - vL;
+    const ry = e.clientY - rect.top - vT;
+    if (rx < 0 || rx > vW || ry < 0 || ry > vH) return; // toolbar / black bar — skip
+    const px = Math.round(rx / vW * deviceSize.w);
+    const py = Math.round(ry / vH * deviceSize.h);
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
