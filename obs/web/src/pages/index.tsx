@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
-import { api, type AvailableModelInfo, type MhxyExecutorStatus, type ProjectOverview, type ProjectRuntimeModels } from "@/lib/api";
+import { api, type AvailableModelInfo, type MhxyExecutorStatus, type MhxyInstanceDetail, type ProjectOverview, type ProjectRuntimeModels } from "@/lib/api";
 import { SkeletonCard } from "@/components/Skeleton";
 import { fmt, fmtCost, fmtTime } from "@/lib/format";
 
@@ -22,6 +22,7 @@ export default function OverviewPage() {
   const [err, setErr] = useState("");
   const [executorStatus, setExecutorStatus] = useState<MhxyExecutorStatus | null>(null);
   const [executorErr, setExecutorErr] = useState("");
+  const [executorInstances, setExecutorInstances] = useState<MhxyInstanceDetail[]>([]);
   const [runtime, setRuntime] = useState<ProjectRuntimeModels[]>([]);
   const [syncingKey, setSyncingKey] = useState<string | null>(null);
   const [syncMsgs, setSyncMsgs] = useState<Record<string, string>>({});
@@ -39,11 +40,18 @@ export default function OverviewPage() {
       .catch((e) => setExecutorErr(String(e)));
   }, []);
 
+  const loadExecutorInstances = useCallback(() => {
+    api.mhxyExecutorInstances()
+      .then((d) => setExecutorInstances(d.instances))
+      .catch(() => {});
+  }, []);
+
   const load = useCallback(() => {
     api.overview().then(setRows).catch((e) => setErr(String(e)));
     loadRuntime();
     loadExecutorStatus();
-  }, [loadExecutorStatus, loadRuntime]);
+    loadExecutorInstances();
+  }, [loadExecutorStatus, loadExecutorInstances, loadRuntime]);
 
   useEffect(() => {
     setLoading(true);
@@ -52,7 +60,8 @@ export default function OverviewPage() {
       loadRuntime(),
     ]).finally(() => setLoading(false));
     loadExecutorStatus();
-  }, [loadExecutorStatus, loadRuntime]);
+    loadExecutorInstances();
+  }, [loadExecutorStatus, loadExecutorInstances, loadRuntime]);
 
   useEffect(() => {
     let executorPollTimer: ReturnType<typeof setInterval> | null = null;
@@ -73,6 +82,7 @@ export default function OverviewPage() {
     es.onmessage = (e) => {
       if (e.data === "executor_status") {
         loadExecutorStatus();
+        loadExecutorInstances();
       }
       if (e.data === "model_switched") {
         loadRuntime();
@@ -81,7 +91,10 @@ export default function OverviewPage() {
 
     es.onerror = () => {
       if (!executorPollTimer) {
-        executorPollTimer = setInterval(loadExecutorStatus, 30000);
+        executorPollTimer = setInterval(() => {
+          loadExecutorStatus();
+          loadExecutorInstances();
+        }, 30000);
       }
     };
 
@@ -90,7 +103,7 @@ export default function OverviewPage() {
       if (executorPollTimer) clearInterval(executorPollTimer);
       clearInterval(runtimePollTimer);
     };
-  }, [loadExecutorStatus, loadRuntime]);
+  }, [loadExecutorStatus, loadExecutorInstances, loadRuntime]);
 
   async function handleSync(projectId: string) {
     const fn = SYNC_FN_MAP[projectId];
@@ -175,7 +188,7 @@ export default function OverviewPage() {
         </div>
       )}
 
-      <ExecutorStatusCard status={executorStatus} error={executorErr} onRefresh={loadExecutorStatus} />
+      <ExecutorStatusCard status={executorStatus} error={executorErr} instances={executorInstances} onRefresh={loadExecutorStatus} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
         {loading
@@ -187,11 +200,74 @@ export default function OverviewPage() {
   );
 }
 
+function InstanceGroupsPreview({ instances }: { instances: MhxyInstanceDetail[] }) {
+  const groups = new Map<number, MhxyInstanceDetail[]>();
+  const standalone: MhxyInstanceDetail[] = [];
+
+  for (const inst of instances) {
+    if (inst.group_id !== null && inst.group_id !== undefined) {
+      if (!groups.has(inst.group_id)) groups.set(inst.group_id, []);
+      groups.get(inst.group_id)!.push(inst);
+    } else {
+      standalone.push(inst);
+    }
+  }
+
+  function InstanceChip({ inst }: { inst: MhxyInstanceDetail }) {
+    const dotColor = inst.healthy === true ? "var(--green)" : inst.healthy === false ? "var(--red)" : "var(--text-dim)";
+    const chipBg = inst.healthy === true ? "rgba(52,211,153,.08)" : inst.healthy === false ? "rgba(248,113,113,.08)" : "rgba(139,154,176,.06)";
+    const chipBorder = inst.healthy === true ? "rgba(52,211,153,.22)" : inst.healthy === false ? "rgba(248,113,113,.22)" : "var(--border)";
+    const isLeader = inst.role === "leader";
+    return (
+      <span style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        padding: "2px 8px", borderRadius: 4,
+        fontSize: 11, lineHeight: "18px",
+        background: chipBg, border: `1px solid ${chipBorder}`,
+        color: "var(--text)",
+      }}>
+        <span style={{ width: 5, height: 5, borderRadius: "50%", background: dotColor, flexShrink: 0 }} />
+        <span>{inst.school || inst.port}</span>
+        {isLeader && (
+          <span style={{ color: "var(--amber)", fontSize: 9, fontWeight: 700, letterSpacing: "0.02em" }}>队长</span>
+        )}
+      </span>
+    );
+  }
+
+  const sortedGroups = Array.from(groups.entries()).sort(([a], [b]) => a - b);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      {sortedGroups.map(([gid, insts]) => {
+        const leader = insts.find((i) => i.role === "leader");
+        const others = insts.filter((i) => i.role !== "leader");
+        const ordered = leader ? [leader, ...others] : insts;
+        return (
+          <div key={gid} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span style={{ color: "var(--text-dim)", fontSize: 11, minWidth: 36, flexShrink: 0 }}>
+              第{gid + 1}组
+            </span>
+            {ordered.map((inst) => <InstanceChip key={inst.port} inst={inst} />)}
+          </div>
+        );
+      })}
+      {standalone.length > 0 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <span style={{ color: "var(--text-dim)", fontSize: 11, minWidth: 36, flexShrink: 0 }}>单机</span>
+          {standalone.map((inst) => <InstanceChip key={inst.port} inst={inst} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ExecutorStatusCard({
-  status, error, onRefresh,
+  status, error, instances, onRefresh,
 }: {
   status: MhxyExecutorStatus | null;
   error: string;
+  instances: MhxyInstanceDetail[];
   onRefresh: () => void;
 }) {
   const state = error ? "unknown" : (status?.status ?? "unknown");
@@ -202,7 +278,6 @@ function ExecutorStatusCard({
   const bg = healthy ? "rgba(52,211,153,.10)" : unhealthy ? "rgba(248,113,113,.10)" : stale ? "rgba(251,191,36,.10)" : "rgba(139,154,176,.08)";
   const border = healthy ? "rgba(52,211,153,.28)" : unhealthy ? "rgba(248,113,113,.28)" : stale ? "rgba(251,191,36,.28)" : "var(--border)";
   const label = healthy ? "运行正常" : unhealthy ? "异常" : stale ? "状态过期" : "未知";
-  const appSummary = summarizeAppHealth(status?.app_health);
   const pid = status?.process?.pid ? String(status.process.pid) : "—";
   const mem = status?.process?.working_set_bytes ? `${Math.round(status.process.working_set_bytes / 1024 / 1024)} MB` : "—";
   const latency = status?.health?.latency_ms !== undefined ? `${status.health.latency_ms} ms` : "—";
@@ -210,7 +285,6 @@ function ExecutorStatusCard({
 
   return (
     <div className="card" style={{ marginBottom: "1rem", borderColor: border, position: "relative", overflow: "hidden" }}>
-      {/* status-tinted gradient overlay — behind all content */}
       <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, ${bg}, transparent 120px)`, pointerEvents: "none" }} />
       <div style={{ position: "relative" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: "1rem" }}>
@@ -243,13 +317,21 @@ function ExecutorStatusCard({
           </button>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(120px, 1fr))", gap: "0.75rem" }}>
-          <Stat label="PID" value={pid} accent={healthy} />
-          <Stat label="HTTP 延迟" value={latency} accent={healthy} />
-          <Stat label="连续失败" value={failures} accent={!healthy && !stale} />
-          <Stat label="内存" value={mem} />
-          <Stat label="ADB" value={appSummary.adb} accent={appSummary.adbOk} />
-          <Stat label="截图/OCR" value={appSummary.screenshotOcr} accent={appSummary.screenshotOk && appSummary.ocrOk} />
+        <div style={{ display: "flex", gap: "1.25rem", alignItems: "flex-start" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, auto)", gap: "0.75rem 1.25rem", flexShrink: 0 }}>
+            <Stat label="PID" value={pid} accent={healthy} />
+            <Stat label="HTTP 延迟" value={latency} accent={healthy} />
+            <Stat label="连续失败" value={failures} accent={!healthy && !stale} />
+            <Stat label="内存" value={mem} />
+          </div>
+          {instances.length > 0 && (
+            <>
+              <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <InstanceGroupsPreview instances={instances} />
+              </div>
+            </>
+          )}
         </div>
 
         <div style={{ marginTop: "0.85rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
@@ -271,32 +353,6 @@ function ExecutorStatusCard({
       </div>
     </div>
   );
-}
-
-function summarizeAppHealth(appHealth: MhxyExecutorStatus["app_health"]) {
-  const items = appHealth ?? [];
-  const total = items.length;
-  if (!total) {
-    return {
-      adb: "—",
-      screenshotOcr: "—",
-      adbOk: false,
-      screenshotOk: false,
-      ocrOk: false,
-    };
-  }
-
-  const adbCount = items.filter((app) => app.adb === true).length;
-  const screenshotCount = items.filter((app) => app.screenshot === true).length;
-  const ocrCount = items.filter((app) => app.ocr === true).length;
-
-  return {
-    adb: `${adbCount}/${total} OK`,
-    screenshotOcr: `${screenshotCount}/${total} / ${ocrCount}/${total}`,
-    adbOk: adbCount === total,
-    screenshotOk: screenshotCount === total,
-    ocrOk: ocrCount === total,
-  };
 }
 
 function ProjectCard({
