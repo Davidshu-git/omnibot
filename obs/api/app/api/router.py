@@ -265,6 +265,26 @@ async def mhxy_executor_instances():
     return {"instances": result, "app_health_checked_at": app_health_checked_at}
 
 
+@router.get("/external/mhxy-executor/screenshot")
+async def mhxy_executor_screenshot(port: str = Query(..., description="Emulator port, e.g. 5555")):
+    """Proxy /screenshot to the Windows executor and return base64 PNG."""
+    import httpx as _httpx
+    executor_url = settings.mhxy_executor_url.rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(f"{executor_url}/screenshot", json={"port": port})
+            r.raise_for_status()
+            data = r.json()
+    except _httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Executor HTTP error: {exc.response.status_code}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach executor: {exc}")
+    image_b64 = data.get("image_b64")
+    if not image_b64:
+        raise HTTPException(status_code=502, detail="Executor returned no image")
+    return {"port": port, "image_b64": image_b64}
+
+
 @router.get("/external/mhxy-executor/status")
 async def mhxy_executor_status():
     path = Path(settings.mhxy_executor_status_file)

@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     api_port: int = 8000
     mhxy_executor_status_file: str = "/logs/omnibot/mhxy/executor_status.json"
     mhxy_instances_file: str = "/runtime/mhxy/config/instances.json"
+    mhxy_executor_url: str = "http://192.168.100.149:8765"
 
     class Config:
         env_file = ".env"

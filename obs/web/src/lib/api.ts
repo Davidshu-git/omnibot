@@ -171,6 +171,8 @@ export const api = {
     get<ToolStat[]>("/api/stats/tools", project_id ? { project_id } : undefined),
   mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/status"),
   mhxyExecutorInstances: () => get<MhxyExecutorInstances>("/api/external/mhxy-executor/instances"),
+  mhxyExecutorScreenshot: (port: string) =>
+    get<{ port: string; image_b64: string }>("/api/external/mhxy-executor/screenshot", { port }),
   think: (params: { project_id?: string; session_id?: string; limit?: number }) =>
     get<NormalizedEvent[]>("/api/think", params),
 
