@@ -10,16 +10,13 @@ SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no -o BatchMode=yes"
 REMOTE_DIR="C:/Users/sdw/mhxy_executor"
 HEALTH_URL="http://192.168.100.149:8765/health"
 REMOTE_LOG="C:\\Users\\sdw\\mhxy_executor\\stderr-watchdog.log"
-# VBScript 启动器：完全脱离 SSH 会话，比 Start-Process 可靠（Start-Process 在 SSH Session 0 下间歇静默失败）
-VBS_LAUNCHER="C:\\Users\\sdw\\mhxy_executor\\launch_executor.vbs"
+REMOTE_START_CMD="C:\\Users\\sdw\\mhxy_executor\\start_executor.cmd"
 
 # 默认同步文件列表
 FILES=("${@:-mhxy_bot/executor/main.py}")
 
 # ── 1. 同步文件 ──────────────────────────────────────────────────────────────
 echo "[1/4] 同步文件到 Windows executor ..."
-# 无条件同步 VBScript 启动器（它是重启的前提，始终保持最新）
-scp $SSH_OPTS "ops/launch_executor.vbs" "$WIN:$REMOTE_DIR/launch_executor.vbs"
 for f in "${FILES[@]}"; do
   filename=$(basename "$f")
   echo "  scp $f → $REMOTE_DIR/$filename"
@@ -49,11 +46,14 @@ for attempt in 1 2 3; do
   sleep 5
 done
 
-# ── 3. 通过 VBScript 后台启动（完全脱离 SSH 会话）────────────────────────────
-echo "[3/4] 通过 VBScript 后台启动 executor ..."
-# cscript 运行 VBScript，VBScript 内部 WScript.Shell.Run 第3参数=False（不等待）
-# 整个 SSH 命令立即返回，executor 在 Windows 后台独立运行
-ssh $SSH_OPTS "$WIN" "cscript //NoLogo //B $VBS_LAUNCHER"
+# ── 3. 通过 WMI Win32_Process.Create 启动（彻底脱离 SSH Job Object）─────────
+# 背景：Windows OpenSSH 把会话内所有子进程放进同一 Job Object，SSH 客户端断开
+# 时整个 Job 被终止——VBScript / Start-Process 都救不了。WMI 创建的进程不继承
+# 父 Job，是目前实测唯一能真正脱离 SSH 会话独立存活的方式。
+echo "[3/4] 通过 WMI Win32_Process.Create 启动 executor ..."
+PS_LAUNCH=$(printf "%s" "\$ProgressPreference='SilentlyContinue'; Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd.exe /c $REMOTE_START_CMD'} | Out-Null" \
+  | iconv -t UTF-16LE | base64 -w0)
+ssh $SSH_OPTS "$WIN" "powershell -NoProfile -EncodedCommand $PS_LAUNCH"
 
 # ── 4. 健康验证（最多 40s）──────────────────────────────────────────────────
 echo "[4/4] 等待健康检查 (最多 40s) ..."

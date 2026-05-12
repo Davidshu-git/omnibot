@@ -21,7 +21,7 @@ bash ops/deploy_executor.sh mhxy_bot/executor/main.py mhxy_bot/executor/requirem
 1. SCP 指定文件到 `C:\Users\sdw\mhxy_executor\`
 2. `taskkill /IM python.exe /F`（只杀 python，不杀 cmd.exe，见坑 5）
 3. 轮询确认端口 8765 释放（最多 3 次重试）
-4. `cscript //NoLogo //B launch_executor.vbs`（VBScript 完全脱离 SSH 会话后台拉起）
+4. `Invoke-CimMethod Win32_Process Create` 拉起 `start_executor.cmd`（WMI 创建的进程不继承 SSH Job Object，见坑 6）
 5. 轮询 `/health` 最多 40s，超时打印日志并退出非零
 
 注意：executor 启动约需 15s（RapidOCR 加载 ONNX 模型），健康检查 3 次尝试内通常能通过。
@@ -51,10 +51,10 @@ ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
 # 第 2 步：等进程退出
 sleep 3
 
-# 第 3 步：通过 VBScript 后台启动（推荐，比 Start-Process 可靠）
+# 第 3 步：通过 WMI Win32_Process.Create 启动（唯一能脱离 SSH Job Object 的方式，见坑 6）
 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
   sdw@192.168.100.149 \
-  "cscript //NoLogo //B C:\\Users\\sdw\\mhxy_executor\\launch_executor.vbs"
+  "powershell -NoProfile -Command \"Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd.exe /c C:\\Users\\sdw\\mhxy_executor\\start_executor.cmd'} | Out-Null\""
 
 # 验证（executor 启动约 15s，等待时间要足够）
 sleep 15
@@ -110,26 +110,27 @@ Start-Process cmd.exe -ArgumentList '/c C:\Users\sdw\mhxy_executor\start_executo
 
 ---
 
-### 坑 4：Start-Process 失败时无任何报错，需靠日志确认（2026-05-12 实测）
+### 坑 4：启动后看似成功但很快静默死亡 → 验证方式靠日志
 
-**现象**：按三步流程重启，`Start-Process` 返回无输出（正常），但 `tasklist | findstr python` 无进程，`curl /health` 超时。原因不明，复现两次后消失——历史记录显示同样的 Start-Process 方式在其他时间点（PID 26248、10040）均正常工作，判断为偶发性故障。
-
-**关键教训**：`Start-Process` 失败时不会抛出任何错误，`tasklist` 也可能因进程瞬间退出而看不到。**唯一可靠的验证方式是检查日志**：
-
-```bash
-ssh ... "type C:\\Users\\sdw\\mhxy_executor\\stderr-watchdog.log" | tail -5
-```
-
-重启成功时日志末尾应出现：
+**现象**：执行重启命令返回正常（无错误输出），stderr 日志甚至能看到完整启动序列：
 ```
 INFO:     Started server process [XXXXX]
 INFO:     Application startup complete.
 INFO:     Uvicorn running on http://0.0.0.0:8765
 ```
+但十几秒后 `tasklist | findstr python` 进程消失、`curl /health` 超时。
 
-如果日志没有新增内容，说明进程在写第一行日志之前就退出了，可能原因：端口未释放、瞬态状态。此时等待 5–10s 再重试一次。
+**根因**：见坑 6（Windows OpenSSH Job Object 机制）。**Start-Process / cscript+VBScript 都救不了**，必须用 WMI `Win32_Process.Create()`。
 
-**补充：EADDRINUSE 错误**：若日志出现 `[Errno 10048] ... 端口只允许使用一次`，说明 8765 已被占用，需先确认旧进程已彻底退出再重启：
+**验证启动是否真的成活**：仅看日志末尾的 "Uvicorn running" 不够，必须等 ≥15s 再 curl `/health`：
+
+```bash
+sleep 15 && curl -sf http://192.168.100.149:8765/health
+```
+
+成功返回 `{"status":"ok",...}` 才算真稳定。
+
+**EADDRINUSE 错误处理**：若 stderr 日志出现 `[Errno 10048] ... 端口只允许使用一次`，说明 8765 已被占用，需先确认旧进程已彻底退出再重启：
 
 ```bash
 ssh ... "powershell -NoProfile -Command \"netstat -ano | findstr :8765\""
@@ -141,11 +142,37 @@ ssh ... "powershell -NoProfile -Command \"netstat -ano | findstr :8765\""
 
 ### 坑 5：不能 `taskkill /IM cmd.exe /F`（2026-05-12 实测）
 
-**现象**：deploy 脚本同时杀 `python.exe` 和 `cmd.exe` 后，VBScript 启动的新进程进入 cmd.exe 但 python 进程始终不出现，log 文件也无新写入。
+**现象**：deploy 脚本同时杀 `python.exe` 和 `cmd.exe` 后，下一次启动的新 cmd.exe 进入 batch 后 python 进程始终不出现，log 文件也无新写入。
 
 **原因**：`start_executor.cmd` 使用 `>> stderr-watchdog.log` 追加重定向。强杀 cmd.exe（`/F`）导致该文件的 OS 写句柄未经正常 flush/close 直接释放。后续新 cmd.exe 运行同一 batch 文件时，`>>` 追加操作失败（写入目标处于不一致状态），cmd 以非零退出但不输出任何错误，整个进程静默消失。
 
 **正确做法**：只杀 `python.exe`。start_executor.cmd 的父 cmd.exe 会在 python 退出后自然退出，log 文件句柄得到正常释放。
+
+---
+
+### 坑 6：SSH 启动的进程会被 OpenSSH Job Object 一锅端（核心坑，2026-05-12 实测）
+
+**现象**：通过 SSH 调起 `Start-Process` 或 `cscript launch.vbs` 启动 executor，几秒后整个 python 进程链消失，无任何 traceback。即便加 `WScript.Sleep 2000`、`& detach`、`-WindowStyle Hidden` 均无效。
+
+**根因**：Windows OpenSSH (`sshd`) 把同一 SSH 会话中创建的所有子进程放进同一个 **Job Object**。SSH 客户端断开时，Windows 终止整个 Job —— cscript → cmd → python 整条链一起死，**子进程没机会写任何 shutdown 日志**（Job kill 等价于 SIGKILL）。
+
+**唯一可靠的脱离方式**：WMI `Win32_Process.Create()`。WMI 通过本地 RPC 调 `WMI Provider Host` 创建进程，新进程的父进程是 `WmiPrvSE.exe`，不继承调用方 Job。
+
+```powershell
+# ✓ 唯一可靠的后台启动方式
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{CommandLine='cmd.exe /c C:\Users\sdw\mhxy_executor\start_executor.cmd'} | Out-Null
+
+# ✗ 以下方式全部会被 Job 一锅端：
+Start-Process cmd.exe -ArgumentList '/c start_executor.cmd' -WindowStyle Hidden
+cscript //NoLogo //B launch_executor.vbs        # 无论 VBS 里 sleep 多久
+ssh ... "python -m uvicorn ..."                  # 前台运行，SSH 断开即死
+```
+
+`schtasks /Run` 也可行（Task Scheduler 拉起的任务不属于 SSH Job），但需要预注册 task，复杂度高于 WMI。
+
+**实测验证**：
+- 通过 WMI 启动后立即 SSH 断开 → 进程持续运行（已稳定 3+ 分钟，处理请求正常）
+- 通过 VBScript+Sleep 启动后立即 SSH 断开 → 进程在 10s 内消失，stderr 无报错
 
 ---
 
@@ -172,6 +199,22 @@ ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
 `start_executor.cmd` 由 watchdog 的 `restart_executor()` 在每次自动重启时**覆盖重新生成**，内容来自 `watchdog.py` 的 `WINDOWS_ADB_PATH` 等配置。
 
 手动修改此文件是**临时有效**的，下次 watchdog 触发自动重启后会覆盖。只要 `watchdog.py` 里的默认值正确，自动重启生成的脚本就是正确的。
+
+**注意（冷启动）**：`deploy_executor.sh` 假设 `start_executor.cmd` 已存在，自身不生成。全新机器初次部署时，需要先让 watchdog 跑一轮自动重启生成此文件，或手动创建一份。
+
+---
+
+## Watchdog 关键环境变量
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `MHXY_EXECUTOR_WATCHDOG_INTERVAL_SEC` | `60` | 每轮 health check 间隔 |
+| `MHXY_EXECUTOR_WATCHDOG_HTTP_TIMEOUT_SEC` | `8` | 单次 HTTP 请求超时 |
+| `MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD` | `3` | 连续失败几次触发 `restart_executor()` |
+| `MHXY_EXECUTOR_WATCHDOG_RESTART_COOLDOWN_SEC` | `90` | **重启冷却期**：重启后 90s 内 health 失败不递增 fail count，防止 executor 启动慢（RapidOCR 加载 ~15s）触发二次 kill 循环 |
+| `MHXY_EXECUTOR_WATCHDOG_APP_HEALTH_EVERY` | `5` | 每隔多少轮做一次 `/app_health` 深度检查 |
+
+修改后需 `docker compose restart` watchdog 容器使其生效。
 
 ---
 

@@ -28,6 +28,9 @@ EXECUTOR_URL = os.getenv("MHXY_EXECUTOR_URL", "http://192.168.100.149:8765").rst
 INTERVAL_SEC = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_INTERVAL_SEC", "60"))
 HTTP_TIMEOUT_SEC = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_HTTP_TIMEOUT_SEC", "8"))
 FAIL_THRESHOLD = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD", "3"))
+# 重启后冷却期：在此窗口内健康失败不累计 consecutive_failures，避免 executor
+# 启动慢（RapidOCR 加载 ONNX ~15s）导致 watchdog 再次 taskkill 形成 kill 循环。
+RESTART_COOLDOWN_SEC = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_RESTART_COOLDOWN_SEC", "90"))
 APP_HEALTH_EVERY = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_APP_HEALTH_EVERY", "5"))
 SYNC_EVENTS_EVERY = int(os.getenv("MHXY_EXECUTOR_EVENTS_SYNC_EVERY", "1"))
 SYNC_FAIL_NOTIFY_THRESHOLD = int(os.getenv("MHXY_EXECUTOR_EVENTS_SYNC_FAIL_NOTIFY_THRESHOLD", "5"))
@@ -337,7 +340,10 @@ def get_remote_process() -> dict[str, Any]:
 def restart_executor(reason: str) -> dict[str, Any]:
     # 第 1 步：裸 taskkill 杀进程（Stop-Process 在 SSH 会话下无效，实测确认）
     kill_cmd = "taskkill /IM python.exe /F"
-    # 第 2 步：生成启动脚本并用 Start-Process cmd.exe 后台拉起（schtasks 方式不可靠，实测确认）
+    # 第 2 步：生成启动脚本并用 WMI Win32_Process.Create 拉起。
+    # 关键：Windows OpenSSH 把会话内子进程放进同一 Job Object，SSH 客户端断开
+    # 时整个 Job 被终止——Start-Process / VBScript 都救不了。WMI 创建的进程
+    # 不继承父 Job，是目前实测唯一能脱离 SSH 会话独立存活的方式。
     remote_cmd = powershell_encoded(
         f"""
         $cmdPath = '{WINDOWS_EXECUTOR_DIR}\\start_executor.cmd'
@@ -350,7 +356,7 @@ def restart_executor(reason: str) -> dict[str, Any]:
           '"{WINDOWS_PYTHON}" -m uvicorn main:app --host 0.0.0.0 --port {WINDOWS_EXECUTOR_PORT} >> "{WINDOWS_EXECUTOR_DIR}\\stdout-watchdog.log" 2>> "{WINDOWS_EXECUTOR_DIR}\\stderr-watchdog.log"'
         )
         Set-Content -Path $cmdPath -Value $lines -Encoding ASCII
-        Start-Process cmd.exe -ArgumentList "/c $cmdPath" -WindowStyle Hidden
+        Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{{CommandLine = ('cmd.exe /c ' + $cmdPath)}} | Out-Null
         """
     )
     started = time.monotonic()
@@ -361,6 +367,7 @@ def restart_executor(reason: str) -> dict[str, Any]:
     payload = {
         "ok": result.returncode == 0,
         "reason": reason,
+        "at": utc_now(),
         "latency_ms": round(elapsed * 1000),
         "returncode": result.returncode,
         "stdout": result.stdout[-1000:],
@@ -391,7 +398,25 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
         app_health_checked_at = checked_at
         health_ok = all(r.get("healthy") is True for r in app_results)
 
-    consecutive_failures = 0 if health_ok else consecutive_failures + 1
+    in_cooldown = False
+    cooldown_remaining = 0.0
+    last_restart_at_str = (previous.get("last_restart") or {}).get("at")
+    if last_restart_at_str and RESTART_COOLDOWN_SEC > 0:
+        try:
+            last_dt = datetime.fromisoformat(last_restart_at_str)
+            elapsed_since_restart = (datetime.now(timezone.utc) - last_dt).total_seconds()
+            if elapsed_since_restart < RESTART_COOLDOWN_SEC:
+                in_cooldown = True
+                cooldown_remaining = RESTART_COOLDOWN_SEC - elapsed_since_restart
+        except ValueError:
+            pass
+
+    if health_ok:
+        consecutive_failures = 0
+    elif in_cooldown:
+        log.info("in restart cooldown (%.0fs left), suppress fail count", cooldown_remaining)
+    else:
+        consecutive_failures += 1
     process = get_remote_process()
     restart: dict[str, Any] | None = None
     if consecutive_failures >= FAIL_THRESHOLD:
