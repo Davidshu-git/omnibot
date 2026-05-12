@@ -47,6 +47,7 @@ function ScreenshotModal({
   const [broadcastMode, setBroadcastMode] = useState(false);
   const [broadcastStatus, setBroadcastStatus] = useState<BroadcastStatus>(null);
   const [hoverXY, setHoverXY] = useState<{ x: number; y: number } | null>(null);
+  const [clickRipple, setClickRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
   useEffect(() => {
@@ -75,6 +76,9 @@ function ScreenshotModal({
     const rect = imgRef.current.getBoundingClientRect();
     const px = Math.round((e.clientX - rect.left) / rect.width * imgRef.current.naturalWidth);
     const py = Math.round((e.clientY - rect.top) / rect.height * imgRef.current.naturalHeight);
+    const pctX = (e.clientX - rect.left) / rect.width * 100;
+    const pctY = (e.clientY - rect.top) / rect.height * 100;
+    setClickRipple({ pctX, pctY, key: Date.now() });
     setBroadcastStatus({ pending: true });
     api.mhxyExecutorBatchTap(allPorts, px, py)
       .then((d) => {
@@ -156,6 +160,15 @@ function ScreenshotModal({
               onMouseLeave={() => setHoverXY(null)}
               onClick={handleImgClick}
             />
+            {/* Click ripple */}
+            {clickRipple && (
+              <div
+                key={clickRipple.key}
+                className="broadcast-ripple"
+                style={{ left: `${clickRipple.pctX}%`, top: `${clickRipple.pctY}%` }}
+                onAnimationEnd={() => setClickRipple(null)}
+              />
+            )}
             {/* Coordinate badge */}
             {broadcastMode && hoverXY && (
               <div style={{
