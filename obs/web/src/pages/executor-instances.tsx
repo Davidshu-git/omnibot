@@ -906,15 +906,13 @@ export default function ExecutorInstancesPage() {
         />
       )}
 
-      {/* Page header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "1.5rem", flexWrap: "wrap" }}>
+      {/* Page header — 视图切换和刷新固定在此行，不随模式变化 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "0.75rem", flexWrap: "wrap" }}>
         <Link href="/" style={{ color: "var(--text-muted)", fontSize: 13 }}>← 返回总览</Link>
         <span style={{ color: "var(--border-hi)" }}>|</span>
         <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", margin: 0 }}>
           Windows Executor 实例详情
         </h1>
-
-        {/* View mode toggle + actions */}
         <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
           <button
             onClick={() => setViewMode("list")}
@@ -942,40 +940,9 @@ export default function ExecutorInstancesPage() {
           >
             截图巡检
           </button>
-          {viewMode === "grid" && (
-            <>
-              <button
-                onClick={() => { setTapMode((v) => !v); if (tapMode) setGridBroadcast(false); }}
-                style={{
-                  padding: "4px 10px",
-                  borderRadius: "var(--r-sm)",
-                  border: `1px solid ${tapMode ? "var(--green)" : "var(--border-hi)"}`,
-                  background: tapMode ? "rgba(72,187,120,0.15)" : "transparent",
-                  color: tapMode ? "var(--green)" : "var(--text-muted)",
-                  fontSize: 11, fontWeight: 500, cursor: "pointer",
-                }}
-              >
-                📍 点击操作{tapMode ? " ON" : ""}
-              </button>
-              {tapMode && allPorts.length > 1 && (
-                <button
-                  onClick={() => setGridBroadcast((v) => !v)}
-                  style={{
-                    padding: "4px 10px",
-                    borderRadius: "var(--r-sm)",
-                    border: `1px solid ${gridBroadcast ? "var(--amber)" : "var(--border-hi)"}`,
-                    background: gridBroadcast ? "rgba(246,173,85,0.15)" : "transparent",
-                    color: gridBroadcast ? "var(--amber)" : "var(--text-muted)",
-                    fontSize: 11, fontWeight: 500, cursor: "pointer",
-                  }}
-                >
-                  📡 广播{gridBroadcast ? " ON" : ""}
-                </button>
-              )}
-            </>
-          )}
+          <span style={{ width: 1, alignSelf: "stretch", background: "var(--border-hi)", margin: "0 2px" }} />
           <button
-            onClick={refreshScreenshots}
+            onClick={() => { setLoading(true); refreshScreenshots(); load().finally(() => setLoading(false)); }}
             style={{
               padding: "4px 10px",
               borderRadius: "var(--r-sm)",
@@ -985,23 +952,42 @@ export default function ExecutorInstancesPage() {
               fontSize: 11, fontWeight: 500, cursor: "pointer",
             }}
           >
-            刷新截图
-          </button>
-          <button
-            onClick={() => { setLoading(true); load().finally(() => setLoading(false)); }}
-            style={{
-              padding: "4px 10px",
-              borderRadius: "var(--r-sm)",
-              border: "1px solid var(--border-hi)",
-              background: "transparent",
-              color: "var(--text-muted)",
-              fontSize: 11, fontWeight: 500, cursor: "pointer",
-            }}
-          >
-            刷新状态
+            刷新
           </button>
         </div>
       </div>
+
+      {/* 截图巡检子工具栏 — 仅 grid 模式下展示，右对齐 */}
+      {viewMode === "grid" && (
+        <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", marginBottom: "1rem" }}>
+          <button
+            onClick={() => { setTapMode((v) => !v); if (tapMode) setGridBroadcast(false); }}
+            style={{
+              padding: "4px 10px",
+              borderRadius: "var(--r-sm)",
+              border: `1px solid ${tapMode ? "var(--green)" : "var(--border-hi)"}`,
+              background: tapMode ? "rgba(72,187,120,0.15)" : "transparent",
+              color: tapMode ? "var(--green)" : "var(--text-muted)",
+              fontSize: 11, fontWeight: 500, cursor: "pointer",
+            }}
+          >
+            📍 点击操作{tapMode ? " ON" : ""}
+          </button>
+          <button
+            onClick={() => setGridBroadcast((v) => !v)}
+            style={{
+              padding: "4px 10px",
+              borderRadius: "var(--r-sm)",
+              border: `1px solid ${gridBroadcast ? "var(--amber)" : "var(--border-hi)"}`,
+              background: gridBroadcast ? "rgba(246,173,85,0.15)" : "transparent",
+              color: gridBroadcast ? "var(--amber)" : "var(--text-muted)",
+              fontSize: 11, fontWeight: 500, cursor: "pointer",
+            }}
+          >
+            📡 广播{gridBroadcast ? " ON" : ""}
+          </button>
+        </div>
+      )}
 
       {data?.app_health_checked_at && (
         <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: "1.25rem" }}>
