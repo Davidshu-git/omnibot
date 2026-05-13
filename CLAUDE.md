@@ -319,3 +319,111 @@ Agent 推理全程通过 `AsyncTelegramCallbackHandler` 实时上报工具调用
 3. `tg_main.py`：继承 `TelegramBotBase`，实现钩子方法
 4. `docker-compose.yml`：新增服务，挂载 `data/newbot/` 下各子目录
 5. `.env`：新增 `NEWBOT_TG_BOT_TOKEN` 和 `NEWBOT_ALLOWED_TG_USERS`
+
+---
+
+## obs 子工程细则
+
+可观测性平台：读取各 bot 写出的 JSONL 日志，摄取入 PostgreSQL，通过 Web UI 展示 Token 消耗 / 模型分布 / 费用估算。技术栈：FastAPI + SQLAlchemy async + PostgreSQL（宿主机端口 5433）/ Next.js + TypeScript（宿主机端口 3100）。三容器：`obs-api-1` / `obs-web-1` / `obs-db-1`。
+
+### obs 内部目录
+
+```
+obs/
+├── api/app/
+│   ├── api/router.py          # 所有路由（查询 + ingest 触发 + SSE）
+│   ├── db/{models.py, base.py}# ORM 模型 + AsyncSession 工厂
+│   ├── ingestion/service.py   # 幂等写入：raw blob + normalized event
+│   ├── adapters/
+│   │   ├── common.py          # 共享工具：now() / parse_ts()
+│   │   ├── mhxy_jsonl.py      # mhxy_bot JSONL 适配器
+│   │   └── omnibot_jsonl.py   # stock/ehs bot JSONL 适配器
+│   └── schemas/events.py      # Pydantic 模型
+└── web/src/
+    ├── pages/                 # index.tsx（总览）/ tokens / sessions / tools
+    ├── lib/{api.ts, format.ts}# API 封装 + 共享格式化
+    └── types/events.ts        # TypeScript 类型
+```
+
+### 数据流
+
+```
+omnibot 各 bot 写出 JSONL
+  data/mhxy/observability/sessions/    → mhxy_jsonl adapter
+  data/stock/observability/sessions/   → omnibot_jsonl adapter
+  data/ehs/observability/sessions/     → omnibot_jsonl adapter
+    ↓
+POST /api/ingest/{project}
+    ↓
+adapters/*.py 解析 → ingestion/service.py 幂等写入 PostgreSQL
+    ↓
+FastAPI 路由聚合查询 → Next.js 展示
+```
+
+### ⚠️ JSONL 字段契约（隐式约束，改字段会静默丢失）
+
+`adapters/omnibot_jsonl.py` 与 `core/observability.py` 之间存在隐式字段契约。修改 `core/observability.py` 任何字段名时，**必须同步更新对应 adapter**，否则字段会静默丢失（不报错）。
+
+关键对应关系：
+- `core/observability.py` → `obs/api/app/adapters/omnibot_jsonl.py`
+- `mhxy_bot/` 的 JSONL 格式 → `obs/api/app/adapters/mhxy_jsonl.py`
+
+### 关键设计
+
+- **摄取 cursor**：每个 DataSource 存储 `last_sync_cursor`（文件路径→mtime JSON），未变更文件跳过，无需全量扫描。强制全量重扫：`curl -X POST "http://localhost:8000/api/ingest/mhxy?force=true"`。
+- **费用计算**：`_COST_CONFIG` 在 `obs/api/app/api/router.py` 顶部定义，仅含按量计费模型。包月模型返回 `cost: null`，前端显示"包月"。新增或切换模型时须同步更新此配置。
+- **SSE 实时推送**：`/api/stream` 端点，ingest 完成后广播通知前端自动刷新。
+- **timeline 分页**：`GET /sessions/{id}/timeline?limit=200&offset=0`，默认 200 条，最大 500。
+
+### obs 环境变量（`obs/.env`）
+
+```env
+DATABASE_URL=postgresql+asyncpg://agent_obs:changeme@db:5432/agent_obs
+MHXY_HOST_LOG_DIR=/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy/observability/sessions
+OMNIBOT_STOCK_HOST_LOG_DIR=/volume1/server/.openclaw/workspace/projects/omnibot/data/stock/observability/sessions
+OMNIBOT_EHS_HOST_LOG_DIR=/volume1/server/.openclaw/workspace/projects/omnibot/data/ehs/observability/sessions
+```
+
+### obs 专属代码规范
+
+- 路由返回 dict，不用 Pydantic `response_model`（灵活迭代阶段）
+- 数据库查询统一用 SQLAlchemy ORM，**禁止 raw SQL（`text()`）**
+- 格式化函数统一从 `obs/web/src/lib/format.ts` 导入，不在页面内重复定义
+- 新增 project 需同时：① 在 `router.py` 加 `run_xxx_ingest()` wrapper，② 前端 `SYNC_FN_MAP` 登记
+
+### ⚠️ obs/web 改动必须在容器内验证（面向 codex / Claude Code）
+
+修改 `obs/web/` 任何文件后，**禁止使用宿主机本地 `npm run dev` / `next build` 验证**。原因：
+
+- 宿主机 NAS 上没有装 Node.js / 没有 `node_modules`
+- 即使装了，本地缺少 `obs-api-1` 容器和 `obs-db-1` PostgreSQL，前端拉接口必然失败
+- 容器内已通过 `Dockerfile.dev` + bind mount `./web:/app` 实现热更新——改完源文件容器内自动重编译，**不需要重启容器**
+
+正确的验证流程：
+
+```bash
+# 1) 确保 obs 三容器在跑
+docker compose -f obs/docker-compose.yml up -d
+
+# 2) 改完代码后查看 web 容器编译日志
+docker compose -f obs/docker-compose.yml logs web --tail=80
+
+# 3) 浏览器访问验证
+#    桌面：http://localhost:3100
+#    移动：DevTools 设备模拟（iPhone 13: 390×844）
+
+# 4) 类型检查（容器内跑，本地没有 typescript）
+docker compose -f obs/docker-compose.yml exec web npx tsc --noEmit
+
+# 5) 生产构建验证（可选，编译产物问题往往只在 build 时暴露）
+docker compose -f obs/docker-compose.yml exec web npm run build
+```
+
+仅以下情况才需要重启 web 容器：
+- 改了 `package.json` / `next.config.js` / `tsconfig.json`
+- 改了 `Dockerfile.dev`
+- 改了 `docker-compose.yml` 的 web 服务定义
+
+其他所有改动（`*.tsx` / `*.ts` / `*.css`）都靠 Next.js HMR + bind mount 自动生效，**不要** `docker compose restart web`——重启会丢 HMR 状态，反而拖慢迭代。
+
+api 改动同理：源文件 bind mount，但 FastAPI 没有 HMR，改完用 `docker compose -f obs/docker-compose.yml restart api`。
