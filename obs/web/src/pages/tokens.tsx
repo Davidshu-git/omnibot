@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type TokenOverview, type TokenDailyStat, type TokenByModel } from "@/lib/api";
 import type { Project } from "@/types/events";
 import { fmt, fmtCost } from "@/lib/format";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 function Bar({ value, max, color }: { value: number; max: number; color: string }) {
   const pct = max > 0 ? Math.round((value / max) * 100) : 0;
@@ -56,7 +57,7 @@ export default function TokensPage() {
       {err && <p style={{ color: "var(--red)", marginBottom: "1rem" }}>{err}</p>}
 
       {/* project tabs */}
-      <div style={{ display: "flex", gap: 6, marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: "1.5rem", flexWrap: "wrap", rowGap: 6 }}>
         <button
           onClick={() => setSelectedProject(ALL)}
           className={`tag-btn${selectedProject === ALL ? " active" : ""}`}
@@ -122,7 +123,8 @@ export default function TokensPage() {
         <div style={{ marginTop: "1.5rem" }}>
           <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600, marginBottom: "0.75rem" }}>各项目占比</div>
           <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 480 }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
                   {["项目", "调用次数", "输入", "输出", "合计", "占比"].map((h) => (
@@ -157,6 +159,7 @@ export default function TokensPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}
@@ -166,7 +169,8 @@ export default function TokensPage() {
         <div style={{ marginTop: "2rem" }}>
           <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600, marginBottom: "0.75rem" }}>按模型分布</div>
           <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 480 }}>
               <thead>
                 <tr style={{ borderBottom: "1px solid var(--border)" }}>
                   {["模型", "调用次数", "输入", "缓存命中", "输出", "合计", "费用"].map((h) => (
@@ -217,6 +221,7 @@ export default function TokensPage() {
                 })}
               </tbody>
             </table>
+            </div>
           </div>
         </div>
       )}
@@ -260,7 +265,10 @@ function TokenRow({ label, value, raw, max, color }: {
 
 function DailyChart({ data }: { data: TokenDailyStat[] }) {
   const sorted = [...data].sort((a, b) => a.date.localeCompare(b.date));
-  const W = 640, H = 180, PAD_L = 52, PAD_B = 28, PAD_T = 12, PAD_R = 12;
+  const isMobile = useIsMobile();
+  const W = isMobile ? 360 : 640;
+  const H = isMobile ? 200 : 180;
+  const PAD_L = isMobile ? 40 : 52, PAD_B = 28, PAD_T = 12, PAD_R = 12;
   const chartW = W - PAD_L - PAD_R;
   const chartH = H - PAD_T - PAD_B;
   const barW = Math.max(4, Math.floor(chartW / sorted.length) - 3);

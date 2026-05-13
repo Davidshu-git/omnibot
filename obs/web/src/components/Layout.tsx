@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useState, type ReactNode } from "react";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 const NAV = [
   { label: "总览",   href: "/",         icon: "◈" },
@@ -12,6 +13,7 @@ const NAV = [
 export default function Layout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     const mq = window.matchMedia("(max-width: 768px)");
@@ -139,7 +141,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
       <main style={{
         flex: 1,
-        padding: "1.75rem 2rem",
+        padding: isMobile ? "1rem 0.875rem" : "1.75rem 2rem",
         overflowY: "auto",
         background: "var(--bg)",
         minWidth: 0,
