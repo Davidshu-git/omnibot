@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 const ROLE_LABEL: Record<string, string> = {
   leader: "队长",
@@ -421,7 +422,7 @@ function InstanceRow({
       </span>
       <span style={{ color: "var(--text)" }}>{inst.school || "—"}</span>
       <span style={{ color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", fontSize: 12 }}>
-        {ROLE_LABEL[inst.role] ?? inst.role || "—"}
+        {ROLE_LABEL[inst.role] ?? (inst.role || "—")}
       </span>
       <span style={{ textAlign: "center" }}><CheckIcon ok={inst.adb} /></span>
       <span style={{ textAlign: "center" }}><CheckIcon ok={inst.screenshot} /></span>
@@ -478,6 +479,89 @@ function InstanceRow({
   );
 }
 
+function InstanceRowMobile({
+  inst,
+  screenshot,
+  onScreenshot,
+}: {
+  inst: MhxyInstanceDetail;
+  screenshot: ScreenshotState;
+  onScreenshot: (port: string) => void;
+}) {
+  return (
+    <div style={{
+      display: "flex",
+      gap: "0.75rem",
+      padding: "0.6rem 0.75rem",
+      borderRadius: "var(--r-sm)",
+      background: "var(--bg2)",
+      border: "1px solid var(--border)",
+    }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+          <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
+            {inst.port}
+          </span>
+          <span style={{ color: "var(--text)" }}>{inst.school || "—"}</span>
+          <span style={{ color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", fontSize: 11 }}>
+            {ROLE_LABEL[inst.role] ?? (inst.role || "—")}
+          </span>
+        </div>
+        <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--text-dim)", flexWrap: "wrap" }}>
+          <span>ADB <CheckIcon ok={inst.adb} /></span>
+          <span>截图 <CheckIcon ok={inst.screenshot} /></span>
+          <span>OCR <CheckIcon ok={inst.ocr} /></span>
+          {inst.latency_ms !== null && inst.latency_ms !== undefined && (
+            <span style={{ fontFamily: "var(--font-mono)" }}>{inst.latency_ms} ms</span>
+          )}
+        </div>
+        <div style={{
+          marginTop: 4,
+          fontSize: 11,
+          color: inst.error ? "var(--red)" : inst.healthy === true ? "var(--green)" : inst.healthy === false ? "var(--red)" : "var(--text-muted)",
+          wordBreak: "break-word",
+        }}>
+          {inst.error || (inst.healthy === true ? "正常" : inst.healthy === false ? "异常" : "未知")}
+        </div>
+      </div>
+      <div
+        title="点击放大查看截图"
+        onClick={() => onScreenshot(inst.port)}
+        style={{
+          width: 96,
+          aspectRatio: "16/9",
+          background: "#0d0d0d",
+          borderRadius: "var(--r-sm)",
+          overflow: "hidden",
+          cursor: "pointer",
+          border: "1px solid var(--border)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+      >
+        {screenshot === "idle" && (
+          <span style={{ color: "var(--text-dim)", fontSize: 16, lineHeight: 1 }}>📷</span>
+        )}
+        {screenshot === "loading" && (
+          <span style={{ color: "var(--text-dim)", fontSize: 10 }}>加载中</span>
+        )}
+        {screenshot === "error" && (
+          <span style={{ color: "var(--red)", fontSize: 10 }}>失败</span>
+        )}
+        {screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error" && (
+          <img
+            src={`data:image/jpeg;base64,${screenshot}`}
+            alt={`port-${inst.port}`}
+            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ColumnHeaders() {
   return (
     <div style={{
@@ -499,11 +583,13 @@ function GroupBlock({
   instances,
   screenshots,
   onScreenshot,
+  isMobile,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
   screenshots: Record<string, ScreenshotState>;
   onScreenshot: (port: string) => void;
+  isMobile: boolean;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -524,10 +610,16 @@ function GroupBlock({
           </span>
         )}
       </div>
-      <ColumnHeaders />
+      {!isMobile && <ColumnHeaders />}
       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-        {leader && <InstanceRow inst={leader} screenshot={screenshots[leader.port] ?? "idle"} onScreenshot={onScreenshot} />}
-        {members.map((m) => <InstanceRow key={m.port} inst={m} screenshot={screenshots[m.port] ?? "idle"} onScreenshot={onScreenshot} />)}
+        {leader && (isMobile
+          ? <InstanceRowMobile inst={leader} screenshot={screenshots[leader.port] ?? "idle"} onScreenshot={onScreenshot} />
+          : <InstanceRow inst={leader} screenshot={screenshots[leader.port] ?? "idle"} onScreenshot={onScreenshot} />
+        )}
+        {members.map((m) => isMobile
+          ? <InstanceRowMobile key={m.port} inst={m} screenshot={screenshots[m.port] ?? "idle"} onScreenshot={onScreenshot} />
+          : <InstanceRow key={m.port} inst={m} screenshot={screenshots[m.port] ?? "idle"} onScreenshot={onScreenshot} />
+        )}
       </div>
     </div>
   );
@@ -805,6 +897,7 @@ function GroupBlockGrid({
 // ---------------------------------------------------------------------------
 
 export default function ExecutorInstancesPage() {
+  const isMobile = useIsMobile();
   const [data, setData] = useState<MhxyExecutorInstances | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -1082,7 +1175,7 @@ export default function ExecutorInstancesPage() {
           {Array.from(groups.entries())
             .sort(([a], [b]) => a - b)
             .map(([gid, insts]) => (
-              <GroupBlock key={gid} groupId={gid} instances={insts} screenshots={screenshots} onScreenshot={openModal} />
+              <GroupBlock key={gid} groupId={gid} instances={insts} screenshots={screenshots} onScreenshot={openModal} isMobile={isMobile} />
             ))}
 
           {standalone.length > 0 && (
@@ -1090,9 +1183,12 @@ export default function ExecutorInstancesPage() {
               <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.5rem" }}>
                 <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 13 }}>独立实例</span>
               </div>
-              <ColumnHeaders />
+              {!isMobile && <ColumnHeaders />}
               <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-                {standalone.map((inst) => <InstanceRow key={inst.port} inst={inst} screenshot={screenshots[inst.port] ?? "idle"} onScreenshot={openModal} />)}
+                {standalone.map((inst) => isMobile
+                  ? <InstanceRowMobile key={inst.port} inst={inst} screenshot={screenshots[inst.port] ?? "idle"} onScreenshot={openModal} />
+                  : <InstanceRow key={inst.port} inst={inst} screenshot={screenshots[inst.port] ?? "idle"} onScreenshot={openModal} />
+                )}
               </div>
             </div>
           )}
