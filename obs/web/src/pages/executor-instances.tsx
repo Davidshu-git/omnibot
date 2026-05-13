@@ -616,6 +616,7 @@ function ScreenshotCard({
   broadcastScope = "single",
   allPorts = [],
   leaderPorts = [],
+  onStreamModeChange,
 }: {
   inst: MhxyInstanceDetail;
   screenshot: ScreenshotState;
@@ -624,40 +625,50 @@ function ScreenshotCard({
   broadcastScope?: BroadcastScope;
   allPorts?: string[];
   leaderPorts?: string[];
+  onStreamModeChange?: (port: string, streaming: boolean) => void;
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number } | null>(null);
   const tapPendingRef = useRef(false);
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
+  const [streamMode, setStreamMode] = useState(false);
+  const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
   const imgRef = useRef<HTMLImageElement>(null);
+  const streamModeRef = useRef(streamMode);
+  streamModeRef.current = streamMode;
 
   const isImageLoaded = screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error";
+  const adbDevice = `emulator-${parseInt(inst.port) - 1}`;
+  const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
 
-  const handleImgAreaMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!tapMode || !imgRef.current || !isImageLoaded) return;
-    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
-    const rx = e.clientX - cx;
-    const ry = e.clientY - cy;
-    if (rx < 0 || rx > cw || ry < 0 || ry > ch) { setHoverCoord(null); return; }
-    setHoverCoord({
-      x: Math.round(rx / cw * imgRef.current.naturalWidth),
-      y: Math.round(ry / ch * imgRef.current.naturalHeight),
+  // Cache real device resolution from the latest screenshot — used for stream-mode coord mapping.
+  useEffect(() => {
+    if (!isImageLoaded || typeof screenshot !== "string") return;
+    const img = new Image();
+    img.onload = () => setDeviceSize({ w: img.naturalWidth, h: img.naturalHeight });
+    img.src = `data:image/jpeg;base64,${screenshot}`;
+  }, [isImageLoaded, screenshot]);
+
+  // Notify parent on toggle so it can skip polling; auto-clear on unmount.
+  const toggleStream = useCallback(() => {
+    setStreamMode((prev) => {
+      const next = !prev;
+      onStreamModeChange?.(inst.port, next);
+      return next;
     });
-  }, [tapMode, isImageLoaded]);
+  }, [inst.port, onStreamModeChange]);
 
-  const handleImgAreaClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!tapMode || !imgRef.current || !isImageLoaded) return;
-    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
-    const rx = e.clientX - cx;
-    const ry = e.clientY - cy;
-    if (rx < 0 || rx > cw || ry < 0 || ry > ch) return; // black bar → bubble up to card onClick (modal)
-    e.stopPropagation();
-    const px = Math.round(rx / cw * imgRef.current.naturalWidth);
-    const py = Math.round(ry / ch * imgRef.current.naturalHeight);
-    const containerRect = e.currentTarget.getBoundingClientRect();
+  useEffect(() => {
+    return () => {
+      if (streamModeRef.current) onStreamModeChange?.(inst.port, false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const performTap = useCallback((px: number, py: number, containerRect: DOMRect, clientX: number, clientY: number) => {
     setRipple({
-      pctX: (e.clientX - containerRect.left) / containerRect.width * 100,
-      pctY: (e.clientY - containerRect.top) / containerRect.height * 100,
+      pctX: (clientX - containerRect.left) / containerRect.width * 100,
+      pctY: (clientY - containerRect.top) / containerRect.height * 100,
       key: Date.now(),
     });
     if (tapPendingRef.current) return;
@@ -678,7 +689,58 @@ function ScreenshotCard({
         setTimeout(() => setTapStatus(null), 2500);
       })
       .finally(() => { tapPendingRef.current = false; });
-  }, [tapMode, isImageLoaded, broadcastScope, allPorts, leaderPorts, inst.port]);
+  }, [broadcastScope, allPorts, leaderPorts, inst.port]);
+
+  const handleImgAreaMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!tapMode) return;
+    if (streamMode) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const { left, top, width, height } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
+      const rx = e.clientX - rect.left - left;
+      const ry = e.clientY - rect.top - top;
+      if (rx < 0 || rx > width || ry < 0 || ry > height) { setHoverCoord(null); return; }
+      setHoverCoord({
+        x: Math.round(rx / width * deviceSize.w),
+        y: Math.round(ry / height * deviceSize.h),
+      });
+      return;
+    }
+    if (!imgRef.current || !isImageLoaded) return;
+    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
+    const rx = e.clientX - cx;
+    const ry = e.clientY - cy;
+    if (rx < 0 || rx > cw || ry < 0 || ry > ch) { setHoverCoord(null); return; }
+    setHoverCoord({
+      x: Math.round(rx / cw * imgRef.current.naturalWidth),
+      y: Math.round(ry / ch * imgRef.current.naturalHeight),
+    });
+  }, [tapMode, streamMode, deviceSize, isImageLoaded]);
+
+  const handleImgAreaClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (!tapMode) return;
+    if (streamMode) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const { left, top, width, height } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
+      const rx = e.clientX - rect.left - left;
+      const ry = e.clientY - rect.top - top;
+      if (rx < 0 || rx > width || ry < 0 || ry > height) return; // toolbar / letterbox → bubble up to card onClick
+      e.stopPropagation();
+      const px = Math.round(rx / width * deviceSize.w);
+      const py = Math.round(ry / height * deviceSize.h);
+      performTap(px, py, rect, e.clientX, e.clientY);
+      return;
+    }
+    if (!imgRef.current || !isImageLoaded) return;
+    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
+    const rx = e.clientX - cx;
+    const ry = e.clientY - cy;
+    if (rx < 0 || rx > cw || ry < 0 || ry > ch) return; // black bar → bubble up to card onClick (modal)
+    e.stopPropagation();
+    const px = Math.round(rx / cw * imgRef.current.naturalWidth);
+    const py = Math.round(ry / ch * imgRef.current.naturalHeight);
+    const containerRect = e.currentTarget.getBoundingClientRect();
+    performTap(px, py, containerRect, e.clientX, e.clientY);
+  }, [tapMode, streamMode, deviceSize, isImageLoaded, performTap]);
 
   const statusColor = inst.healthy === true
     ? "var(--green)"
@@ -715,9 +777,24 @@ function ScreenshotCard({
         <span style={{ fontSize: 10, color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", marginLeft: 2 }}>
           {ROLE_LABEL[inst.role] ?? inst.role}
         </span>
+        <button
+          onClick={(e) => { e.stopPropagation(); toggleStream(); }}
+          title={streamMode ? "切回截图轮询" : "切换到 ws-scrcpy 实时流"}
+          style={{
+            marginLeft: "auto",
+            padding: "1px 6px",
+            borderRadius: "var(--r-sm)",
+            border: `1px solid ${streamMode ? "var(--blue)" : "var(--border-hi)"}`,
+            background: streamMode ? "rgba(99,179,237,0.15)" : "transparent",
+            color: streamMode ? "var(--blue)" : "var(--text-muted)",
+            fontSize: 10, lineHeight: 1.2, cursor: "pointer",
+          }}
+        >
+          📺{streamMode ? " ON" : ""}
+        </button>
         <span style={{
           width: 7, height: 7, borderRadius: 999,
-          background: statusColor, marginLeft: "auto", flexShrink: 0,
+          background: statusColor, flexShrink: 0,
         }} />
       </div>
 
@@ -728,28 +805,42 @@ function ScreenshotCard({
           aspectRatio: "16/9",
           display: "flex", alignItems: "center", justifyContent: "center",
           position: "relative",
-          cursor: tapMode && isImageLoaded ? "crosshair" : undefined,
+          cursor: tapMode && (streamMode || isImageLoaded) ? "crosshair" : undefined,
         }}
         onMouseMove={handleImgAreaMouseMove}
         onMouseLeave={() => setHoverCoord(null)}
         onClick={handleImgAreaClick}
       >
-        {screenshot === "idle" && (
-          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>等待加载</span>
-        )}
-        {screenshot === "loading" && (
-          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>加载中…</span>
-        )}
-        {screenshot === "error" && (
-          <span style={{ color: "var(--red)", fontSize: 11 }}>获取失败</span>
-        )}
-        {isImageLoaded && (
-          <img
-            ref={imgRef}
-            src={`data:image/jpeg;base64,${screenshot}`}
-            alt={`port-${inst.port}`}
-            style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+        {streamMode ? (
+          <iframe
+            src={streamUrl}
+            style={{
+              width: "100%", height: "100%",
+              border: 0, display: "block",
+              pointerEvents: "none",
+            }}
+            allow="autoplay"
           />
+        ) : (
+          <>
+            {screenshot === "idle" && (
+              <span style={{ color: "var(--text-dim)", fontSize: 11 }}>等待加载</span>
+            )}
+            {screenshot === "loading" && (
+              <span style={{ color: "var(--text-dim)", fontSize: 11 }}>加载中…</span>
+            )}
+            {screenshot === "error" && (
+              <span style={{ color: "var(--red)", fontSize: 11 }}>获取失败</span>
+            )}
+            {isImageLoaded && (
+              <img
+                ref={imgRef}
+                src={`data:image/jpeg;base64,${screenshot}`}
+                alt={`port-${inst.port}`}
+                style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
+              />
+            )}
+          </>
         )}
         {/* Tap ripple */}
         {ripple && (
@@ -817,6 +908,7 @@ function GroupBlockGrid({
   broadcastScope,
   allPorts,
   leaderPorts,
+  onStreamModeChange,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
@@ -826,6 +918,7 @@ function GroupBlockGrid({
   broadcastScope: BroadcastScope;
   allPorts: string[];
   leaderPorts: string[];
+  onStreamModeChange: (port: string, streaming: boolean) => void;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -862,6 +955,7 @@ function GroupBlockGrid({
             broadcastScope={broadcastScope}
             allPorts={allPorts}
             leaderPorts={leaderPorts}
+            onStreamModeChange={onStreamModeChange}
           />
         ))}
       </div>
@@ -891,6 +985,13 @@ export default function ExecutorInstancesPage() {
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const fetchingRef = useRef<Set<string>>(new Set());
 
+  // Ports currently rendered as ws-scrcpy live stream — these skip screenshot polling.
+  const streamingPortsRef = useRef<Set<string>>(new Set());
+  const setPortStreaming = useCallback((port: string, streaming: boolean) => {
+    if (streaming) streamingPortsRef.current.add(port);
+    else streamingPortsRef.current.delete(port);
+  }, []);
+
   const load = useCallback(() => {
     return api.mhxyExecutorInstances()
       .then(setData)
@@ -908,6 +1009,7 @@ export default function ExecutorInstancesPage() {
     let anyFetched = false;
     for (const inst of insts) {
       const port = inst.port;
+      if (streamingPortsRef.current.has(port)) continue;
       if (fetchingRef.current.has(port)) continue;
       if (!force) {
         const existing = screenshots[port];
@@ -944,6 +1046,7 @@ export default function ExecutorInstancesPage() {
   // staggered evenly across the period. This caps in-flight requests at ~ceil(1.7s/stagger),
   // staying well under Chrome's HTTP/1.1 same-origin 6-connection limit even with 7+ instances.
   const refreshOne = useCallback((port: string) => {
+    if (streamingPortsRef.current.has(port)) return;
     if (fetchingRef.current.has(port)) return;
     fetchingRef.current.add(port);
     api.mhxyExecutorScreenshot(port)
@@ -1222,6 +1325,7 @@ export default function ExecutorInstancesPage() {
                 broadcastScope={broadcastScope}
                 allPorts={allPorts}
                 leaderPorts={leaderPorts}
+                onStreamModeChange={setPortStreaming}
               />
             ))}
 
@@ -1250,6 +1354,7 @@ export default function ExecutorInstancesPage() {
                       broadcastScope={broadcastScope}
                       allPorts={allPorts}
                       leaderPorts={leaderPorts}
+                      onStreamModeChange={setPortStreaming}
                     />
                   ))}
                 </div>
