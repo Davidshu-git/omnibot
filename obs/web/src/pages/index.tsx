@@ -3,6 +3,7 @@ import Link from "next/link";
 import { api, type AvailableModelInfo, type MhxyExecutorStatus, type MhxyInstanceDetail, type ProjectOverview, type ProjectRuntimeModels } from "@/lib/api";
 import { SkeletonCard } from "@/components/Skeleton";
 import { fmt, fmtCost, fmtTime } from "@/lib/format";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 const SYNC_FN_MAP: Record<string, () => Promise<{ events_inserted: number }>> = {
   mhxy: api.ingestMhxy,
@@ -270,6 +271,7 @@ function ExecutorStatusCard({
   instances: MhxyInstanceDetail[];
   onRefresh: () => void;
 }) {
+  const isMobile = useIsMobile();
   const state = error ? "unknown" : (status?.status ?? "unknown");
   const healthy = state === "healthy";
   const unhealthy = state === "unhealthy";
@@ -289,7 +291,7 @@ function ExecutorStatusCard({
       <div style={{ position: "relative" }}>
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: "1rem" }}>
           <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", rowGap: 4 }}>
               <span style={{ width: 8, height: 8, borderRadius: 999, background: color, boxShadow: healthy ? "0 0 0 4px rgba(52,211,153,.12)" : "none" }} />
               <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 14 }}>Windows Executor</span>
               <span className="badge" style={{ color, background: bg, border: `1px solid ${border}` }}>{label}</span>
@@ -304,12 +306,12 @@ function ExecutorStatusCard({
           <button
             onClick={onRefresh}
             style={{
-              padding: "4px 10px",
+              padding: isMobile ? "6px 14px" : "4px 10px",
               borderRadius: "var(--r-sm)",
               border: "1px solid var(--border-hi)",
               background: "transparent",
               color: "var(--blue)",
-              fontSize: 11,
+              fontSize: isMobile ? 12 : 11,
               fontWeight: 500,
             }}
           >
@@ -317,8 +319,19 @@ function ExecutorStatusCard({
           </button>
         </div>
 
-        <div style={{ display: "flex", gap: "1.25rem", alignItems: "flex-start" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, auto)", gap: "0.75rem 1.25rem", flexShrink: 0 }}>
+        <div style={{
+          display: "flex",
+          gap: isMobile ? "0.85rem" : "1.25rem",
+          alignItems: "flex-start",
+          flexDirection: isMobile ? "column" : "row",
+        }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, auto)",
+            gap: "0.75rem 1.25rem",
+            flexShrink: 0,
+            width: isMobile ? "100%" : undefined,
+          }}>
             <Stat label="PID" value={pid} accent={healthy} />
             <Stat label="HTTP 延迟" value={latency} accent={healthy} />
             <Stat label="连续失败" value={failures} accent={!healthy && !stale} />
@@ -326,8 +339,16 @@ function ExecutorStatusCard({
           </div>
           {instances.length > 0 && (
             <>
-              <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
-              <div style={{ flex: 1, minWidth: 0 }}>
+              {!isMobile && (
+                <div style={{ width: 1, alignSelf: "stretch", background: "var(--border)", flexShrink: 0 }} />
+              )}
+              <div style={{
+                flex: 1,
+                minWidth: 0,
+                width: isMobile ? "100%" : undefined,
+                paddingTop: isMobile ? "0.5rem" : undefined,
+                borderTop: isMobile ? "1px solid var(--border)" : undefined,
+              }}>
                 <InstanceGroupsPreview instances={instances} />
               </div>
             </>
@@ -342,7 +363,15 @@ function ExecutorStatusCard({
             )}
           </span>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <span style={{ color: error || status?.health?.error ? "var(--red)" : "var(--text-dim)", fontSize: 11, maxWidth: 360, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span style={{
+              color: error || status?.health?.error ? "var(--red)" : "var(--text-dim)",
+              fontSize: 11,
+              maxWidth: isMobile ? "100%" : 360,
+              overflow: "hidden",
+              textOverflow: isMobile ? "clip" : "ellipsis",
+              whiteSpace: isMobile ? "normal" : "nowrap",
+              wordBreak: isMobile ? "break-word" : undefined,
+            }}>
               {error || status?.error || status?.health?.error || status?.last_restart?.reason || "watchdog 状态文件正常"}
             </span>
             <Link href="/executor-instances" style={{ color: "var(--blue)", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>
