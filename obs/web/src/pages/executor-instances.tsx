@@ -667,6 +667,9 @@ function ScreenshotCard({
   const [nativeStreamStatus, setNativeStreamStatus] = useState<StreamPlayerStatus>("closed");
   const [nativeStreamDetail, setNativeStreamDetail] = useState("");
   const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
+  // Tracks the decoded frame dimensions — always the stream resolution (which may be scaled down).
+  // Kept separate from deviceSize (physical screen) so tap coordinate scaling is always correct.
+  const [streamResolution, setStreamResolution] = useState<{ w: number; h: number } | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const playerRef = useRef<StreamPlayer | null>(null);
@@ -680,11 +683,17 @@ function ScreenshotCard({
   const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
   const nativeStreamUrl = `${EXECUTOR_WS_BASE}/ws/stream/${inst.port}?quality=${nativeStreamQuality}`;
 
+  // True once a screenshot has set deviceSize to the real physical screen resolution.
+  const hasRealDeviceSizeRef = useRef(false);
+
   // Cache real device resolution from the latest screenshot — used for stream-mode coord mapping.
   useEffect(() => {
     if (!isImageLoaded || typeof screenshot !== "string") return;
     const img = new Image();
-    img.onload = () => setDeviceSize({ w: img.naturalWidth, h: img.naturalHeight });
+    img.onload = () => {
+      setDeviceSize({ w: img.naturalWidth, h: img.naturalHeight });
+      hasRealDeviceSizeRef.current = true;
+    };
     img.src = `data:image/jpeg;base64,${screenshot}`;
   }, [isImageLoaded, screenshot]);
 
@@ -726,7 +735,7 @@ function ScreenshotCard({
         setNativeStreamStatus(status);
         setNativeStreamDetail(detail ?? "");
       },
-      onResolution: (w, h) => setDeviceSize({ w, h }),
+      onResolution: (w, h) => setStreamResolution({ w, h }),
     });
     playerRef.current = player;
     return () => {
@@ -783,13 +792,16 @@ function ScreenshotCard({
       const frameX = (e.clientX - cx) / cw * videoW;
       const frameY = (e.clientY - cy) / ch * videoH;
       if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) { setHoverCoord(null); return; }
-      const content = getVideoContentBounds(videoW, videoH, deviceSize.w, deviceSize.h);
+      // Use physical device resolution for coordinate mapping; fall back to stream resolution
+      // (same aspect ratio, proportionally scaled) when no screenshot has arrived yet.
+      const effDevice = hasRealDeviceSizeRef.current ? deviceSize : (streamResolution ?? deviceSize);
+      const content = getVideoContentBounds(videoW, videoH, effDevice.w, effDevice.h);
       const rx = frameX - content.left;
       const ry = frameY - content.top;
       if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) { setHoverCoord(null); return; }
       setHoverCoord({
-        x: Math.round(rx / content.width * deviceSize.w),
-        y: Math.round(ry / content.height * deviceSize.h),
+        x: Math.round(rx / content.width * effDevice.w),
+        y: Math.round(ry / content.height * effDevice.h),
       });
       return;
     }
@@ -814,7 +826,7 @@ function ScreenshotCard({
       x: Math.round(rx / cw * imgRef.current.naturalWidth),
       y: Math.round(ry / ch * imgRef.current.naturalHeight),
     });
-  }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded]);
+  }, [tapMode, nativeStreamMode, streamMode, deviceSize, streamResolution, isImageLoaded]);
 
   const handleImgAreaClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!tapMode) return;
@@ -830,13 +842,14 @@ function ScreenshotCard({
       const frameX = (e.clientX - cx) / cw * videoW;
       const frameY = (e.clientY - cy) / ch * videoH;
       if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) return;
-      const content = getVideoContentBounds(videoW, videoH, deviceSize.w, deviceSize.h);
+      const effDevice = hasRealDeviceSizeRef.current ? deviceSize : (streamResolution ?? deviceSize);
+      const content = getVideoContentBounds(videoW, videoH, effDevice.w, effDevice.h);
       const rx = frameX - content.left;
       const ry = frameY - content.top;
       if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) return;
       e.stopPropagation();
-      const px = Math.round(rx / content.width * deviceSize.w);
-      const py = Math.round(ry / content.height * deviceSize.h);
+      const px = Math.round(rx / content.width * effDevice.w);
+      const py = Math.round(ry / content.height * effDevice.h);
       const containerRect = e.currentTarget.getBoundingClientRect();
       performTap(px, py, containerRect, e.clientX, e.clientY);
       return;
@@ -863,7 +876,7 @@ function ScreenshotCard({
     const py = Math.round(ry / ch * imgRef.current.naturalHeight);
     const containerRect = e.currentTarget.getBoundingClientRect();
     performTap(px, py, containerRect, e.clientX, e.clientY);
-  }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded, performTap]);
+  }, [tapMode, nativeStreamMode, streamMode, deviceSize, streamResolution, isImageLoaded, performTap]);
 
   const statusColor = inst.healthy === true
     ? "var(--green)"
