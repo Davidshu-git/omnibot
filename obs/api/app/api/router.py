@@ -826,6 +826,9 @@ async def list_think(
 # Generic JSONL ingest — shared by all JSONL-based data sources
 # ---------------------------------------------------------------------------
 
+_ingest_lock = asyncio.Lock()
+
+
 async def run_jsonl_ingest(
     *,
     project_id: str,
@@ -848,7 +851,8 @@ async def run_jsonl_ingest(
     from app.ingestion.service import ingest_batch, upsert_session
     from app.db.models import DataSource
 
-    async with AsyncSessionLocal() as db:
+    async with _ingest_lock:
+      async with AsyncSessionLocal() as db:
         await _ensure_project(db, project_id, display_name, source_type)
         for ag in agents:
             await _ensure_agent(db, ag["id"], project_id, ag["name"], ag["display_name"], ag["kind"])
@@ -935,15 +939,15 @@ async def run_jsonl_ingest(
             )
             await db.commit()
 
-    result = {
-        "sources_total": len(sources),
-        "sources_scanned": sources_scanned,
-        "sources_skipped": sources_skipped,
-        **total,
-    }
-    if total.get("events_inserted", 0) > 0:
-        _broadcast_ingest()
-    return result
+        result = {
+            "sources_total": len(sources),
+            "sources_scanned": sources_scanned,
+            "sources_skipped": sources_skipped,
+            **total,
+        }
+        if total.get("events_inserted", 0) > 0:
+            _broadcast_ingest()
+        return result
 
 
 # ---------------------------------------------------------------------------

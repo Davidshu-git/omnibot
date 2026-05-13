@@ -24,17 +24,8 @@ log = logging.getLogger(__name__)
 _watcher: MultiLogWatcher | None = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global _watcher
-
-    mhxy_log_dir = os.getenv("MHXY_LOG_DIR", "/logs/mhxy/sessions")
-    mhxy_executor_log_dir = os.getenv("MHXY_EXECUTOR_LOG_DIR", "/logs/omnibot/mhxy/executor")
-    omnibot_stock_dir = os.getenv("OMNIBOT_STOCK_LOG_DIR", "/logs/omnibot/stock/sessions")
-    omnibot_ehs_dir = os.getenv("OMNIBOT_EHS_LOG_DIR", "/logs/omnibot/ehs/sessions")
-    executor_status_path = Path(settings.mhxy_executor_status_file)
-
-    # Startup: run initial ingests for all sources
+async def _run_initial_ingests() -> None:
+    """Run startup ingests without blocking API readiness."""
     for label, coro_fn in [
         ("mhxy", lambda: run_mhxy_ingest(force=False)),
         ("mhxy-executor", lambda: run_mhxy_executor_ingest(force=False)),
@@ -45,6 +36,17 @@ async def lifespan(app: FastAPI):
             await coro_fn()
         except Exception as e:
             log.warning("startup ingest failed for %s (non-fatal): %s", label, e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _watcher
+
+    mhxy_log_dir = os.getenv("MHXY_LOG_DIR", "/logs/mhxy/sessions")
+    mhxy_executor_log_dir = os.getenv("MHXY_EXECUTOR_LOG_DIR", "/logs/omnibot/mhxy/executor")
+    omnibot_stock_dir = os.getenv("OMNIBOT_STOCK_LOG_DIR", "/logs/omnibot/stock/sessions")
+    omnibot_ehs_dir = os.getenv("OMNIBOT_EHS_LOG_DIR", "/logs/omnibot/ehs/sessions")
+    executor_status_path = Path(settings.mhxy_executor_status_file)
 
     # Start file watchers for all source directories
     loop = asyncio.get_running_loop()
@@ -61,9 +63,11 @@ async def lifespan(app: FastAPI):
         ),
     ])
     _watcher.start(loop)
+    initial_ingest_task = asyncio.create_task(_run_initial_ingests())
 
     yield
 
+    initial_ingest_task.cancel()
     if _watcher:
         _watcher.stop()
 

@@ -11,6 +11,7 @@ NAS 侧 agent 通过 HTTP 调用，自身不再直接执行 ADB 或本地推理�
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import faulthandler
 import json as _json
@@ -29,7 +30,7 @@ import uuid
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status as ws_status
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -175,6 +176,11 @@ async def _startup():
     })
 
 ADB_PATH = os.getenv("ADB_PATH", r"C:\Program Files\Netease\MuMu\nx_main\adb.exe")
+STREAM_TIME_LIMIT_SEC = int(os.getenv("EXECUTOR_STREAM_TIME_LIMIT_SEC", "180"))
+STREAM_BITRATE_BPS = int(os.getenv("EXECUTOR_STREAM_BITRATE_BPS", "1500000"))
+STREAM_SIZE = os.getenv("EXECUTOR_STREAM_SIZE", "")
+STREAM_RESTART_DELAY_SEC = float(os.getenv("EXECUTOR_STREAM_RESTART_DELAY_SEC", "0.3"))
+STREAM_SEND_TIMEOUT_SEC = float(os.getenv("EXECUTOR_STREAM_SEND_TIMEOUT_SEC", "2.0"))
 W, H = 1600, 900
 
 COMMON_POPUP_TEXTS = ["确定", "关闭", "取消", "稍后", "跳过", "我知道了", "继续"]
@@ -749,6 +755,330 @@ def app_health(req: PortReq, request: Request):
         "ocr": ocr_ok,
         "details": details,
     }
+
+
+# ---------------------------------------------------------------------------
+# 实时流：WebSocket + adb screenrecord pipe (Annex-B H.264 fan-out)
+# ---------------------------------------------------------------------------
+
+class FanoutStream:
+    """单端口 screenrecord 推流进程，支持多个 WebSocket 订阅者共享。
+
+    Args:
+        port: 业务端口，例如 "5557"。
+    """
+
+    def __init__(self, port: str):
+        self.port = port
+        self.subscribers: set[WebSocket] = set()
+        self._proc: subprocess.Popen | None = None
+        self._reader_task: asyncio.Task | None = None
+        self._stopping = False
+        self._lock = asyncio.Lock()
+
+    async def add_subscriber(self, ws: WebSocket) -> None:
+        """添加订阅者；首个订阅者到达时启动 adb screenrecord。
+
+        Args:
+            ws: 已 accept 的 WebSocket 连接。
+
+        Returns:
+            None.
+        """
+        async with self._lock:
+            self.subscribers.add(ws)
+            self._stopping = False
+            if self._proc is None:
+                await self._spawn()
+
+    async def remove_subscriber(self, ws: WebSocket) -> None:
+        """移除订阅者；订阅者归零时终止 adb screenrecord。
+
+        Args:
+            ws: 要移除的 WebSocket 连接。
+
+        Returns:
+            None.
+        """
+        async with self._lock:
+            self.subscribers.discard(ws)
+            if not self.subscribers:
+                await self._terminate_locked()
+
+    async def _spawn(self) -> None:
+        """启动 adb screenrecord subprocess 和后台 stdout 转发任务。
+
+        Returns:
+            None.
+        """
+        addr = _port_to_addr(self.port)
+        args = [
+            ADB_PATH,
+            "-s",
+            addr,
+            "exec-out",
+            "screenrecord",
+            "--output-format=h264",
+            f"--time-limit={STREAM_TIME_LIMIT_SEC}",
+            f"--bit-rate={STREAM_BITRATE_BPS}",
+        ]
+        if STREAM_SIZE:
+            args.extend(["--size", STREAM_SIZE])
+        args.append("-")
+        log.info("stream spawn port=%s addr=%s args=%r", self.port, addr, args[2:])
+        self._proc = subprocess.Popen(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+        )
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        emit_event({
+            "type": "stream_session",
+            "action": "spawn",
+            "port": self.port,
+            "adb_addr": addr,
+            "subscribers": len(self.subscribers),
+            "bitrate_bps": STREAM_BITRATE_BPS,
+            "size": STREAM_SIZE or None,
+        })
+
+    async def _reader_loop(self) -> None:
+        """读取 subprocess stdout，并把 H.264 chunk 广播给所有订阅者。
+
+        Returns:
+            None.
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            while not self._stopping and self._proc and self._proc.stdout:
+                chunk = await loop.run_in_executor(None, self._proc.stdout.read, 4096)
+                if not chunk:
+                    break
+                await self._broadcast_bytes(chunk)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("stream reader_loop error port=%s", self.port)
+        finally:
+            await self._handle_reader_exit()
+
+    async def _broadcast_bytes(self, chunk: bytes) -> None:
+        """广播二进制帧；发送超时或失败的订阅者会被移除。
+
+        Args:
+            chunk: H.264 Annex-B 字节块。
+
+        Returns:
+            None.
+        """
+        dead: list[WebSocket] = []
+        for ws in list(self.subscribers):
+            try:
+                await asyncio.wait_for(ws.send_bytes(chunk), timeout=STREAM_SEND_TIMEOUT_SEC)
+            except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
+                dead.append(ws)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.subscribers.discard(ws)
+
+    async def _broadcast_restart(self) -> None:
+        """通知前端 screenrecord 已重启，需要重置解码器。
+
+        Returns:
+            None.
+        """
+        dead: list[WebSocket] = []
+        for ws in list(self.subscribers):
+            try:
+                await asyncio.wait_for(ws.send_text('{"event":"restart"}'), timeout=STREAM_SEND_TIMEOUT_SEC)
+            except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
+                dead.append(ws)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.subscribers.discard(ws)
+
+    async def _handle_reader_exit(self) -> None:
+        """处理 adb subprocess 退出；有订阅者时自动重启。
+
+        Returns:
+            None.
+        """
+        rc = self._proc.poll() if self._proc else None
+        stderr = ""
+        if self._proc and self._proc.stderr:
+            try:
+                loop = asyncio.get_running_loop()
+                raw = await loop.run_in_executor(None, self._proc.stderr.read)
+                stderr = raw.decode(errors="replace").strip()[:300]
+            except Exception as exc:
+                stderr = f"stderr read failed: {exc}"
+        log.info(
+            "stream subprocess exited port=%s rc=%s subscribers=%d stderr=%s",
+            self.port, rc, len(self.subscribers), stderr,
+        )
+        emit_event({
+            "type": "stream_session",
+            "action": "exited",
+            "port": self.port,
+            "rc": rc,
+            "subscribers": len(self.subscribers),
+            "stderr": stderr or None,
+        })
+        self._proc = None
+        self._reader_task = None
+        if self._stopping or not self.subscribers:
+            return
+        await self._broadcast_restart()
+        if not self.subscribers:
+            return
+        await asyncio.sleep(STREAM_RESTART_DELAY_SEC)
+        async with self._lock:
+            if not self._stopping and self.subscribers and self._proc is None:
+                await self._spawn()
+
+    async def _terminate_locked(self) -> None:
+        """在持有锁时终止 subprocess。
+
+        Returns:
+            None.
+        """
+        self._stopping = True
+        proc = self._proc
+        task = self._reader_task
+        if proc:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+            try:
+                loop = asyncio.get_running_loop()
+                await asyncio.wait_for(loop.run_in_executor(None, proc.wait), timeout=2.0)
+            except (asyncio.TimeoutError, OSError):
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        if task and task is not asyncio.current_task():
+            task.cancel()
+        self._proc = None
+        self._reader_task = None
+        emit_event({
+            "type": "stream_session",
+            "action": "terminate",
+            "port": self.port,
+        })
+
+    async def terminate(self) -> None:
+        """终止当前流并清空订阅者。
+
+        Returns:
+            None.
+        """
+        async with self._lock:
+            self.subscribers.clear()
+            await self._terminate_locked()
+
+
+class StreamManager:
+    """维护 port 到 FanoutStream 的注册表。"""
+
+    def __init__(self) -> None:
+        self._streams: dict[str, FanoutStream] = {}
+        self._lock = asyncio.Lock()
+
+    async def attach(self, port: str, ws: WebSocket) -> FanoutStream:
+        """把 WebSocket 订阅到指定端口。
+
+        Args:
+            port: 业务端口。
+            ws: 已 accept 的 WebSocket 连接。
+
+        Returns:
+            对应端口的 FanoutStream。
+        """
+        async with self._lock:
+            stream = self._streams.get(port)
+            if stream is None:
+                stream = FanoutStream(port)
+                self._streams[port] = stream
+        await stream.add_subscriber(ws)
+        return stream
+
+    async def detach(self, port: str, ws: WebSocket) -> None:
+        """取消 WebSocket 订阅。
+
+        Args:
+            port: 业务端口。
+            ws: 要取消订阅的 WebSocket。
+
+        Returns:
+            None.
+        """
+        async with self._lock:
+            stream = self._streams.get(port)
+        if stream is None:
+            return
+        await stream.remove_subscriber(ws)
+        async with self._lock:
+            if not stream.subscribers and self._streams.get(port) is stream:
+                self._streams.pop(port, None)
+
+    async def shutdown_all(self) -> None:
+        """终止所有活跃推流进程。
+
+        Returns:
+            None.
+        """
+        async with self._lock:
+            streams = list(self._streams.values())
+            self._streams.clear()
+        for stream in streams:
+            await stream.terminate()
+
+
+stream_manager = StreamManager()
+
+
+@app.on_event("shutdown")
+async def _stream_shutdown() -> None:
+    """应用关闭时回收所有 screenrecord 进程。"""
+    await stream_manager.shutdown_all()
+
+
+@app.websocket("/ws/stream/{port}")
+async def ws_stream(websocket: WebSocket, port: str) -> None:
+    """推送指定端口的 H.264 Annex-B 实时流。
+
+    Args:
+        websocket: FastAPI WebSocket 连接。
+        port: 业务端口，例如 "5557"。
+
+    Returns:
+        None.
+    """
+    await websocket.accept()
+    stream: FanoutStream | None = None
+    try:
+        stream = await stream_manager.attach(port, websocket)
+        while True:
+            await websocket.receive()
+    except WebSocketDisconnect:
+        pass
+    except RuntimeError as exc:
+        if "disconnect message has been received" not in str(exc):
+            raise
+    except Exception:
+        log.exception("ws_stream error port=%s", port)
+        try:
+            await websocket.close(code=ws_status.WS_1011_INTERNAL_ERROR)
+        except RuntimeError:
+            pass
+    finally:
+        if stream is not None:
+            await stream_manager.detach(port, websocket)
 
 
 if __name__ == "__main__":

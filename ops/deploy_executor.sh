@@ -33,7 +33,7 @@ sleep 4
 # 确认端口已释放（EADDRINUSE 是最常见的启动失败原因）
 for attempt in 1 2 3; do
   in_use=$(ssh $SSH_OPTS "$WIN" \
-    "powershell -NoProfile -Command \"netstat -ano | findstr :8765\"" 2>/dev/null || true)
+    "powershell -NoProfile -Command \"netstat -ano | findstr :8765 | findstr LISTENING\"" 2>/dev/null || true)
   if [[ -z "$in_use" ]]; then
     break
   fi

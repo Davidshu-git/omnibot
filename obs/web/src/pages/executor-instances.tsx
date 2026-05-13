@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
+import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
 import { useIsMobile } from "@/lib/useIsMobile";
 
 const ROLE_LABEL: Record<string, string> = {
@@ -35,6 +36,7 @@ type BroadcastStatus =
   | { pending: false; ok: number; fail: number; px: number; py: number };
 
 const WS_SCRCPY_BASE = "http://192.168.100.149:8000";
+const EXECUTOR_WS_BASE = process.env.NEXT_PUBLIC_EXECUTOR_WS_BASE || "ws://192.168.100.149:8765";
 
 // ws-scrcpy embeds a sidebar toolbar on the RIGHT: width = 3.715rem at browser-default 16px ≈ 59px.
 // The .device-view uses justify-content:flex-end, so the (video + toolbar) group is flush-right.
@@ -591,9 +593,9 @@ function GroupBlock({
 // ---------------------------------------------------------------------------
 
 // Returns the pixel bounds of the actual image content inside an objectFit:contain img element.
-function getContainBounds(img: HTMLImageElement) {
-  const rect = img.getBoundingClientRect();
-  const imgAspect = img.naturalWidth / img.naturalHeight;
+function getContainBoundsGeneric(elem: HTMLElement, naturalWidth: number, naturalHeight: number) {
+  const rect = elem.getBoundingClientRect();
+  const imgAspect = naturalWidth / naturalHeight;
   const elemAspect = rect.width / rect.height;
   let cw: number, ch: number, cx: number, cy: number;
   if (imgAspect > elemAspect) {
@@ -604,6 +606,10 @@ function getContainBounds(img: HTMLImageElement) {
     cx = rect.left + (rect.width - cw) / 2; cy = rect.top;
   }
   return { cx, cy, cw, ch };
+}
+
+function getContainBounds(img: HTMLImageElement) {
+  return getContainBoundsGeneric(img, img.naturalWidth, img.naturalHeight);
 }
 
 type BroadcastScope = "single" | "all" | "leaders";
@@ -632,14 +638,22 @@ function ScreenshotCard({
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
   const [streamMode, setStreamMode] = useState(false);
+  const [nativeStreamMode, setNativeStreamMode] = useState(false);
+  const [nativeStreamStatus, setNativeStreamStatus] = useState<StreamPlayerStatus>("closed");
+  const [nativeStreamDetail, setNativeStreamDetail] = useState("");
   const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
   const imgRef = useRef<HTMLImageElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const playerRef = useRef<StreamPlayer | null>(null);
   const streamModeRef = useRef(streamMode);
+  const nativeStreamModeRef = useRef(nativeStreamMode);
   streamModeRef.current = streamMode;
+  nativeStreamModeRef.current = nativeStreamMode;
 
   const isImageLoaded = screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error";
   const adbDevice = `emulator-${parseInt(inst.port) - 1}`;
   const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
+  const nativeStreamUrl = `${EXECUTOR_WS_BASE}/ws/stream/${inst.port}`;
 
   // Cache real device resolution from the latest screenshot — used for stream-mode coord mapping.
   useEffect(() => {
@@ -653,14 +667,52 @@ function ScreenshotCard({
   const toggleStream = useCallback(() => {
     setStreamMode((prev) => {
       const next = !prev;
-      onStreamModeChange?.(inst.port, next);
+      if (next) {
+        nativeStreamModeRef.current = false;
+        setNativeStreamMode(false);
+      }
+      onStreamModeChange?.(inst.port, next || nativeStreamModeRef.current);
+      return next;
+    });
+  }, [inst.port, onStreamModeChange]);
+
+  const toggleNativeStream = useCallback(() => {
+    setNativeStreamMode((prev) => {
+      const next = !prev;
+      if (next) {
+        streamModeRef.current = false;
+        setStreamMode(false);
+      }
+      onStreamModeChange?.(inst.port, next || streamModeRef.current);
       return next;
     });
   }, [inst.port, onStreamModeChange]);
 
   useEffect(() => {
+    if (!nativeStreamMode || !canvasRef.current) return;
+    if (!isWebCodecsSupported()) {
+      setNativeStreamStatus("error");
+      return;
+    }
+    const player = new StreamPlayer({
+      url: nativeStreamUrl,
+      canvas: canvasRef.current,
+      onStatus: (status, detail) => {
+        setNativeStreamStatus(status);
+        setNativeStreamDetail(detail ?? "");
+      },
+      onResolution: (w, h) => setDeviceSize({ w, h }),
+    });
+    playerRef.current = player;
     return () => {
-      if (streamModeRef.current) onStreamModeChange?.(inst.port, false);
+      player.close();
+      playerRef.current = null;
+    };
+  }, [nativeStreamMode, nativeStreamUrl]);
+
+  useEffect(() => {
+    return () => {
+      if (streamModeRef.current || nativeStreamModeRef.current) onStreamModeChange?.(inst.port, false);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -693,6 +745,22 @@ function ScreenshotCard({
 
   const handleImgAreaMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!tapMode) return;
+    if (nativeStreamMode) {
+      if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
+      const { cx, cy, cw, ch } = getContainBoundsGeneric(
+        canvasRef.current,
+        canvasRef.current.width,
+        canvasRef.current.height,
+      );
+      const rx = e.clientX - cx;
+      const ry = e.clientY - cy;
+      if (rx < 0 || rx > cw || ry < 0 || ry > ch) { setHoverCoord(null); return; }
+      setHoverCoord({
+        x: Math.round(rx / cw * canvasRef.current.width),
+        y: Math.round(ry / ch * canvasRef.current.height),
+      });
+      return;
+    }
     if (streamMode) {
       const rect = e.currentTarget.getBoundingClientRect();
       const { left, top, width, height } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
@@ -714,10 +782,27 @@ function ScreenshotCard({
       x: Math.round(rx / cw * imgRef.current.naturalWidth),
       y: Math.round(ry / ch * imgRef.current.naturalHeight),
     });
-  }, [tapMode, streamMode, deviceSize, isImageLoaded]);
+  }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded]);
 
   const handleImgAreaClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     if (!tapMode) return;
+    if (nativeStreamMode) {
+      if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
+      const { cx, cy, cw, ch } = getContainBoundsGeneric(
+        canvasRef.current,
+        canvasRef.current.width,
+        canvasRef.current.height,
+      );
+      const rx = e.clientX - cx;
+      const ry = e.clientY - cy;
+      if (rx < 0 || rx > cw || ry < 0 || ry > ch) return;
+      e.stopPropagation();
+      const px = Math.round(rx / cw * canvasRef.current.width);
+      const py = Math.round(ry / ch * canvasRef.current.height);
+      const containerRect = e.currentTarget.getBoundingClientRect();
+      performTap(px, py, containerRect, e.clientX, e.clientY);
+      return;
+    }
     if (streamMode) {
       const rect = e.currentTarget.getBoundingClientRect();
       const { left, top, width, height } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
@@ -740,7 +825,7 @@ function ScreenshotCard({
     const py = Math.round(ry / ch * imgRef.current.naturalHeight);
     const containerRect = e.currentTarget.getBoundingClientRect();
     performTap(px, py, containerRect, e.clientX, e.clientY);
-  }, [tapMode, streamMode, deviceSize, isImageLoaded, performTap]);
+  }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded, performTap]);
 
   const statusColor = inst.healthy === true
     ? "var(--green)"
@@ -792,6 +877,20 @@ function ScreenshotCard({
         >
           📺{streamMode ? " ON" : ""}
         </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); toggleNativeStream(); }}
+          title={nativeStreamMode ? "关闭自建 H.264 实时流" : "切换到自建 H.264 实时流"}
+          style={{
+            padding: "1px 6px",
+            borderRadius: "var(--r-sm)",
+            border: `1px solid ${nativeStreamMode ? "var(--teal)" : "var(--border-hi)"}`,
+            background: nativeStreamMode ? "rgba(56,178,172,0.15)" : "transparent",
+            color: nativeStreamMode ? "var(--teal)" : "var(--text-muted)",
+            fontSize: 10, lineHeight: 1.2, cursor: "pointer",
+          }}
+        >
+          H264{nativeStreamMode ? " ON" : ""}
+        </button>
         <span style={{
           width: 7, height: 7, borderRadius: 999,
           background: statusColor, flexShrink: 0,
@@ -805,13 +904,46 @@ function ScreenshotCard({
           aspectRatio: "16/9",
           display: "flex", alignItems: "center", justifyContent: "center",
           position: "relative",
-          cursor: tapMode && (streamMode || isImageLoaded) ? "crosshair" : undefined,
+          cursor: tapMode && (nativeStreamMode || streamMode || isImageLoaded) ? "crosshair" : undefined,
         }}
         onMouseMove={handleImgAreaMouseMove}
         onMouseLeave={() => setHoverCoord(null)}
         onClick={handleImgAreaClick}
       >
-        {streamMode ? (
+        {nativeStreamMode ? (
+          <>
+            <canvas
+              ref={canvasRef}
+              style={{
+                width: "100%", height: "100%",
+                objectFit: "contain",
+                display: "block",
+              }}
+            />
+            {nativeStreamStatus !== "playing" && (
+              <div style={{
+                position: "absolute", inset: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: "rgba(0,0,0,0.55)",
+                color: nativeStreamStatus === "error" ? "var(--red)" : "var(--text-dim)",
+                fontSize: 11,
+                pointerEvents: "none",
+                padding: 8,
+                textAlign: "center",
+              }}>
+                {nativeStreamStatus === "connecting" && "连接中…"}
+                {nativeStreamStatus === "waiting-keyframe" && "等待关键帧…"}
+                {nativeStreamStatus === "restarting" && "重连中…"}
+                {nativeStreamStatus === "error" && (
+                  isWebCodecsSupported()
+                    ? `自建流解码失败${nativeStreamDetail ? `：${nativeStreamDetail.slice(0, 80)}` : ""}`
+                    : "浏览器不支持 WebCodecs"
+                )}
+                {nativeStreamStatus === "closed" && "自建流已断开"}
+              </div>
+            )}
+          </>
+        ) : streamMode ? (
           <iframe
             src={streamUrl}
             style={{
