@@ -391,6 +391,19 @@ OMNIBOT_EHS_HOST_LOG_DIR=/volume1/server/.openclaw/workspace/projects/omnibot/da
 - 格式化函数统一从 `obs/web/src/lib/format.ts` 导入，不在页面内重复定义
 - 新增 project 需同时：① 在 `router.py` 加 `run_xxx_ingest()` wrapper，② 前端 `SYNC_FN_MAP` 登记
 
+### obs/web 视觉规约
+
+**色板使用**：见 `globals.css` 顶部 "Semantic colors" 注释块。语义色（`--purple` / `--orange` / `--teal`）只用在已声明的语义上，**不得当装饰色扩散**。agent / model 分类着色用 `--cat-1/2/3` 三色循环，不挪用语义色。
+
+**动效克制 —— 全站任意时刻最多一个 `.pulse-dot` 在跳**。
+
+- 当前唯一合法用法：`index.tsx` 项目卡的"今日有活动"指示（`p.today_sessions > 0`）
+- 多个脉冲点同时跳是 dashboard 设计大忌——视觉焦点被到处拽，反而失去"提醒"功能
+- 新增任何"实时""进行中""心跳""未读"指示前，**必须先确认**：当前页面是否已有 pulse-dot 在跳？如果有，新指示用其他视觉手段（静态色点、徽章、文字标签、`opacity` 微调），不要叠加脉冲
+- 适用范围：`.pulse-dot` 类、`@keyframes pulse-ring` 派生动画，以及任何模仿 pulse / breathe / glow 的循环动效
+
+如确实需要第二个"动态指示"，先在 PR 描述里论证为何 pulse 是唯一合适的形态，否则默认拒绝。
+
 ### ⚠️ obs/web 改动必须在容器内验证（面向 codex / Claude Code）
 
 修改 `obs/web/` 任何文件后，**禁止使用宿主机本地 `npm run dev` / `next build` 验证**。原因：
