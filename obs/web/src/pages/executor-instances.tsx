@@ -963,31 +963,44 @@ export default function ExecutorInstancesPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [viewMode, instances.length]);
 
-  // Keep a stable ref to instances so the interval doesn't need to reset
-  const instancesRef = useRef(instances);
-  useEffect(() => { instancesRef.current = instances; }, [instances]);
-
-  // Auto-refresh every 15s in grid mode: fetch in background, keep old screenshot on failure
-  const autoRefresh = useCallback(() => {
-    const insts = instancesRef.current;
-    if (insts.length === 0) return;
-    setLastRefreshAt(new Date());
-    for (const inst of insts) {
-      const port = inst.port;
-      if (fetchingRef.current.has(port)) continue;
-      fetchingRef.current.add(port);
-      api.mhxyExecutorScreenshot(port)
-        .then((d) => setScreenshots((prev) => ({ ...prev, [port]: d.image_b64 })))
-        .catch(() => {})
-        .finally(() => fetchingRef.current.delete(port));
-    }
+  // Per-instance refresh: each port runs its own 3s interval, with first-fire
+  // staggered evenly across the period. This caps in-flight requests at ~ceil(1.7s/stagger),
+  // staying well under Chrome's HTTP/1.1 same-origin 6-connection limit even with 7+ instances.
+  const refreshOne = useCallback((port: string) => {
+    if (fetchingRef.current.has(port)) return;
+    fetchingRef.current.add(port);
+    api.mhxyExecutorScreenshot(port)
+      .then((d) => {
+        setScreenshots((prev) => ({ ...prev, [port]: d.image_b64 }));
+        setLastRefreshAt(new Date());
+      })
+      .catch(() => {})
+      .finally(() => fetchingRef.current.delete(port));
   }, []);
+
+  const portsKey = instances.map((i) => i.port).join(",");
 
   useEffect(() => {
     if (viewMode !== "grid") return;
-    const id = setInterval(autoRefresh, 3_000);
-    return () => clearInterval(id);
-  }, [viewMode, autoRefresh]);
+    const ports = portsKey ? portsKey.split(",") : [];
+    if (ports.length === 0) return;
+    const period = 3_000;
+    const stagger = period / ports.length;
+    const timeouts: ReturnType<typeof setTimeout>[] = [];
+    const intervals: ReturnType<typeof setInterval>[] = [];
+    ports.forEach((port, i) => {
+      const t = setTimeout(() => {
+        refreshOne(port);
+        const id = setInterval(() => refreshOne(port), period);
+        intervals.push(id);
+      }, i * stagger);
+      timeouts.push(t);
+    });
+    return () => {
+      timeouts.forEach(clearTimeout);
+      intervals.forEach(clearInterval);
+    };
+  }, [viewMode, portsKey, refreshOne]);
 
   const openModal = useCallback((port: string) => {
     setModalPort(port);
