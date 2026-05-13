@@ -33,7 +33,7 @@ export default function ToolsPage() {
 
       {err && <p style={{ color: "var(--red)", marginBottom: "1rem" }}>{err}</p>}
 
-      <div style={{ display: "flex", gap: 6, marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: "1.5rem", flexWrap: "wrap", rowGap: 6 }}>
         {projects.map((p) => (
           <button
             key={p.id}

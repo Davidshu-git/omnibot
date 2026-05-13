@@ -235,7 +235,7 @@ function PayloadView({ event }: { event: NormalizedEvent }) {
           <span>🚀</span>
           <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>executor_startup</span>
           <span style={{ color: "var(--green)" }}>executor 启动</span>
-          {p.host && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{p.host as string}</span>}
+          {typeof p.host === "string" && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{p.host}</span>}
         </div>
       );
     }
@@ -251,9 +251,9 @@ function PayloadView({ event }: { event: NormalizedEvent }) {
         <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)" }}>{subtype}</span>
         {port && <span style={{ color: "var(--teal)", fontFamily: "var(--font-mono)" }}>:{port}</span>}
         {state && <span style={{ color: stateColor, fontFamily: "var(--font-mono)", fontSize: 11 }}>{state}</span>}
-        {p.task_name && <span style={{ color: "var(--text-dim)" }}>{p.task_name as string}</span>}
+        {typeof p.task_name === "string" && <span style={{ color: "var(--text-dim)" }}>{p.task_name}</span>}
         {elapsed && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{elapsed}</span>}
-        {p.message && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{(p.message as string).slice(0, 80)}</span>}
+        {typeof p.message === "string" && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{p.message.slice(0, 80)}</span>}
       </div>
     );
   }
