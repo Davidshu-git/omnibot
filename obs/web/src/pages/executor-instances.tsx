@@ -871,7 +871,11 @@ function GroupBlockGrid({
   const allOk = instances.every((i) => i.healthy === true);
   const anyFail = instances.some((i) => i.healthy === false);
   const badgeColor = allOk ? "var(--green)" : anyFail ? "var(--red)" : "var(--amber)";
-  const ordered = leader ? [leader, ...members] : members;
+  const ordered = broadcastScope === "leaders"
+    ? (leader ? [leader] : [])
+    : (leader ? [leader, ...members] : members);
+
+  if (broadcastScope === "leaders" && !leader) return null;
 
   return (
     <div style={{ marginBottom: "1.5rem" }}>
@@ -1259,31 +1263,37 @@ export default function ExecutorInstancesPage() {
               />
             ))}
 
-          {standalone.length > 0 && (
-            <div style={{ marginBottom: "1.5rem" }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
-                <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 13 }}>独立实例</span>
+          {standalone.length > 0 && (() => {
+            const visibleStandalone = broadcastScope === "leaders"
+              ? standalone.filter((i) => i.role === "leader")
+              : standalone;
+            if (visibleStandalone.length === 0) return null;
+            return (
+              <div style={{ marginBottom: "1.5rem" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
+                  <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 13 }}>独立实例</span>
+                </div>
+                <div style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+                  gap: "0.75rem",
+                }}>
+                  {visibleStandalone.map((inst) => (
+                    <ScreenshotCard
+                      key={inst.port}
+                      inst={inst}
+                      screenshot={screenshots[inst.port] ?? "idle"}
+                      onClick={() => openModal(inst.port)}
+                      tapMode={tapMode}
+                      broadcastScope={broadcastScope}
+                      allPorts={allPorts}
+                      leaderPorts={leaderPorts}
+                    />
+                  ))}
+                </div>
               </div>
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
-                gap: "0.75rem",
-              }}>
-                {standalone.map((inst) => (
-                  <ScreenshotCard
-                    key={inst.port}
-                    inst={inst}
-                    screenshot={screenshots[inst.port] ?? "idle"}
-                    onClick={() => openModal(inst.port)}
-                    tapMode={tapMode}
-                    broadcastScope={broadcastScope}
-                    allPorts={allPorts}
-                    leaderPorts={leaderPorts}
-                  />
-                ))}
-              </div>
-            </div>
-          )}
+            );
+          })()}
         </div>
       )}
     </div>
