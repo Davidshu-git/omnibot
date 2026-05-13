@@ -181,6 +181,20 @@ STREAM_BITRATE_BPS = int(os.getenv("EXECUTOR_STREAM_BITRATE_BPS", "1500000"))
 STREAM_SIZE = os.getenv("EXECUTOR_STREAM_SIZE", "")
 STREAM_RESTART_DELAY_SEC = float(os.getenv("EXECUTOR_STREAM_RESTART_DELAY_SEC", "0.3"))
 STREAM_SEND_TIMEOUT_SEC = float(os.getenv("EXECUTOR_STREAM_SEND_TIMEOUT_SEC", "2.0"))
+STREAM_QUALITY_PRESETS = {
+    "low": {
+        "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_LOW_BITRATE_BPS", "650000")),
+        "size": os.getenv("EXECUTOR_STREAM_LOW_SIZE", "960x540"),
+    },
+    "medium": {
+        "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_MEDIUM_BITRATE_BPS", "1000000")),
+        "size": os.getenv("EXECUTOR_STREAM_MEDIUM_SIZE", "1280x720"),
+    },
+    "high": {
+        "bitrate_bps": STREAM_BITRATE_BPS,
+        "size": STREAM_SIZE,
+    },
+}
 W, H = 1600, 900
 
 COMMON_POPUP_TEXTS = ["确定", "关闭", "取消", "稍后", "跳过", "我知道了", "继续"]
@@ -761,15 +775,31 @@ def app_health(req: PortReq, request: Request):
 # 实时流：WebSocket + adb screenrecord pipe (Annex-B H.264 fan-out)
 # ---------------------------------------------------------------------------
 
+def _stream_quality_config(quality: str) -> tuple[str, int, str]:
+    """返回标准化画质和对应 screenrecord 参数。
+
+    Args:
+        quality: 请求参数，支持 low / medium / high。
+
+    Returns:
+        (normalized_quality, bitrate_bps, size)；size 为空表示原始分辨率。
+    """
+    normalized = quality if quality in STREAM_QUALITY_PRESETS else "medium"
+    cfg = STREAM_QUALITY_PRESETS[normalized]
+    return normalized, int(cfg["bitrate_bps"]), str(cfg["size"])
+
+
 class FanoutStream:
     """单端口 screenrecord 推流进程，支持多个 WebSocket 订阅者共享。
 
     Args:
         port: 业务端口，例如 "5557"。
+        quality: 画质档位，low / medium / high。
     """
 
-    def __init__(self, port: str):
+    def __init__(self, port: str, quality: str):
         self.port = port
+        self.quality, self.bitrate_bps, self.stream_size = _stream_quality_config(quality)
         self.subscribers: set[WebSocket] = set()
         self._proc: subprocess.Popen | None = None
         self._reader_task: asyncio.Task | None = None
@@ -820,12 +850,15 @@ class FanoutStream:
             "screenrecord",
             "--output-format=h264",
             f"--time-limit={STREAM_TIME_LIMIT_SEC}",
-            f"--bit-rate={STREAM_BITRATE_BPS}",
+            f"--bit-rate={self.bitrate_bps}",
         ]
-        if STREAM_SIZE:
-            args.extend(["--size", STREAM_SIZE])
+        if self.stream_size:
+            args.extend(["--size", self.stream_size])
         args.append("-")
-        log.info("stream spawn port=%s addr=%s args=%r", self.port, addr, args[2:])
+        log.info(
+            "stream spawn port=%s quality=%s addr=%s args=%r",
+            self.port, self.quality, addr, args[2:],
+        )
         self._proc = subprocess.Popen(
             args,
             stdout=subprocess.PIPE,
@@ -837,10 +870,11 @@ class FanoutStream:
             "type": "stream_session",
             "action": "spawn",
             "port": self.port,
+            "quality": self.quality,
             "adb_addr": addr,
             "subscribers": len(self.subscribers),
-            "bitrate_bps": STREAM_BITRATE_BPS,
-            "size": STREAM_SIZE or None,
+            "bitrate_bps": self.bitrate_bps,
+            "size": self.stream_size or None,
         })
 
     async def _reader_loop(self) -> None:
@@ -983,48 +1017,54 @@ class FanoutStream:
 
 
 class StreamManager:
-    """维护 port 到 FanoutStream 的注册表。"""
+    """维护 (port, quality) 到 FanoutStream 的注册表。"""
 
     def __init__(self) -> None:
-        self._streams: dict[str, FanoutStream] = {}
+        self._streams: dict[tuple[str, str], FanoutStream] = {}
         self._lock = asyncio.Lock()
 
-    async def attach(self, port: str, ws: WebSocket) -> FanoutStream:
+    async def attach(self, port: str, quality: str, ws: WebSocket) -> FanoutStream:
         """把 WebSocket 订阅到指定端口。
 
         Args:
             port: 业务端口。
+            quality: 画质档位。
             ws: 已 accept 的 WebSocket 连接。
 
         Returns:
             对应端口的 FanoutStream。
         """
+        normalized, _, _ = _stream_quality_config(quality)
+        key = (port, normalized)
         async with self._lock:
-            stream = self._streams.get(port)
+            stream = self._streams.get(key)
             if stream is None:
-                stream = FanoutStream(port)
-                self._streams[port] = stream
+                stream = FanoutStream(port, normalized)
+                self._streams[key] = stream
         await stream.add_subscriber(ws)
         return stream
 
-    async def detach(self, port: str, ws: WebSocket) -> None:
+    async def detach(self, port: str, quality: str, ws: WebSocket) -> None:
         """取消 WebSocket 订阅。
 
         Args:
             port: 业务端口。
+            quality: 画质档位。
             ws: 要取消订阅的 WebSocket。
 
         Returns:
             None.
         """
+        normalized, _, _ = _stream_quality_config(quality)
+        key = (port, normalized)
         async with self._lock:
-            stream = self._streams.get(port)
+            stream = self._streams.get(key)
         if stream is None:
             return
         await stream.remove_subscriber(ws)
         async with self._lock:
-            if not stream.subscribers and self._streams.get(port) is stream:
-                self._streams.pop(port, None)
+            if not stream.subscribers and self._streams.get(key) is stream:
+                self._streams.pop(key, None)
 
     async def shutdown_all(self) -> None:
         """终止所有活跃推流进程。
@@ -1061,8 +1101,9 @@ async def ws_stream(websocket: WebSocket, port: str) -> None:
     """
     await websocket.accept()
     stream: FanoutStream | None = None
+    quality = websocket.query_params.get("quality", "medium")
     try:
-        stream = await stream_manager.attach(port, websocket)
+        stream = await stream_manager.attach(port, quality, websocket)
         while True:
             await websocket.receive()
     except WebSocketDisconnect:
@@ -1078,7 +1119,7 @@ async def ws_stream(websocket: WebSocket, port: str) -> None:
             pass
     finally:
         if stream is not None:
-            await stream_manager.detach(port, websocket)
+            await stream_manager.detach(port, quality, websocket)
 
 
 if __name__ == "__main__":

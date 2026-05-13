@@ -29,6 +29,7 @@ type VideoDecoderLike = {
   }) => void;
   decode: (chunk: unknown) => void;
   close: () => void;
+  state?: "unconfigured" | "configured" | "closed";
 };
 
 type WebCodecsWindow = Window & {
@@ -218,17 +219,19 @@ export class StreamPlayer {
   }
 
   private handleRestart(): void {
+    this.resetDecoder();
+    this.opts.onStatus?.("restarting");
+  }
+
+  private resetDecoder(): void {
     try { this.decoder?.close(); } catch {}
     this.decoder = undefined;
     this.buffer = new Uint8Array(0);
-    this.sps = undefined;
-    this.pps = undefined;
     this.configured = false;
     this.gotFirstKeyframe = false;
     this.accessUnit = [];
     this.accessUnitHasVcl = false;
     this.accessUnitHasIdr = false;
-    this.opts.onStatus?.("restarting");
   }
 
   private splitNALs(chunk: Bytes): Bytes[] {
@@ -322,6 +325,12 @@ export class StreamPlayer {
 
     const wc = webCodecsWindow();
     if (!wc?.EncodedVideoChunk) return;
+    if (!this.decoder || this.decoder.state === "closed" || this.decoder.state === "unconfigured") {
+      this.configured = false;
+      this.gotFirstKeyframe = false;
+      this.opts.onStatus?.("waiting-keyframe", "decoder is not configured");
+      return;
+    }
     try {
       this.decoder?.decode(new wc.EncodedVideoChunk({
         type: hasIdr ? "key" : "delta",
@@ -330,6 +339,7 @@ export class StreamPlayer {
       }));
     } catch (error) {
       console.error("H.264 stream decode failed", error);
+      this.resetDecoder();
       this.opts.onStatus?.("error", String(error));
     }
   }
@@ -366,15 +376,22 @@ export class StreamPlayer {
       },
       error: (error) => {
         console.error("H.264 VideoDecoder error", error);
+        this.resetDecoder();
         this.opts.onStatus?.("error", String(error));
       },
     });
-    this.decoder.configure({
-      codec,
-      description: avcDescription(sps, pps),
-      optimizeForLatency: true,
-    });
-    this.configured = true;
-    this.opts.onStatus?.("waiting-keyframe");
+    try {
+      this.decoder.configure({
+        codec,
+        description: avcDescription(sps, pps),
+        optimizeForLatency: true,
+      });
+      this.configured = true;
+      this.opts.onStatus?.("waiting-keyframe");
+    } catch (error) {
+      console.error("H.264 VideoDecoder configure failed", error);
+      this.resetDecoder();
+      this.opts.onStatus?.("error", String(error));
+    }
   }
 }

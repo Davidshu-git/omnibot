@@ -612,7 +612,30 @@ function getContainBounds(img: HTMLImageElement) {
   return getContainBoundsGeneric(img, img.naturalWidth, img.naturalHeight);
 }
 
+function getVideoContentBounds(
+  videoW: number,
+  videoH: number,
+  deviceW: number,
+  deviceH: number,
+): { left: number; top: number; width: number; height: number } {
+  const deviceAspect = deviceW / deviceH;
+  const videoAspect = videoW / videoH;
+  if (deviceAspect > videoAspect) {
+    const height = videoW / deviceAspect;
+    return { left: 0, top: (videoH - height) / 2, width: videoW, height };
+  }
+  const width = videoH * deviceAspect;
+  return { left: (videoW - width) / 2, top: 0, width, height: videoH };
+}
+
 type BroadcastScope = "single" | "all" | "leaders";
+type NativeStreamQuality = "low" | "medium" | "high";
+
+const NATIVE_STREAM_QUALITY_LABEL: Record<NativeStreamQuality, string> = {
+  low: "低",
+  medium: "中",
+  high: "高",
+};
 
 function ScreenshotCard({
   inst,
@@ -622,6 +645,7 @@ function ScreenshotCard({
   broadcastScope = "single",
   allPorts = [],
   leaderPorts = [],
+  nativeStreamQuality,
   onStreamModeChange,
 }: {
   inst: MhxyInstanceDetail;
@@ -631,6 +655,7 @@ function ScreenshotCard({
   broadcastScope?: BroadcastScope;
   allPorts?: string[];
   leaderPorts?: string[];
+  nativeStreamQuality: NativeStreamQuality;
   onStreamModeChange?: (port: string, streaming: boolean) => void;
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number } | null>(null);
@@ -638,7 +663,7 @@ function ScreenshotCard({
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
   const [streamMode, setStreamMode] = useState(false);
-  const [nativeStreamMode, setNativeStreamMode] = useState(false);
+  const [nativeStreamMode, setNativeStreamMode] = useState(true);
   const [nativeStreamStatus, setNativeStreamStatus] = useState<StreamPlayerStatus>("closed");
   const [nativeStreamDetail, setNativeStreamDetail] = useState("");
   const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
@@ -653,7 +678,7 @@ function ScreenshotCard({
   const isImageLoaded = screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error";
   const adbDevice = `emulator-${parseInt(inst.port) - 1}`;
   const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
-  const nativeStreamUrl = `${EXECUTOR_WS_BASE}/ws/stream/${inst.port}`;
+  const nativeStreamUrl = `${EXECUTOR_WS_BASE}/ws/stream/${inst.port}?quality=${nativeStreamQuality}`;
 
   // Cache real device resolution from the latest screenshot — used for stream-mode coord mapping.
   useEffect(() => {
@@ -711,6 +736,7 @@ function ScreenshotCard({
   }, [nativeStreamMode, nativeStreamUrl]);
 
   useEffect(() => {
+    onStreamModeChange?.(inst.port, nativeStreamModeRef.current || streamModeRef.current);
     return () => {
       if (streamModeRef.current || nativeStreamModeRef.current) onStreamModeChange?.(inst.port, false);
     };
@@ -747,17 +773,23 @@ function ScreenshotCard({
     if (!tapMode) return;
     if (nativeStreamMode) {
       if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
+      const videoW = canvasRef.current.width;
+      const videoH = canvasRef.current.height;
       const { cx, cy, cw, ch } = getContainBoundsGeneric(
         canvasRef.current,
-        canvasRef.current.width,
-        canvasRef.current.height,
+        videoW,
+        videoH,
       );
-      const rx = e.clientX - cx;
-      const ry = e.clientY - cy;
-      if (rx < 0 || rx > cw || ry < 0 || ry > ch) { setHoverCoord(null); return; }
+      const frameX = (e.clientX - cx) / cw * videoW;
+      const frameY = (e.clientY - cy) / ch * videoH;
+      if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) { setHoverCoord(null); return; }
+      const content = getVideoContentBounds(videoW, videoH, deviceSize.w, deviceSize.h);
+      const rx = frameX - content.left;
+      const ry = frameY - content.top;
+      if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) { setHoverCoord(null); return; }
       setHoverCoord({
-        x: Math.round(rx / cw * canvasRef.current.width),
-        y: Math.round(ry / ch * canvasRef.current.height),
+        x: Math.round(rx / content.width * deviceSize.w),
+        y: Math.round(ry / content.height * deviceSize.h),
       });
       return;
     }
@@ -788,17 +820,23 @@ function ScreenshotCard({
     if (!tapMode) return;
     if (nativeStreamMode) {
       if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
+      const videoW = canvasRef.current.width;
+      const videoH = canvasRef.current.height;
       const { cx, cy, cw, ch } = getContainBoundsGeneric(
         canvasRef.current,
-        canvasRef.current.width,
-        canvasRef.current.height,
+        videoW,
+        videoH,
       );
-      const rx = e.clientX - cx;
-      const ry = e.clientY - cy;
-      if (rx < 0 || rx > cw || ry < 0 || ry > ch) return;
+      const frameX = (e.clientX - cx) / cw * videoW;
+      const frameY = (e.clientY - cy) / ch * videoH;
+      if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) return;
+      const content = getVideoContentBounds(videoW, videoH, deviceSize.w, deviceSize.h);
+      const rx = frameX - content.left;
+      const ry = frameY - content.top;
+      if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) return;
       e.stopPropagation();
-      const px = Math.round(rx / cw * canvasRef.current.width);
-      const py = Math.round(ry / ch * canvasRef.current.height);
+      const px = Math.round(rx / content.width * deviceSize.w);
+      const py = Math.round(ry / content.height * deviceSize.h);
       const containerRect = e.currentTarget.getBoundingClientRect();
       performTap(px, py, containerRect, e.clientX, e.clientY);
       return;
@@ -879,7 +917,7 @@ function ScreenshotCard({
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); toggleNativeStream(); }}
-          title={nativeStreamMode ? "关闭自建 H.264 实时流" : "切换到自建 H.264 实时流"}
+          title={nativeStreamMode ? `关闭自建 H.264 实时流（${NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}画质）` : `切换到自建 H.264 实时流（${NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}画质）`}
           style={{
             padding: "1px 6px",
             borderRadius: "var(--r-sm)",
@@ -889,7 +927,7 @@ function ScreenshotCard({
             fontSize: 10, lineHeight: 1.2, cursor: "pointer",
           }}
         >
-          H264{nativeStreamMode ? " ON" : ""}
+          H264 {NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}{nativeStreamMode ? " ON" : ""}
         </button>
         <span style={{
           width: 7, height: 7, borderRadius: 999,
@@ -1040,6 +1078,7 @@ function GroupBlockGrid({
   broadcastScope,
   allPorts,
   leaderPorts,
+  nativeStreamQuality,
   onStreamModeChange,
 }: {
   groupId: number;
@@ -1050,6 +1089,7 @@ function GroupBlockGrid({
   broadcastScope: BroadcastScope;
   allPorts: string[];
   leaderPorts: string[];
+  nativeStreamQuality: NativeStreamQuality;
   onStreamModeChange: (port: string, streaming: boolean) => void;
 }) {
   const leader = instances.find((i) => i.role === "leader");
@@ -1087,6 +1127,7 @@ function GroupBlockGrid({
             broadcastScope={broadcastScope}
             allPorts={allPorts}
             leaderPorts={leaderPorts}
+            nativeStreamQuality={nativeStreamQuality}
             onStreamModeChange={onStreamModeChange}
           />
         ))}
@@ -1107,6 +1148,7 @@ export default function ExecutorInstancesPage() {
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [tapMode, setTapMode] = useState(true);
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("single");
+  const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("medium");
 
   // Modal state
   const [modalPort, setModalPort] = useState<string | null>(null);
@@ -1326,6 +1368,25 @@ export default function ExecutorInstancesPage() {
       {/* 截图巡检子工具栏 — 仅 grid 模式下展示，右对齐 */}
       {viewMode === "grid" && (
         <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", marginBottom: "1rem" }}>
+          <div style={{ display: "flex", gap: 3, alignItems: "center", marginRight: 4 }}>
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>H264 画质</span>
+            {(["low", "medium", "high"] as const).map((q) => (
+              <button
+                key={q}
+                onClick={() => setNativeStreamQuality(q)}
+                style={{
+                  padding: "4px 8px",
+                  borderRadius: "var(--r-sm)",
+                  border: `1px solid ${nativeStreamQuality === q ? "var(--teal)" : "var(--border-hi)"}`,
+                  background: nativeStreamQuality === q ? "rgba(56,178,172,0.15)" : "transparent",
+                  color: nativeStreamQuality === q ? "var(--teal)" : "var(--text-muted)",
+                  fontSize: 11, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                {NATIVE_STREAM_QUALITY_LABEL[q]}
+              </button>
+            ))}
+          </div>
           <button
             onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
             style={{
@@ -1457,6 +1518,7 @@ export default function ExecutorInstancesPage() {
                 broadcastScope={broadcastScope}
                 allPorts={allPorts}
                 leaderPorts={leaderPorts}
+                nativeStreamQuality={nativeStreamQuality}
                 onStreamModeChange={setPortStreaming}
               />
             ))}
@@ -1486,6 +1548,7 @@ export default function ExecutorInstancesPage() {
                       broadcastScope={broadcastScope}
                       allPorts={allPorts}
                       leaderPorts={leaderPorts}
+                      nativeStreamQuality={nativeStreamQuality}
                       onStreamModeChange={setPortStreaming}
                     />
                   ))}
