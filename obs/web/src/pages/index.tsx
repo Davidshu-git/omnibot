@@ -144,37 +144,51 @@ export default function OverviewPage() {
 
       {/* Token summary banner */}
       {!loading && totalTokens > 0 && (
-        <div className="card" style={{ marginBottom: "1.5rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-            <span style={{ color: "var(--text-muted)", fontSize: 12, fontWeight: 600 }}>Token 消耗总览</span>
-            <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 18, fontVariantNumeric: "tabular-nums" }}>
+        <div className="card" style={{
+          marginBottom: "1.5rem",
+          padding: "0.85rem 1.1rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.4rem",
+        }}>
+          <span style={{
+            color: "var(--text-muted)",
+            fontSize: 11,
+            fontWeight: 600,
+            letterSpacing: "0.04em",
+            textTransform: "uppercase",
+          }}>
+            Token 消耗总览
+          </span>
+          <div style={{
+            display: "flex",
+            alignItems: "baseline",
+            gap: "0.85rem",
+            flexWrap: "wrap",
+            fontVariantNumeric: "tabular-nums",
+            fontFeatureSettings: "\"tnum\"",
+          }}>
+            <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 16 }}>
               {fmt(totalTokens)}
-              <span style={{ color: "var(--text-dim)", fontWeight: 400, fontSize: 12, marginLeft: 4 }}>tokens</span>
+              <span style={{ color: "var(--text-dim)", fontWeight: 400, fontSize: 11, marginLeft: 3 }}>tok</span>
             </span>
-          </div>
-          <div style={{ display: "flex", height: 6, borderRadius: 3, overflow: "hidden", background: "var(--border)" }}>
-            <div style={{ width: `${inPct}%`, background: "var(--blue)", transition: "width 0.5s var(--ease)" }} />
-            <div style={{ flex: 1, background: "var(--green)" }} />
-          </div>
-          <div style={{ display: "flex", gap: "1.5rem", flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 12 }}>
-              <span style={{ color: "var(--blue)", marginRight: 4 }}>▪</span>
-              <span style={{ color: "var(--text-muted)" }}>输入 </span>
-              <span style={{ color: "var(--text)", fontWeight: 600 }}>{fmt(totalInput)}</span>
-              <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: 4 }}>{inPct}%</span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--blue)" }}>↑</span> {fmt(totalInput)}
             </span>
-            <span style={{ fontSize: 12 }}>
-              <span style={{ color: "var(--green)", marginRight: 4 }}>▪</span>
-              <span style={{ color: "var(--text-muted)" }}>输出 </span>
-              <span style={{ color: "var(--text)", fontWeight: 600 }}>{fmt(totalOutput)}</span>
-              <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: 4 }}>{outPct}%</span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--green)" }}>↓</span> {fmt(totalOutput)}
             </span>
+            <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{inPct}% 输入 · {outPct}% 输出</span>
             {hasCost && (
-              <span style={{ fontSize: 12, marginLeft: "auto" }}>
-                <span style={{ color: "var(--text-muted)" }}>按量计费估算 </span>
-                <span style={{ color: "var(--amber)", fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>{fmtCost(totalCost)}</span>
+              <span style={{ marginLeft: "auto", fontSize: 12 }}>
+                <span style={{ color: "var(--text-muted)" }}>费用 </span>
+                <span style={{ color: "var(--amber)", fontWeight: 700 }}>{fmtCost(totalCost)}</span>
               </span>
             )}
+          </div>
+          <div style={{ display: "flex", height: 3, borderRadius: 2, overflow: "hidden", background: "var(--border)" }}>
+            <div style={{ width: `${inPct}%`, background: "var(--blue)", transition: "width 0.5s var(--ease)" }} />
+            <div style={{ flex: 1, background: "var(--green)" }} />
           </div>
         </div>
       )}
