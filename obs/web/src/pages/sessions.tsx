@@ -46,7 +46,7 @@ const TASK_EVENT_ICONS: Record<string, string> = {
   executor_startup:       "🚀",
 };
 
-const AGENT_PALETTE = ["var(--blue)", "var(--green)", "var(--amber)", "var(--purple)", "var(--orange)", "var(--teal)"];
+const AGENT_PALETTE = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)"];
 const _colorCache: Record<string, string> = {};
 let _colorIdx = 0;
 function agentColor(key: string): string {
@@ -85,7 +85,7 @@ const chipStyle = (tone: "ok" | "warn" | "error" | "muted"): CSSProperties => ({
   border: "1px solid var(--border)",
   color: {
     ok: "var(--green)",
-    warn: "var(--orange)",
+    warn: "var(--amber)",
     error: "var(--red)",
     muted: "var(--text-muted)",
   }[tone],
@@ -368,7 +368,7 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
       : s === "game_disconnected" ? "var(--red)"
       : s === "timeout" ? "var(--red)"
       : s === "login_screen" ? "var(--amber)"
-      : s === "update_restart" ? "var(--orange)"
+      : s === "update_restart" ? "var(--amber)"
       : s === "android_home" ? "var(--blue)"
       : s === "app_loading" ? "var(--teal)"
       : s === "activity_popup" ? "var(--purple)"

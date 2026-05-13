@@ -10,15 +10,36 @@
   --text-muted:   #8b9ab0;
   --text-dim:     #4a5568;
 
+  /* -- Semantic colors -------------------------------------------------------
+   * Each color is reserved for a specific meaning. Do NOT use these for
+   * decoration or to add visual variety. New event types or indicators should
+   * map to one of these or introduce a new variable.
+   *
+   * --blue    主色 / 链接 / active 态 / 输入 token
+   * --green   成功 / 健康 / 输出 token
+   * --amber   警示 / 费用 cost / 排名首位
+   * --red     错误 / 不健康
+   * --purple  thought 事件（LLM 推理痕迹）
+   * --orange  tool_call / tool_result 事件（工具调用相关）
+   * --teal    metric / event / 耗时（中性度量类）
+   * ------------------------------------------------------------------------ */
   --blue:         #60a5fa;
   --blue-dim:     #1e3a5f;
   --green:        #34d399;
   --green-dim:    #14352a;
   --amber:        #fbbf24;
-  --orange:       #fb923c;
-  --purple:       #c4b5fd;
   --red:          #f87171;
+  --purple:       #c4b5fd;
+  --orange:       #fb923c;
   --teal:         #2dd4bf;
+
+  /* -- Categorical palette ---------------------------------------------------
+   * 用于 agent / model 分类着色。仅 3 色循环，避免语义色被当作装饰色
+   * 扩散使用；文字标签仍承担最终身份区分。
+   * ------------------------------------------------------------------------ */
+  --cat-1:        #60a5fa;
+  --cat-2:        #34d399;
+  --cat-3:        #a78bfa;
 
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, Menlo, monospace;

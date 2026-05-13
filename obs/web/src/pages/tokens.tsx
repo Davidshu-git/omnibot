@@ -278,7 +278,7 @@ function DailyChart({ data }: { data: TokenDailyStat[] }) {
   const [hovered, setHovered] = useState<number | null>(null);
 
   const hasCost = sorted.some((d) => d.cost != null);
-  const MODEL_PALETTE = ["var(--teal)", "var(--amber)", "var(--purple)", "var(--orange)", "var(--blue)"];
+  const MODEL_PALETTE = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)"];
   const allModels = Array.from(new Set(sorted.flatMap((d) => [
     ...(d.model_tokens ?? []).map((mt) => mt.model),
     ...(d.model_costs ?? []).map((mc) => mc.model),
