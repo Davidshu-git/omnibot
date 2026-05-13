@@ -26,12 +26,13 @@ export default function Layout({ children }: { children: ReactNode }) {
   const w = collapsed ? 48 : 180;
 
   return (
-    <div style={{ display: "flex", minHeight: "100vh" }}>
+    <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
       <nav
         className="sidebar"
         style={{
           width: w,
           flexShrink: 0,
+          height: "100vh",
           background: "var(--surface)",
           borderRight: "1px solid var(--border)",
           display: "flex",
@@ -141,6 +142,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
       <main style={{
         flex: 1,
+        height: "100vh",
         padding: isMobile ? "1rem 0.875rem" : "1.75rem 2rem",
         overflowY: "auto",
         background: "var(--bg)",
