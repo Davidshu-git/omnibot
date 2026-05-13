@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import type { SessionSummary, NormalizedEvent } from "@/types/events";
 import CopyableId from "@/components/CopyableId";
 import { SkeletonSessionItem } from "@/components/Skeleton";
+import { useIsMobile } from "@/lib/useIsMobile";
 
 marked.use({ breaks: true, gfm: true });
 
@@ -566,11 +567,12 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
 
 // ── event row & task-event group ──────────────────────────────────────────────
 
-function EventRow({ event: e, anchorId, roundsByTrace, traceComplete }: {
+function EventRow({ event: e, anchorId, roundsByTrace, traceComplete, isMobile }: {
   event: NormalizedEvent;
   anchorId: string | undefined;
   roundsByTrace: Record<string, number>;
   traceComplete: Set<string>;
+  isMobile?: boolean;
 }) {
   const color = EVENT_COLORS[e.event_type] ?? "var(--text-dim)";
   const isError = e.event_type === "error";
@@ -596,9 +598,11 @@ function EventRow({ event: e, anchorId, roundsByTrace, traceComplete }: {
       <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
         {fmtTime(e.timestamp)}
       </div>
-      <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-        {e.event_type}
-      </div>
+      {!isMobile && (
+        <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
+          {e.event_type}
+        </div>
+      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <EventDetail event={e} />
         {e.trace_id && (
@@ -621,11 +625,12 @@ function EventRow({ event: e, anchorId, roundsByTrace, traceComplete }: {
   );
 }
 
-function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete }: {
+function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete, isMobile }: {
   events: NormalizedEvent[];
   anchors: Record<string, string | undefined>;
   roundsByTrace: Record<string, number>;
   traceComplete: Set<string>;
+  isMobile?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const subtypeCounts = events.reduce<Record<string, number>>((acc, e) => {
@@ -653,9 +658,11 @@ function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete }: {
         <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
           {fmtTime(firstE.timestamp)}
         </div>
-        <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-          task_event
-        </div>
+        {!isMobile && (
+          <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
+            task_event
+          </div>
+        )}
         <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
           <button onClick={() => setExpanded(true)} style={{
             background: "none", border: `1px solid ${color}`, color,
@@ -684,7 +691,7 @@ function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete }: {
         paddingLeft: "0.75rem",
       }}>
         <div style={{ width: 62, flexShrink: 0 }} />
-        <div style={{ width: 88, flexShrink: 0 }} />
+        {!isMobile && <div style={{ width: 88, flexShrink: 0 }} />}
         <button onClick={() => setExpanded(false)} style={{
           background: "none", border: "1px solid var(--border)", color: "var(--text-dim)",
           cursor: "pointer", fontSize: 11, padding: "1px 8px", borderRadius: 3,
@@ -700,6 +707,7 @@ function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete }: {
           anchorId={anchors[e.event_id]}
           roundsByTrace={roundsByTrace}
           traceComplete={traceComplete}
+          isMobile={isMobile}
         />
       ))}
     </div>
@@ -710,6 +718,7 @@ function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete }: {
 
 function Timeline({ events, roundsByTrace }: { events: NormalizedEvent[]; roundsByTrace: Record<string, number> }) {
   const [filter, setFilter] = useState<string>("all");
+  const isMobile = useIsMobile();
   const types = Array.from(new Set(events.map((e) => e.event_type)));
   const visible = filter === "all" ? events : events.filter((e) => e.event_type === filter);
 
@@ -778,6 +787,7 @@ function Timeline({ events, roundsByTrace }: { events: NormalizedEvent[]; rounds
                   anchorId={allocAnchor(item.event)}
                   roundsByTrace={roundsByTrace}
                   traceComplete={traceComplete}
+                  isMobile={isMobile}
                 />
               );
             }
@@ -792,6 +802,7 @@ function Timeline({ events, roundsByTrace }: { events: NormalizedEvent[]; rounds
                 anchors={anchors}
                 roundsByTrace={roundsByTrace}
                 traceComplete={traceComplete}
+                isMobile={isMobile}
               />
             );
           });
@@ -817,6 +828,7 @@ function AgentBadge({ label }: { label: string }) {
 
 export default function SessionsPage() {
   const router = useRouter();
+  const isMobile = useIsMobile();
   const projectId = (router.query.project_id as string) ?? "";
   const selectedId = (router.query.session_id as string) ?? "";
 
@@ -924,6 +936,14 @@ export default function SessionsPage() {
     );
   }
 
+  function backToSessionList() {
+    router.push(
+      { pathname: "/sessions", query: projectId ? { project_id: projectId } : {} },
+      undefined,
+      { shallow: true }
+    );
+  }
+
   const agentKeys = Array.from(new Set(sessions.map((s) => s.agent_id ?? s.project_id).filter(Boolean)));
   const visible = agentFilter === "all"
     ? sessions
@@ -940,11 +960,23 @@ export default function SessionsPage() {
         {err && <span style={{ color: "var(--red)", fontSize: 12 }}>{err}</span>}
       </div>
 
-      <div style={{ flex: 1, display: "flex", gap: "1rem", minHeight: 0 }}>
+      <div style={{
+        flex: 1,
+        display: "flex",
+        gap: "1rem",
+        minHeight: 0,
+        flexDirection: isMobile ? "column" : "row",
+      }}>
         {/* left: session list */}
+        {(!isMobile || !selectedId) && (
         <div style={{
-          width: 240, flexShrink: 0, display: "flex", flexDirection: "column",
-          borderRight: "1px solid var(--border)", paddingRight: "1rem",
+          width: isMobile ? "100%" : 240,
+          flexShrink: 0,
+          display: "flex",
+          flexDirection: "column",
+          borderRight: isMobile ? "none" : "1px solid var(--border)",
+          paddingRight: isMobile ? 0 : "1rem",
+          minHeight: 0,
         }}>
           {/* agent filter */}
           {agentKeys.length > 1 && (
@@ -1004,9 +1036,28 @@ export default function SessionsPage() {
             )}
           </div>
         </div>
+        )}
 
         {/* right: timeline */}
+        {(!isMobile || selectedId) && (
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          {isMobile && selectedId && (
+            <button
+              onClick={backToSessionList}
+              style={{
+                background: "none",
+                border: "none",
+                color: "var(--blue)",
+                fontSize: 12,
+                marginBottom: "0.5rem",
+                padding: 0,
+                cursor: "pointer",
+                alignSelf: "flex-start",
+              }}
+            >
+              ← 返回会话列表
+            </button>
+          )}
           {selectedSession && (
             <div style={{
               display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
@@ -1031,6 +1082,7 @@ export default function SessionsPage() {
             <p style={{ color: "var(--text-dim)" }}>该会话暂无事件</p>
           )}
         </div>
+        )}
       </div>
     </div>
   );
