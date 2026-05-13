@@ -645,20 +645,24 @@ function getContainBounds(img: HTMLImageElement) {
   return { cx, cy, cw, ch };
 }
 
+type BroadcastScope = "single" | "all" | "leaders";
+
 function ScreenshotCard({
   inst,
   screenshot,
   onClick,
   tapMode = false,
-  broadcastMode = false,
+  broadcastScope = "single",
   allPorts = [],
+  leaderPorts = [],
 }: {
   inst: MhxyInstanceDetail;
   screenshot: ScreenshotState;
   onClick: () => void;
   tapMode?: boolean;
-  broadcastMode?: boolean;
+  broadcastScope?: BroadcastScope;
   allPorts?: string[];
+  leaderPorts?: string[];
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number } | null>(null);
   const tapPendingRef = useRef(false);
@@ -696,7 +700,10 @@ function ScreenshotCard({
       key: Date.now(),
     });
     if (tapPendingRef.current) return;
-    const targets = broadcastMode ? allPorts : [inst.port];
+    const targets = broadcastScope === "leaders" ? leaderPorts
+                  : broadcastScope === "all" ? allPorts
+                  : [inst.port];
+    if (targets.length === 0) return;
     tapPendingRef.current = true;
     setTapStatus({ pending: true });
     api.mhxyExecutorBatchTap(targets, px, py)
@@ -710,7 +717,7 @@ function ScreenshotCard({
         setTimeout(() => setTapStatus(null), 2500);
       })
       .finally(() => { tapPendingRef.current = false; });
-  }, [tapMode, isImageLoaded, broadcastMode, allPorts, inst.port]);
+  }, [tapMode, isImageLoaded, broadcastScope, allPorts, leaderPorts, inst.port]);
 
   const statusColor = inst.healthy === true
     ? "var(--green)"
@@ -815,7 +822,9 @@ function ScreenshotCard({
             color: tapStatus.pending ? "var(--text-dim)" : tapStatus.fail === 0 ? "var(--green)" : "var(--amber)",
           }}>
             {tapStatus.pending
-              ? (broadcastMode ? `广播 ${allPorts.length}…` : "…")
+              ? (broadcastScope === "leaders" ? `队长 ${leaderPorts.length}…`
+                : broadcastScope === "all" ? `广播 ${allPorts.length}…`
+                : "…")
               : `✓${tapStatus.ok}${tapStatus.fail ? ` ✗${tapStatus.fail}` : ""}`}
           </div>
         )}
@@ -844,16 +853,18 @@ function GroupBlockGrid({
   screenshots,
   onCardClick,
   tapMode,
-  broadcastMode,
+  broadcastScope,
   allPorts,
+  leaderPorts,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
   screenshots: Record<string, ScreenshotState>;
   onCardClick: (port: string) => void;
   tapMode: boolean;
-  broadcastMode: boolean;
+  broadcastScope: BroadcastScope;
   allPorts: string[];
+  leaderPorts: string[];
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -883,8 +894,9 @@ function GroupBlockGrid({
             screenshot={screenshots[inst.port] ?? "idle"}
             onClick={() => onCardClick(inst.port)}
             tapMode={tapMode}
-            broadcastMode={broadcastMode}
+            broadcastScope={broadcastScope}
             allPorts={allPorts}
+            leaderPorts={leaderPorts}
           />
         ))}
       </div>
@@ -902,8 +914,8 @@ export default function ExecutorInstancesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
-  const [tapMode, setTapMode] = useState(false);
-  const [gridBroadcast, setGridBroadcast] = useState(false);
+  const [tapMode, setTapMode] = useState(true);
+  const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("single");
 
   // Modal state
   const [modalPort, setModalPort] = useState<string | null>(null);
@@ -1044,6 +1056,7 @@ export default function ExecutorInstancesPage() {
   const totalOk = instances.filter((i) => i.healthy === true).length;
   const totalAdb = instances.filter((i) => i.adb === true).length;
   const allPorts = instances.map((i) => i.port);
+  const leaderPorts = instances.filter((i) => i.role === "leader").map((i) => i.port);
 
   return (
     <div>
@@ -1113,7 +1126,7 @@ export default function ExecutorInstancesPage() {
       {viewMode === "grid" && (
         <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", marginBottom: "1rem" }}>
           <button
-            onClick={() => { setTapMode((v) => !v); if (tapMode) setGridBroadcast(false); }}
+            onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
             style={{
               padding: "4px 10px",
               borderRadius: "var(--r-sm)",
@@ -1126,17 +1139,34 @@ export default function ExecutorInstancesPage() {
             📍 点击操作{tapMode ? " ON" : ""}
           </button>
           <button
-            onClick={() => setGridBroadcast((v) => !v)}
+            onClick={() => setBroadcastScope((s) => s === "all" ? "single" : "all")}
             style={{
               padding: "4px 10px",
               borderRadius: "var(--r-sm)",
-              border: `1px solid ${gridBroadcast ? "var(--amber)" : "var(--border-hi)"}`,
-              background: gridBroadcast ? "rgba(246,173,85,0.15)" : "transparent",
-              color: gridBroadcast ? "var(--amber)" : "var(--text-muted)",
+              border: `1px solid ${broadcastScope === "all" ? "var(--amber)" : "var(--border-hi)"}`,
+              background: broadcastScope === "all" ? "rgba(246,173,85,0.15)" : "transparent",
+              color: broadcastScope === "all" ? "var(--amber)" : "var(--text-muted)",
               fontSize: 11, fontWeight: 500, cursor: "pointer",
             }}
           >
-            📡 广播{gridBroadcast ? " ON" : ""}
+            📡 广播{broadcastScope === "all" ? " ON" : ""}
+          </button>
+          <button
+            onClick={() => setBroadcastScope((s) => s === "leaders" ? "single" : "leaders")}
+            disabled={leaderPorts.length === 0}
+            title={leaderPorts.length === 0 ? "无队长实例" : `广播至全部 ${leaderPorts.length} 个队长`}
+            style={{
+              padding: "4px 10px",
+              borderRadius: "var(--r-sm)",
+              border: `1px solid ${broadcastScope === "leaders" ? "var(--amber)" : "var(--border-hi)"}`,
+              background: broadcastScope === "leaders" ? "rgba(246,173,85,0.15)" : "transparent",
+              color: broadcastScope === "leaders" ? "var(--amber)" : "var(--text-muted)",
+              fontSize: 11, fontWeight: 500,
+              cursor: leaderPorts.length === 0 ? "not-allowed" : "pointer",
+              opacity: leaderPorts.length === 0 ? 0.4 : 1,
+            }}
+          >
+            👑 仅队长{broadcastScope === "leaders" ? ` ON (${leaderPorts.length})` : ""}
           </button>
         </div>
       )}
@@ -1161,7 +1191,11 @@ export default function ExecutorInstancesPage() {
               ? `截图刷新于 ${lastRefreshAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
               : "截图加载中…"}
             {viewMode === "grid" && (tapMode
-              ? (gridBroadcast ? ` · 广播模式：点击任意截图 → 同步到全部 ${allPorts.length} 个实例` : " · 点击截图操作当前实例，黑边区域打开详情")
+              ? (broadcastScope === "leaders"
+                  ? ` · 队长广播：点击任意截图 → 同步到 ${leaderPorts.length} 个队长实例`
+                  : broadcastScope === "all"
+                    ? ` · 广播模式：点击任意截图 → 同步到全部 ${allPorts.length} 个实例`
+                    : " · 点击截图操作当前实例，黑边区域打开详情")
               : " · 点击卡片可放大")}
           </span>
         </p>
@@ -1219,8 +1253,9 @@ export default function ExecutorInstancesPage() {
                 screenshots={screenshots}
                 onCardClick={openModal}
                 tapMode={tapMode}
-                broadcastMode={gridBroadcast}
+                broadcastScope={broadcastScope}
                 allPorts={allPorts}
+                leaderPorts={leaderPorts}
               />
             ))}
 
@@ -1241,8 +1276,9 @@ export default function ExecutorInstancesPage() {
                     screenshot={screenshots[inst.port] ?? "idle"}
                     onClick={() => openModal(inst.port)}
                     tapMode={tapMode}
-                    broadcastMode={gridBroadcast}
+                    broadcastScope={broadcastScope}
                     allPorts={allPorts}
+                    leaderPorts={leaderPorts}
                   />
                 ))}
               </div>
