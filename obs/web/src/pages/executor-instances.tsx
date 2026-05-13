@@ -998,7 +998,9 @@ export default function ExecutorInstancesPage() {
 
   useEffect(() => {
     if (viewMode !== "grid") return;
-    const ports = portsKey ? portsKey.split(",") : [];
+    const ports = broadcastScope === "leaders"
+      ? instances.filter((i) => i.role === "leader").map((i) => i.port)
+      : portsKey ? portsKey.split(",") : [];
     if (ports.length === 0) return;
     const period = 3_000;
     const stagger = period / ports.length;
@@ -1016,7 +1018,7 @@ export default function ExecutorInstancesPage() {
       timeouts.forEach(clearTimeout);
       intervals.forEach(clearInterval);
     };
-  }, [viewMode, portsKey, refreshOne]);
+  }, [viewMode, portsKey, broadcastScope, refreshOne]);
 
   const openModal = useCallback((port: string) => {
     setModalPort(port);
