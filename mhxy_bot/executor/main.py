@@ -183,8 +183,8 @@ STREAM_RESTART_DELAY_SEC = float(os.getenv("EXECUTOR_STREAM_RESTART_DELAY_SEC", 
 STREAM_SEND_TIMEOUT_SEC = float(os.getenv("EXECUTOR_STREAM_SEND_TIMEOUT_SEC", "2.0"))
 STREAM_QUALITY_PRESETS = {
     "low": {
-        "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_LOW_BITRATE_BPS", "650000")),
-        "size": os.getenv("EXECUTOR_STREAM_LOW_SIZE", "960x540"),
+        "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_LOW_BITRATE_BPS", "200000")),
+        "size": os.getenv("EXECUTOR_STREAM_LOW_SIZE", "256x144"),
     },
     "medium": {
         "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_MEDIUM_BITRATE_BPS", "1000000")),
