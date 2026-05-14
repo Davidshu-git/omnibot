@@ -382,6 +382,17 @@ FastAPI 路由聚合查询 → Next.js 展示
 - `core/observability.py` → `obs/api/app/adapters/omnibot_jsonl.py`
 - `mhxy_bot/` 的 JSONL 格式 → `obs/api/app/adapters/mhxy_jsonl.py`
 
+### ⚠️ 设备分辨率契约（executor ↔ obs/web 隐式耦合）
+
+`mhxy_bot/executor/main.py` 的 `W, H = 1600, 900` 与 `obs/web/src/pages/executor-instances.tsx` 中 `ScreenshotCard.deviceSize` 默认值（`{ w: 1600, h: 900 }`）形成隐式契约。
+
+背景：截图巡检卡片默认开启 H264 流（`nativeStreamMode = true`），轮询逻辑会跳过推流端口的截图请求 → 前端在用户切回截图前永远拿不到真实分辨率 → tap 坐标完全依赖 `deviceSize` 默认值。曾因这里写了 `streamResolution ?? deviceSize` fallback 导致中/低画质 tap 坐标缩到 1/3 ~ 1/6。
+
+**修改 executor `W, H` 时必须同步**：
+- `obs/web/src/pages/executor-instances.tsx` 中 `ScreenshotCard` 的 `deviceSize` `useState` 初始值
+
+更稳健的长期方案（尚未做）：executor `/instances` 接口返回每个实例的真实分辨率，前端从 `inst` 数据读取，消除硬编码。
+
 ### 关键设计
 
 - **摄取 cursor**：每个 DataSource 存储 `last_sync_cursor`（文件路径→mtime JSON），未变更文件跳过，无需全量扫描。强制全量重扫：`curl -X POST "http://localhost:8000/api/ingest/mhxy?force=true"`。
