@@ -83,7 +83,8 @@ function ScreenshotModal({
   const [clickRipple, setClickRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
   const imgRef = useRef<HTMLImageElement>(null);
-  const tapPendingRef = useRef(false);
+  const lastActionRef = useRef(0);
+  const TAP_COOLDOWN = 300;
 
   // ADB device ID: MuMu emulator port is odd (5557), ADB port is port-1 (5556)
   const adbDevice = `emulator-${parseInt(port) - 1}`;
@@ -122,8 +123,8 @@ function ScreenshotModal({
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
-    if (tapPendingRef.current) return;
-    tapPendingRef.current = true;
+    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
+    lastActionRef.current = Date.now();
     setTapStatus({ pending: true });
     api.mhxyExecutorBatchTap([port], px, py)
       .then((d) => {
@@ -133,8 +134,7 @@ function ScreenshotModal({
       })
       .catch(() => {
         setTapStatus({ pending: false, ok: 0, fail: 1, px, py });
-      })
-      .finally(() => { tapPendingRef.current = false; });
+      });
   }, [port, onRefreshScreenshot]);
 
   const handleStreamMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -161,8 +161,8 @@ function ScreenshotModal({
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
-    if (tapPendingRef.current) return;
-    tapPendingRef.current = true;
+    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
+    lastActionRef.current = Date.now();
     setTapStatus({ pending: true });
     api.mhxyExecutorBatchTap([port], px, py)
       .then((d) => {
@@ -171,8 +171,7 @@ function ScreenshotModal({
       })
       .catch(() => {
         setTapStatus({ pending: false, ok: 0, fail: 1, px, py });
-      })
-      .finally(() => { tapPendingRef.current = false; });
+      });
   }, [deviceSize, port]);
 
   const isImage = state !== "loading" && state !== "error" && state !== "idle";
@@ -830,7 +829,8 @@ function ScreenshotCard({
   swipeEnabled?: boolean;
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe" } | null>(null);
-  const tapPendingRef = useRef(false);
+  const lastActionRef = useRef(0);
+  const TAP_COOLDOWN = 300;
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -943,10 +943,10 @@ function ScreenshotCard({
       pctY: (clientY - containerRect.top) / containerRect.height * 100,
       key: Date.now(),
     });
-    if (tapPendingRef.current) return;
+    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
     const targets = currentTargets();
     if (targets.length === 0) return;
-    tapPendingRef.current = true;
+    lastActionRef.current = Date.now();
     setTapStatus({ pending: true, kind: "tap" });
     api.mhxyExecutorBatchTap(targets, px, py)
       .then((d) => {
@@ -957,15 +957,14 @@ function ScreenshotCard({
       .catch(() => {
         setTapStatus({ pending: false, ok: 0, fail: targets.length, kind: "tap" });
         setTimeout(() => setTapStatus(null), 2500);
-      })
-      .finally(() => { tapPendingRef.current = false; });
+      });
   }, [currentTargets]);
 
   const performSwipe = useCallback((x1: number, y1: number, x2: number, y2: number, durationMs = 300) => {
-    if (tapPendingRef.current) return;
+    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
     const targets = currentTargets();
     if (targets.length === 0) return;
-    tapPendingRef.current = true;
+    lastActionRef.current = Date.now();
     setTapStatus({ pending: true, kind: "swipe" });
     api.mhxyExecutorBatchSwipe(targets, x1, y1, x2, y2, durationMs)
       .then((d) => {
@@ -976,8 +975,7 @@ function ScreenshotCard({
       .catch(() => {
         setTapStatus({ pending: false, ok: 0, fail: targets.length, kind: "swipe" });
         setTimeout(() => setTapStatus(null), 2500);
-      })
-      .finally(() => { tapPendingRef.current = false; });
+      });
   }, [currentTargets]);
 
   const pointFromClient = useCallback((elem: HTMLDivElement, clientX: number, clientY: number) => {
