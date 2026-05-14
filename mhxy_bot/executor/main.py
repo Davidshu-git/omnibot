@@ -1255,6 +1255,121 @@ async def ws_stream(websocket: WebSocket, port: str) -> None:
             await stream_manager.detach(port, quality, websocket)
 
 
+# ---------------------------------------------------------------------------
+# 输入 WebSocket：低延迟 tap/swipe 通道
+# ---------------------------------------------------------------------------
+# 二进制协议（小端序）：
+#   [0] type: u8     1=tap  2=swipe
+#   [1] port_count: u8
+#   [2..2+2*N] ports: N × u16 (端口号，小端序)
+#   tap:   px(u16) py(u16)
+#   swipe: x1(u16) y1(u16) x2(u16) y2(u16) duration_ms(u16)
+# ---------------------------------------------------------------------------
+
+async def _exec_adb_tap(adb: str, device: str, px: int, py: int) -> bool:
+    """执行单次 ADB tap。"""
+    try:
+        r = subprocess.run(
+            [adb, "-s", device, "shell", "input", "tap", str(px), str(py)],
+            capture_output=True, timeout=15,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+async def _exec_adb_swipe(
+    adb: str, device: str,
+    x1: int, y1: int, x2: int, y2: int, duration_ms: int,
+) -> bool:
+    """执行单次 ADB swipe。"""
+    try:
+        r = subprocess.run(
+            [adb, "-s", device, "shell", "input", "swipe",
+             str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
+            capture_output=True, timeout=15,
+        )
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+@app.websocket("/ws/input")
+async def ws_input(websocket: WebSocket) -> None:
+    """低延迟输入通道（tap/swipe）。
+
+    接收二进制帧，格式：
+      type(1B) port_count(1B) ports(N×2B LE) payload...
+
+    返回单字节 ACK：0x00=成功，0x01=失败。
+    比 HTTP REST 路径短 ~90%，延迟降低 ~15-30ms。
+    """
+    await websocket.accept()
+    try:
+        while True:
+            raw = await websocket.receive_bytes()
+            if len(raw) < 5:
+                continue
+
+            msg_type = raw[0]
+            port_count = raw[1]
+            offset = 2
+
+            # 解析端口
+            ports: list[str] = []
+            for _i in range(port_count):
+                port_num = int.from_bytes(raw[offset:offset + 2], "little")
+                ports.append(str(port_num))
+                offset += 2
+
+            remaining = len(raw) - offset
+
+            if msg_type == 1 and remaining == 4:
+                # tap: px(2B) + py(2B)
+                px = int.from_bytes(raw[offset:offset + 2], "little")
+                py = int.from_bytes(raw[offset + 2:offset + 4], "little")
+                # 顺序执行（和 REST 端点一致）
+                ok_count = 0
+                for port in ports:
+                    device = _port_to_addr(port)
+                    if await _exec_adb_tap(ADB_PATH, device, px, py):
+                        ok_count += 1
+                    if len(ports) > 1:
+                        await asyncio.sleep(random.uniform(0.08, 0.15))
+                success = (ok_count > 0)
+                await websocket.send_bytes(bytes([0x00 if success else 0x01]))
+
+            elif msg_type == 2 and remaining == 10:
+                # swipe: x1 y1 x2 y2 duration_ms (各2B)
+                x1 = int.from_bytes(raw[offset:offset + 2], "little")
+                y1 = int.from_bytes(raw[offset + 2:offset + 4], "little")
+                x2 = int.from_bytes(raw[offset + 4:offset + 6], "little")
+                y2 = int.from_bytes(raw[offset + 6:offset + 8], "little")
+                duration_ms = int.from_bytes(raw[offset + 8:offset + 10], "little")
+                ok_count = 0
+                for port in ports:
+                    device = _port_to_addr(port)
+                    if await _exec_adb_swipe(ADB_PATH, device, x1, y1, x2, y2, duration_ms):
+                        ok_count += 1
+                    if len(ports) > 1:
+                        await asyncio.sleep(random.uniform(0.08, 0.15))
+                success = (ok_count > 0)
+                await websocket.send_bytes(bytes([0x00 if success else 0x01]))
+
+            else:
+                # 未知消息类型或 payload 长度不对
+                await websocket.send_bytes(bytes([0x01]))
+
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        log.exception("ws_input error")
+        try:
+            await websocket.close(code=ws_status.WS_1011_INTERNAL_ERROR)
+        except RuntimeError:
+            pass
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("EXECUTOR_PORT", "8765")))

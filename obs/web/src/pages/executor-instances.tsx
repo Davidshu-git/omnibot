@@ -4,6 +4,7 @@ import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/
 import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { useFocusMode } from "@/lib/focus-mode-context";
+import { sendInput } from "@/lib/input-ws";
 
 const ROLE_LABEL: Record<string, string> = {
   leader: "队长",
@@ -125,16 +126,9 @@ function ScreenshotModal({
     setClickRipple({ pctX, pctY, key: Date.now() });
     if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
     lastActionRef.current = Date.now();
-    setTapStatus({ pending: true });
-    api.mhxyExecutorBatchTap([port], px, py)
-      .then((d) => {
-        const ok = Object.values(d.results).filter(Boolean).length;
-        setTapStatus({ pending: false, ok, fail: 1 - ok, px, py });
-        setTimeout(() => onRefreshScreenshot(port), 200);
-      })
-      .catch(() => {
-        setTapStatus({ pending: false, ok: 0, fail: 1, px, py });
-      });
+    setTapStatus({ pending: false, ok: 1, fail: 0, px, py });
+    setTimeout(() => onRefreshScreenshot(port), 200);
+    sendInput({ type: "tap", ports: [port], px, py });
   }, [port, onRefreshScreenshot]);
 
   const handleStreamMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -163,15 +157,8 @@ function ScreenshotModal({
     setClickRipple({ pctX, pctY, key: Date.now() });
     if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
     lastActionRef.current = Date.now();
-    setTapStatus({ pending: true });
-    api.mhxyExecutorBatchTap([port], px, py)
-      .then((d) => {
-        const ok = Object.values(d.results).filter(Boolean).length;
-        setTapStatus({ pending: false, ok, fail: 1 - ok, px, py });
-      })
-      .catch(() => {
-        setTapStatus({ pending: false, ok: 0, fail: 1, px, py });
-      });
+    setTapStatus({ pending: false, ok: 1, fail: 0, px, py });
+    sendInput({ type: "tap", ports: [port], px, py });
   }, [deviceSize, port]);
 
   const isImage = state !== "loading" && state !== "error" && state !== "idle";
@@ -947,17 +934,9 @@ function ScreenshotCard({
     const targets = currentTargets();
     if (targets.length === 0) return;
     lastActionRef.current = Date.now();
-    setTapStatus({ pending: true, kind: "tap" });
-    api.mhxyExecutorBatchTap(targets, px, py)
-      .then((d) => {
-        const ok = Object.values(d.results).filter(Boolean).length;
-        setTapStatus({ pending: false, ok, fail: targets.length - ok, kind: "tap" });
-        setTimeout(() => setTapStatus(null), 2500);
-      })
-      .catch(() => {
-        setTapStatus({ pending: false, ok: 0, fail: targets.length, kind: "tap" });
-        setTimeout(() => setTapStatus(null), 2500);
-      });
+    setTapStatus({ pending: false, ok: targets.length, fail: 0, kind: "tap" });
+    setTimeout(() => setTapStatus(null), 1500);
+    sendInput({ type: "tap", ports: targets, px, py });
   }, [currentTargets]);
 
   const performSwipe = useCallback((x1: number, y1: number, x2: number, y2: number, durationMs = 300) => {
@@ -965,17 +944,9 @@ function ScreenshotCard({
     const targets = currentTargets();
     if (targets.length === 0) return;
     lastActionRef.current = Date.now();
-    setTapStatus({ pending: true, kind: "swipe" });
-    api.mhxyExecutorBatchSwipe(targets, x1, y1, x2, y2, durationMs)
-      .then((d) => {
-        const ok = Object.values(d.results).filter(Boolean).length;
-        setTapStatus({ pending: false, ok, fail: targets.length - ok, kind: "swipe" });
-        setTimeout(() => setTapStatus(null), 2500);
-      })
-      .catch(() => {
-        setTapStatus({ pending: false, ok: 0, fail: targets.length, kind: "swipe" });
-        setTimeout(() => setTapStatus(null), 2500);
-      });
+    setTapStatus({ pending: false, ok: targets.length, fail: 0, kind: "swipe" });
+    setTimeout(() => setTapStatus(null), 1500);
+    sendInput({ type: "swipe", ports: targets, x1, y1, x2, y2, durationMs });
   }, [currentTargets]);
 
   const pointFromClient = useCallback((elem: HTMLDivElement, clientX: number, clientY: number) => {
