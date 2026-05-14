@@ -1187,7 +1187,7 @@ function ScreenshotCard({
             fontSize: 10, lineHeight: 1.2, cursor: "pointer",
           }}
         >
-          H264 {NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}{nativeStreamMode ? " ON" : ""}
+          流
         </button>
         <span style={{
           width: 7, height: 7, borderRadius: 999,
@@ -1731,9 +1731,8 @@ export default function ExecutorInstancesPage() {
             borderRadius: "var(--r-sm)",
             background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012))",
             boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
-            ...(focusMode ? { position: "sticky", top: 0, zIndex: 100 } : {}),
           }}>
-            <ToolbarSection label="操作">
+            <ToolbarSection label="广播">
               <div style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -1748,7 +1747,7 @@ export default function ExecutorInstancesPage() {
                 tone="amber"
                 onClick={() => setBroadcastScope((s) => s === "all" ? "single" : "all")}
               >
-                广播
+                全部
               </ToolbarButton>
               <ToolbarButton
                 active={broadcastScope === "leaders"}
@@ -1757,7 +1756,7 @@ export default function ExecutorInstancesPage() {
                 disabled={leaderPorts.length === 0}
                 title={leaderPorts.length === 0 ? "无队长实例" : `广播至全部 ${leaderPorts.length} 个队长`}
               >
-                仅队长
+                队长
               </ToolbarButton>
               <ToolbarButton
                 active={broadcastScope === "custom"}
@@ -1860,7 +1859,7 @@ export default function ExecutorInstancesPage() {
                   tone="green"
                   onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
                 >
-                  手势操作
+                  触控
                 </ToolbarButton>
                 <ToolbarDivider />
                 <ToolbarButton
@@ -1873,14 +1872,12 @@ export default function ExecutorInstancesPage() {
               </div>
 
               <ToolbarDivider />
-              <ToolbarSection label="链路">
-                <BandwidthBadge
-                  streamingPorts={streamingPortCount}
-                  nativeStreamQuality={nativeStreamQuality}
-                  pollingPortCount={pollingPortCount}
-                  actualBitrate={actualBitrate}
-                />
-              </ToolbarSection>
+              <BandwidthBadge
+                streamingPorts={streamingPortCount}
+                nativeStreamQuality={nativeStreamQuality}
+                pollingPortCount={pollingPortCount}
+                actualBitrate={actualBitrate}
+              />
             </div>
           </div>
       ); })()}
