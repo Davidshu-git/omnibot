@@ -637,6 +637,69 @@ const NATIVE_STREAM_QUALITY_LABEL: Record<NativeStreamQuality, string> = {
   high: "高",
 };
 
+// Approximate bitrate per quality tier (matches executor STREAM_QUALITY_PRESETS defaults).
+const NATIVE_STREAM_BITRATE: Record<NativeStreamQuality, number> = {
+  low: 200_000,
+  medium: 400_000,
+  high: 1_500_000,
+};
+
+// Estimated average screenshot JPEG payload per fetch (bytes).
+// screencap -p → JPEG quality=85 at 1600×900, typical game scene ~200 KB.
+const SCREENSHOT_AVG_BYTES = 200 * 1024;
+const SCREENSHOT_INTERVAL_MS = 3000;
+
+function estimateBandwidthBps({
+  streamingPorts,
+  streamingQuality,
+  pollingPortCount,
+}: {
+  streamingPorts: number;
+  streamingQuality: NativeStreamQuality;
+  pollingPortCount: number;
+}): { totalKbps: number; streamKbps: number; screenshotKbps: number } {
+  const streamKbps = (streamingPorts * NATIVE_STREAM_BITRATE[streamingQuality]) / 1000;
+  const screenshotKbps = (pollingPortCount * SCREENSHOT_AVG_BYTES * 8) / (SCREENSHOT_INTERVAL_MS / 1000) / 1000;
+  return { totalKbps: Math.round(streamKbps + screenshotKbps), streamKbps: Math.round(streamKbps), screenshotKbps: Math.round(screenshotKbps) };
+}
+
+function BandwidthBadge({
+  streamingPorts,
+  nativeStreamQuality,
+  pollingPortCount,
+}: {
+  streamingPorts: number;
+  nativeStreamQuality: NativeStreamQuality;
+  pollingPortCount: number;
+}) {
+  const est = estimateBandwidthBps({ streamingPorts, streamingQuality: nativeStreamQuality, pollingPortCount });
+  const label = est.totalKbps >= 1000
+    ? `${(est.totalKbps / 1000).toFixed(1)} Mbps`
+    : `~${est.totalKbps} kbps`;
+  const tooltipLines = [
+    "预估下行带宽（从 NAS 到浏览器）",
+    "",
+    `H264 推流：${streamingPorts} × ${NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}档 → ${est.streamKbps} kbps`,
+    `截图轮询：${pollingPortCount} 端口 / ${SCREENSHOT_INTERVAL_MS / 1000}s × ~${Math.round(SCREENSHOT_AVG_BYTES / 1024)}KB → ${est.screenshotKbps} kbps`,
+  ];
+  return (
+    <span
+      title={tooltipLines.join("\n")}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 4,
+        padding: "2px 8px", borderRadius: "var(--r-sm)",
+        background: est.totalKbps > 2000 ? "rgba(246,173,85,0.12)" : "rgba(72,187,120,0.12)",
+        border: `1px solid ${est.totalKbps > 2000 ? "rgba(246,173,85,0.3)" : "rgba(72,187,120,0.3)"}`,
+        fontSize: 11, fontWeight: 500,
+        color: est.totalKbps > 2000 ? "var(--amber)" : "var(--green)",
+        cursor: "default",
+      }}
+    >
+      <span>⚡ {label}</span>
+    </span>
+  );
+}
+
 function ScreenshotCard({
   inst,
   screenshot,
@@ -1174,9 +1237,12 @@ export default function ExecutorInstancesPage() {
 
   // Ports currently rendered as ws-scrcpy live stream — these skip screenshot polling.
   const streamingPortsRef = useRef<Set<string>>(new Set());
+  // Mirror of streamingPortsRef as state for BandwidthBadge re-renders.
+  const [streamingPortCount, setStreamingPortCount] = useState(0);
   const setPortStreaming = useCallback((port: string, streaming: boolean) => {
     if (streaming) streamingPortsRef.current.add(port);
     else streamingPortsRef.current.delete(port);
+    setStreamingPortCount(streamingPortsRef.current.size);
   }, []);
 
   const load = useCallback(() => {
@@ -1379,9 +1445,20 @@ export default function ExecutorInstancesPage() {
       </div>
 
       {/* 截图巡检子工具栏 — 仅 grid 模式下展示，右对齐 */}
-      {viewMode === "grid" && (
-        <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", marginBottom: "1rem" }}>
-          <div style={{ display: "flex", gap: 3, alignItems: "center", marginRight: 4 }}>
+      {viewMode === "grid" && (() => {
+        // Polling ports = all visible instances minus those currently streaming (skip screenshot polling).
+        const visiblePorts = broadcastScope === "leaders"
+          ? leaderPorts
+          : instances.map((i) => i.port);
+        const pollingPortCount = Math.max(0, visiblePorts.length - streamingPortCount);
+        return (
+          <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", marginBottom: "1rem" }}>
+            <BandwidthBadge
+              streamingPorts={streamingPortCount}
+              nativeStreamQuality={nativeStreamQuality}
+              pollingPortCount={pollingPortCount}
+            />
+            <div style={{ display: "flex", gap: 3, alignItems: "center", marginRight: 4 }}>
             <span style={{ color: "var(--text-dim)", fontSize: 11 }}>H264 画质</span>
             {(["low", "medium", "high"] as const).map((q) => (
               <button
@@ -1444,7 +1521,7 @@ export default function ExecutorInstancesPage() {
             👑 仅队长{broadcastScope === "leaders" ? ` ON (${leaderPorts.length})` : ""}
           </button>
         </div>
-      )}
+      ); })()}
 
       {data?.app_health_checked_at && (
         <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: "1.25rem" }}>
