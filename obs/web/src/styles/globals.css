@@ -329,10 +329,3 @@ pre, code, .mono { font-family: var(--font-mono); }
   animation: broadcast-ripple 0.6s ease-out forwards;
 }
 
-/* ── responsive sidebar ──────────────────────────────────────────────────── */
-@media (max-width: 768px) {
-  .sidebar { width: 48px !important; }
-  .sidebar-label { display: none; }
-  .sidebar-logo-text { display: none; }
-  .sidebar-footer { display: none; }
-}
