@@ -166,40 +166,10 @@ class _StatsMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(_StatsMiddleware)
 
-# ---------------------------------------------------------------------------
-# 独立流事件循环线程：将 H.264 推流与 REST 输入通道隔离，避免高档位下
-# _reader_loop 高频广播竞争主事件循环，导致 tap/swipe 响应延迟。
-# 借鉴云游戏架构的输入/流通道分离原则（参考 NSDI 2025 / Meta cloud gaming）。
-# ---------------------------------------------------------------------------
-_stream_thread: Optional[threading.Thread] = None
-_stream_loop: Optional[asyncio.AbstractEventLoop] = None
-_stream_shutdown_event = threading.Event()
-
-
-def _run_stream_loop() -> None:
-    """在独立线程中运行流事件循环。"""
-    global _stream_loop
-    loop = asyncio.new_event_loop()
-    _stream_loop = loop
-    loop.set_debug(False)
-
-    async def _periodic_shutdown_check() -> None:
-        while not _stream_shutdown_event.is_set():
-            await asyncio.sleep(0.5)
-        await stream_manager.shutdown_all()
-        loop.stop()
-
-    loop.create_task(_periodic_shutdown_check())
-    loop.run_forever()
-    loop.close()
-    _stream_loop = None
-
 
 @app.on_event("startup")
 async def _startup():
-    """确保 logger 在 uvicorn 初始化后仍有效（uvicorn 的 dictConfig 可能覆盖）。
-    启动独立流事件循环线程，将推流 I/O 与 REST 输入通道隔离。
-    """
+    """确保 logger 在 uvicorn 初始化后仍有效（uvicorn 的 dictConfig 可能覆盖）。"""
     if not log.handlers:
         log.addHandler(_handler_stderr)
         log.addHandler(_handler_file)
@@ -211,14 +181,6 @@ async def _startup():
         "events_dir": str(EVENTS_DIR),
         "adb_path": ADB_PATH,
     })
-
-    global _stream_thread
-    _stream_thread = threading.Thread(target=_run_stream_loop, daemon=True, name="stream-loop")
-    _stream_thread.start()
-    # Wait for the loop to be ready
-    while _stream_loop is None:
-        time.sleep(0.05)
-    log.info("stream event loop thread started")
 
 
 ADB_PATH = os.getenv("ADB_PATH", r"C:\Program Files\Netease\MuMu\nx_main\adb.exe")
@@ -1230,9 +1192,8 @@ stream_manager = StreamManager()
 
 
 @app.on_event("shutdown")
-async def _shutdown_cleanup() -> None:
-    """应用关闭时通知流线程退出，并回收所有 screenrecord 进程。"""
-    _stream_shutdown_event.set()
+async def _stream_shutdown() -> None:
+    """应用关闭时回收所有 screenrecord 进程。"""
     await stream_manager.shutdown_all()
 
 
