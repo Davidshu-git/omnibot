@@ -122,7 +122,6 @@ export default function OverviewPage() {
     }
   }
 
-  const totalSessions = rows.reduce((s, r) => s + r.total_sessions, 0);
   const totalInput   = rows.reduce((s, r) => s + r.total_input_tokens, 0);
   const totalOutput  = rows.reduce((s, r) => s + r.total_output_tokens, 0);
   const totalTokens  = totalInput + totalOutput;
@@ -135,17 +134,14 @@ export default function OverviewPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: "1.5rem" }}>
-        <h1 style={{ fontSize: 20, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>全局总览</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>
-          {rows.length} 个项目 · {totalSessions.toLocaleString()} 次会话
-        </p>
+      <div style={{ marginBottom: "1rem" }}>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: "var(--text)" }}>全局总览</h1>
       </div>
 
       {/* Token summary banner */}
       {!loading && totalTokens > 0 && (
         <div className="card" style={{
-          marginBottom: "1.5rem",
+          marginBottom: "1rem",
           padding: "0.85rem 1.1rem",
           display: "flex",
           flexDirection: "column",
@@ -197,7 +193,7 @@ export default function OverviewPage() {
       {err && (
         <div style={{
           background: "#1a0a0a", border: "1px solid #3a1a1a", borderRadius: "var(--r)",
-          padding: "0.75rem 1rem", color: "var(--red)", fontSize: 12, marginBottom: "1.5rem",
+          padding: "0.75rem 1rem", color: "var(--red)", fontSize: 12, marginBottom: "1rem",
         }}>
           {err}
         </div>
@@ -415,7 +411,7 @@ function ProjectCard({
   const outPct = 100 - inPct;
 
   return (
-    <div className="card" style={{ position: "relative" }}>
+    <div className="card" style={{ position: "relative", display: "flex", flexDirection: "column", minHeight: 300 }}>
       {/* pulse dot when active today */}
       {p.today_sessions > 0 && (
         <span className="pulse-dot" style={{ top: 14, right: 14 }} />
@@ -427,9 +423,6 @@ function ProjectCard({
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 18 }}>{icon}</span>
             <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 14 }}>{p.display_name}</span>
-          </div>
-          <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 2, fontFamily: "var(--font-mono)" }}>
-            {p.project_id}
           </div>
         </div>
         {canSync && (
@@ -453,93 +446,131 @@ function ProjectCard({
         )}
       </div>
 
-      {/* stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem", marginBottom: "1rem" }}>
-        <Stat label="总会话" value={String(p.total_sessions)} />
-        <Stat label="今日调用" value={String(p.today_calls)} accent={p.today_calls > 0} />
-        <Stat label="输入 Token" value={fmt(p.total_input_tokens)} />
-        <Stat label="输出 Token" value={fmt(p.total_output_tokens)} />
+      {/* activity meta */}
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        color: "var(--text-dim)",
+        fontSize: 11,
+        fontVariantNumeric: "tabular-nums",
+        marginBottom: "1rem",
+      }}>
+        <span>
+          <span style={{ color: "var(--text-muted)", fontWeight: 600 }}>{p.total_sessions.toLocaleString()}</span> 会话
+        </span>
+        <span style={{ width: 3, height: 3, borderRadius: "50%", background: "var(--text-dim)" }} />
+        <span>
+          今日 <span style={{
+            color: p.today_calls > 0 ? "var(--amber)" : "var(--text-muted)",
+            fontWeight: 600,
+          }}>{p.today_calls.toLocaleString()}</span> 次
+        </span>
       </div>
-
-      {/* runtime models */}
-      {rt && (rt.available_text_models?.length > 0 || rt.available_vl_models?.length > 0) && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: "1rem" }}>
-          {rt.available_text_models?.length > 0 && (
-            <ModelChipsRow icon="🧠" models={rt.available_text_models} activeKey={rt.text_model?.model_key ?? null} />
-          )}
-          {rt.available_vl_models?.length > 0 && (
-            <ModelChipsRow icon="👁" models={rt.available_vl_models} activeKey={rt.vl_model?.model_key ?? null} />
-          )}
-        </div>
-      )}
 
       {/* token bar with tooltip */}
       {totalTok > 0 && (
-        <div style={{ marginBottom: "1rem" }}>
+        <div style={{
+          marginBottom: "1rem",
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.35rem",
+        }}>
+          <div style={{
+            display: "flex",
+            alignItems: "baseline",
+            gap: "0.65rem",
+            flexWrap: "wrap",
+            fontVariantNumeric: "tabular-nums",
+            fontFeatureSettings: "\"tnum\"",
+          }}>
+            <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 15 }}>
+              {fmt(totalTok)}
+              <span style={{ color: "var(--text-dim)", fontWeight: 400, fontSize: 10, marginLeft: 3 }}>tok</span>
+            </span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--blue)" }}>↑</span> {fmt(p.total_input_tokens)}
+            </span>
+            <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+              <span style={{ color: "var(--green)" }}>↓</span> {fmt(p.total_output_tokens)}
+            </span>
+            <span style={{ fontSize: 10, color: "var(--text-dim)" }}>{inPct}% · {outPct}%</span>
+          </div>
           <div
             className="tt"
             style={{ display: "block", width: "100%" }}
           >
             <div style={{
-              display: "flex", height: 5, borderRadius: 3, overflow: "hidden",
+              display: "flex", height: 3, borderRadius: 2, overflow: "hidden",
               background: "var(--border)",
             }}>
               <div style={{
-                width: `${inPct}%`, background: "var(--blue)", height: "100%",
+                width: `${inPct}%`, background: "var(--blue)",
                 transition: `width 0.5s var(--ease)`,
               }} />
-              <div style={{ flex: 1, background: "var(--green)", height: "100%" }} />
+              <div style={{ flex: 1, background: "var(--green)" }} />
             </div>
             <div className="tt-content">
-              <span style={{ color: "var(--blue)" }}>↑ 输入 {inPct}%</span>
+              <span style={{ color: "var(--blue)" }}>↑ {inPct}%</span>
               {" · "}
-              <span style={{ color: "var(--green)" }}>↓ 输出 {outPct}%</span>
+              <span style={{ color: "var(--green)" }}>↓ {outPct}%</span>
               {" · "}
               <span>{fmt(totalTok)} 合计</span>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 12, marginTop: 4 }}>
-            <span style={{ color: "var(--blue)", fontSize: 10 }}>▪ 输入</span>
-            <span style={{ color: "var(--green)", fontSize: 10 }}>▪ 输出</span>
-          </div>
         </div>
       )}
 
-      {/* footer */}
-      <div style={{
-        display: "flex", alignItems: "center", justifyContent: "space-between",
-        borderTop: "1px solid var(--border)", paddingTop: "0.75rem",
-      }}>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
-            最近：{fmtTime(p.last_session_at)}
-          </span>
-          {p.total_cost !== null && (
-            <span style={{ fontSize: 11 }}>
-              <span style={{ color: "var(--text-dim)" }}>费用估算 </span>
-              <span style={{ color: "var(--amber)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtCost(p.total_cost)}</span>
-            </span>
+      {/* runtime models */}
+      {rt && (rt.available_text_models?.length > 0 || rt.available_vl_models?.length > 0) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: "0.5rem" }}>
+          {rt.available_text_models?.length > 0 && (
+            <ModelChipsRow label="主控模型" icon="🧠" models={rt.available_text_models} activeKey={rt.text_model?.model_key ?? null} />
+          )}
+          {rt.available_vl_models?.length > 0 && (
+            <ModelChipsRow label="视觉模型" icon="👁" models={rt.available_vl_models} activeKey={rt.vl_model?.model_key ?? null} />
           )}
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {syncMsg && (
-            <span style={{
-              color: syncMsg === "失败" ? "var(--red)" : "var(--green)",
-              fontSize: 11, fontFamily: "var(--font-mono)",
-            }}>
-              {syncMsg}
+      )}
+
+      <div style={{ marginTop: "auto" }}>
+        {/* footer */}
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          borderTop: "1px solid var(--border)", paddingTop: "0.75rem", minHeight: 45,
+        }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
+              最近：{fmtTime(p.last_session_at)}
             </span>
-          )}
-          <Link href={`/sessions?project_id=${p.project_id}`} style={{ color: "var(--blue)", fontSize: 12 }}>
-            会话 →
-          </Link>
+            {p.total_cost !== null && (
+              <span style={{ fontSize: 11 }}>
+                <span style={{ color: "var(--text-dim)" }}>费用估算 </span>
+                <span style={{ color: "var(--amber)", fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtCost(p.total_cost)}</span>
+              </span>
+            )}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            {syncMsg && (
+              <span style={{
+                color: syncMsg === "失败" ? "var(--red)" : "var(--green)",
+                fontSize: 11, fontFamily: "var(--font-mono)",
+              }}>
+                {syncMsg}
+              </span>
+            )}
+            <Link href={`/sessions?project_id=${p.project_id}`} style={{ color: "var(--blue)", fontSize: 12 }}>
+              会话 →
+            </Link>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function ModelChipsRow({ icon, models, activeKey }: {
+function ModelChipsRow({ label, icon, models, activeKey }: {
+  label: string;
   icon: string;
   models: AvailableModelInfo[];
   activeKey: string | null;
@@ -547,6 +578,7 @@ function ModelChipsRow({ icon, models, activeKey }: {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
       <span style={{ fontSize: 11, lineHeight: 1, flexShrink: 0 }}>{icon}</span>
+      <span style={{ color: "var(--text-dim)", fontSize: 10, lineHeight: "18px", flexShrink: 0 }}>{label}</span>
       {models.map((m) => {
         const active = m.key === activeKey;
         return (
