@@ -199,7 +199,7 @@ export default function OverviewPage() {
         </div>
       )}
 
-      <ExecutorStatusCard status={executorStatus} error={executorErr} instances={executorInstances} onRefresh={loadExecutorStatus} />
+      <ExecutorStatusCard status={executorStatus} error={executorErr} instances={executorInstances} />
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
         {loading
@@ -274,12 +274,11 @@ function InstanceGroupsPreview({ instances }: { instances: MhxyInstanceDetail[] 
 }
 
 function ExecutorStatusCard({
-  status, error, instances, onRefresh,
+  status, error, instances,
 }: {
   status: MhxyExecutorStatus | null;
   error: string;
   instances: MhxyInstanceDetail[];
-  onRefresh: () => void;
 }) {
   const isMobile = useIsMobile();
   const state = error ? "unknown" : (status?.status ?? "unknown");
@@ -310,20 +309,6 @@ function ExecutorStatusCard({
               </span>
             </div>
           </div>
-          <button
-            onClick={onRefresh}
-            style={{
-              padding: isMobile ? "6px 14px" : "4px 10px",
-              borderRadius: "var(--r-sm)",
-              border: "1px solid var(--border-hi)",
-              background: "transparent",
-              color: "var(--blue)",
-              fontSize: isMobile ? 12 : 11,
-              fontWeight: 500,
-            }}
-          >
-            刷新
-          </button>
         </div>
 
         <div style={{

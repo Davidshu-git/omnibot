@@ -47,7 +47,8 @@ const TASK_EVENT_ICONS: Record<string, string> = {
 };
 
 const AGENT_DISPLAY: Record<string, string> = {
-  "game-bot":  "梦幻西游 Bot",
+  "game-bot":  "梦幻西游 Bot",  // legacy — keep for old sessions in DB
+  "mhxy-bot":  "梦幻西游 Bot",
   "stock-bot": "OmniStock 量化助理",
   "ehs-bot":   "OmniEHS 安全合规助理",
   "mhxy":      "梦幻西游 Bot",

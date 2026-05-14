@@ -48,7 +48,7 @@ from app.schemas.events import (
 )
 
 PROJECT_ID = "mhxy"
-AGENT_ID = "game-bot"
+AGENT_ID = "mhxy-bot"
 SOURCE = "mhxy_jsonl"
 
 _RUNNER_EVENT_TYPES = frozenset({

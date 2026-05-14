@@ -1012,7 +1012,7 @@ async def run_mhxy_ingest(force: bool = False) -> dict:
         display_name="梦幻西游 Bot JSONL logs",
         log_dir=log_dir,
         adapter=MhxyJsonlAdapter(log_dir=log_dir),
-        agents=[{"id": "game-bot", "name": "game-bot", "display_name": "游戏操控 Bot", "kind": "bot"}],
+        agents=[{"id": "mhxy-bot", "name": "mhxy-bot", "display_name": "梦幻西游 Bot", "kind": "bot"}],
         force=force,
     )
 

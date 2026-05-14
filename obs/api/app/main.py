@@ -38,6 +38,21 @@ async def _run_initial_ingests() -> None:
             log.warning("startup ingest failed for %s (non-fatal): %s", label, e)
 
 
+async def _periodic_ingest_poll(interval_secs: int = 120) -> None:
+    """Fallback periodic poll — catches files the watcher misses (e.g. on_created race)."""
+    while True:
+        await asyncio.sleep(interval_secs)
+        for label, coro_fn in [
+            ("mhxy", lambda: run_mhxy_ingest(force=False)),
+            ("mhxy-executor", lambda: run_mhxy_executor_ingest(force=False)),
+            ("omnibot", lambda: run_omnibot_ingest(force=False)),
+        ]:
+            try:
+                await coro_fn()
+            except Exception as e:
+                log.warning("periodic ingest poll failed for %s: %s", label, e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _watcher
@@ -64,10 +79,12 @@ async def lifespan(app: FastAPI):
     ])
     _watcher.start(loop)
     initial_ingest_task = asyncio.create_task(_run_initial_ingests())
+    poll_task = asyncio.create_task(_periodic_ingest_poll(120))
 
     yield
 
     initial_ingest_task.cancel()
+    poll_task.cancel()
     if _watcher:
         _watcher.stop()
 
