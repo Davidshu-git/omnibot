@@ -1227,7 +1227,6 @@ export default function ExecutorInstancesPage() {
 
   // Screenshot cache: port → ScreenshotState
   const [screenshots, setScreenshots] = useState<Record<string, ScreenshotState>>({});
-  const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const fetchingRef = useRef<Set<string>>(new Set());
 
   // Actual measured bitrate per quality tier, fetched from executor /stream/stats.
@@ -1286,14 +1285,12 @@ export default function ExecutorInstancesPage() {
         .catch(() => setScreenshots((prev) => ({ ...prev, [port]: "error" })))
         .finally(() => fetchingRef.current.delete(port));
     }
-    if (anyFetched) setLastRefreshAt(new Date());
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screenshots]);
 
   const refreshScreenshots = useCallback(() => {
     fetchingRef.current.clear();
     setScreenshots({});
-    setLastRefreshAt(null);
     // run after state flush so "loading" renders immediately
     setTimeout(() => fetchScreenshots(instances, true), 0);
   }, [fetchScreenshots, instances]);
@@ -1315,7 +1312,6 @@ export default function ExecutorInstancesPage() {
     api.mhxyExecutorScreenshot(port)
       .then((d) => {
         setScreenshots((prev) => ({ ...prev, [port]: d.image_b64 }));
-        setLastRefreshAt(new Date());
       })
       .catch(() => {})
       .finally(() => fetchingRef.current.delete(port));
@@ -1555,11 +1551,6 @@ export default function ExecutorInstancesPage() {
               <span style={{ marginLeft: 4 }}>ADB 正常</span>
             </span>
           )}
-          <span style={{ marginLeft: 16, color: "var(--text-dim)" }}>
-            {lastRefreshAt
-              ? `截图刷新于 ${lastRefreshAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
-              : "截图加载中…"}
-          </span>
         </p>
       )}
 
