@@ -161,6 +161,8 @@ export function isWebCodecsSupported(): boolean {
   return Boolean(wc?.VideoDecoder && wc?.EncodedVideoChunk);
 }
 
+const RECONNECT_DELAYS_MS = [1000, 2000, 5000, 10000];
+
 export class StreamPlayer {
   private ws?: WebSocket;
   private decoder?: VideoDecoderLike;
@@ -174,6 +176,8 @@ export class StreamPlayer {
   private accessUnit: Bytes[] = [];
   private accessUnitHasVcl = false;
   private accessUnitHasIdr = false;
+  private reconnectAttempt = 0;
+  private reconnectTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private opts: StreamPlayerOptions) {
     this.ctx = opts.canvas.getContext("2d");
@@ -182,9 +186,22 @@ export class StreamPlayer {
 
   close(): void {
     this.closed = true;
+    clearTimeout(this.reconnectTimer);
     try { this.ws?.close(); } catch {}
     try { this.decoder?.close(); } catch {}
     this.opts.onStatus?.("closed");
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed) return;
+    const delay = RECONNECT_DELAYS_MS[
+      Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)
+    ];
+    this.reconnectAttempt += 1;
+    this.opts.onStatus?.("restarting");
+    this.reconnectTimer = setTimeout(() => {
+      if (!this.closed) this.connect();
+    }, delay);
   }
 
   private connect(): void {
@@ -192,6 +209,7 @@ export class StreamPlayer {
       this.opts.onStatus?.("error", "browser does not support WebCodecs");
       return;
     }
+    this.resetDecoder();
     this.opts.onStatus?.("connecting");
     const ws = new WebSocket(this.opts.url);
     ws.binaryType = "arraybuffer";
@@ -203,9 +221,11 @@ export class StreamPlayer {
       }
       this.ingest(new Uint8Array(event.data));
     };
-    ws.onerror = () => this.opts.onStatus?.("error", "websocket error");
+    ws.onerror = () => {
+      if (!this.closed) this.scheduleReconnect();
+    };
     ws.onclose = () => {
-      if (!this.closed) this.opts.onStatus?.("closed");
+      if (!this.closed) this.scheduleReconnect();
     };
   }
 
@@ -320,6 +340,7 @@ export class StreamPlayer {
         return;
       }
       this.gotFirstKeyframe = true;
+      this.reconnectAttempt = 0;
       this.opts.onStatus?.("playing");
     }
 
