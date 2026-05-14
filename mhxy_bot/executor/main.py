@@ -187,8 +187,8 @@ STREAM_QUALITY_PRESETS = {
         "size": os.getenv("EXECUTOR_STREAM_LOW_SIZE", "256x144"),
     },
     "medium": {
-        "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_MEDIUM_BITRATE_BPS", "1000000")),
-        "size": os.getenv("EXECUTOR_STREAM_MEDIUM_SIZE", "1280x720"),
+        "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_MEDIUM_BITRATE_BPS", "400000")),
+        "size": os.getenv("EXECUTOR_STREAM_MEDIUM_SIZE", "800x450"),
     },
     "high": {
         "bitrate_bps": STREAM_BITRATE_BPS,
