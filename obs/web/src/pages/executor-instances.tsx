@@ -1424,6 +1424,7 @@ function GroupBlockGrid({
   selectedPorts,
   togglePortSelection,
   customSelectionActive,
+  gridColumns,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
@@ -1438,6 +1439,7 @@ function GroupBlockGrid({
   selectedPorts: Set<string>;
   togglePortSelection: (port: string) => void;
   customSelectionActive: boolean;
+  gridColumns: 2 | 3 | 4;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -1463,7 +1465,7 @@ function GroupBlockGrid({
       </div>
       <div style={{
         display: "grid",
-        gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))",
+        gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
         gap: "0.75rem",
       }}>
         {ordered.map((inst) => (
@@ -1511,6 +1513,7 @@ export default function ExecutorInstancesPage() {
     });
   }, []);
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
+  const [gridColumns, setGridColumns] = useState<2 | 3 | 4>(3);
 
   // Modal state
   const [modalPort, setModalPort] = useState<string | null>(null);
@@ -1852,6 +1855,31 @@ export default function ExecutorInstancesPage() {
 
             <ToolbarDivider />
 
+            <ToolbarSection label="布局">
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 2,
+                padding: 2,
+                borderRadius: "var(--r-sm)",
+                background: "rgba(0,0,0,0.16)",
+                border: "1px solid var(--border)",
+              }}>
+                {([2, 3, 4] as const).map((c) => (
+                  <ToolbarButton
+                    key={c}
+                    active={gridColumns === c}
+                    tone="blue"
+                    onClick={() => setGridColumns(c)}
+                  >
+                    {c} 列
+                  </ToolbarButton>
+                ))}
+              </div>
+            </ToolbarSection>
+
+            <ToolbarDivider />
+
             <ToolbarButton
               active={focusMode}
               tone="blue"
@@ -1935,6 +1963,7 @@ export default function ExecutorInstancesPage() {
                 selectedPorts={selectedPorts}
                 togglePortSelection={togglePortSelection}
                 customSelectionActive={customSelectionActive}
+                gridColumns={gridColumns}
               />
             ))}
 
