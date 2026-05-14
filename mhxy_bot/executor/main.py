@@ -166,10 +166,40 @@ class _StatsMiddleware(BaseHTTPMiddleware):
 
 app.add_middleware(_StatsMiddleware)
 
+# ---------------------------------------------------------------------------
+# 独立流事件循环线程：将 H.264 推流与 REST 输入通道隔离，避免高档位下
+# _reader_loop 高频广播竞争主事件循环，导致 tap/swipe 响应延迟。
+# 借鉴云游戏架构的输入/流通道分离原则（参考 NSDI 2025 / Meta cloud gaming）。
+# ---------------------------------------------------------------------------
+_stream_thread: Optional[threading.Thread] = None
+_stream_loop: Optional[asyncio.AbstractEventLoop] = None
+_stream_shutdown_event = threading.Event()
+
+
+def _run_stream_loop() -> None:
+    """在独立线程中运行流事件循环。"""
+    global _stream_loop
+    loop = asyncio.new_event_loop()
+    _stream_loop = loop
+    loop.set_debug(False)
+
+    async def _periodic_shutdown_check() -> None:
+        while not _stream_shutdown_event.is_set():
+            await asyncio.sleep(0.5)
+        await stream_manager.shutdown_all()
+        loop.stop()
+
+    loop.create_task(_periodic_shutdown_check())
+    loop.run_forever()
+    loop.close()
+    _stream_loop = None
+
 
 @app.on_event("startup")
 async def _startup():
-    """确保 logger 在 uvicorn 初始化后仍有效（uvicorn 的 dictConfig 可能覆盖）。"""
+    """确保 logger 在 uvicorn 初始化后仍有效（uvicorn 的 dictConfig 可能覆盖）。
+    启动独立流事件循环线程，将推流 I/O 与 REST 输入通道隔离。
+    """
     if not log.handlers:
         log.addHandler(_handler_stderr)
         log.addHandler(_handler_file)
@@ -181,6 +211,15 @@ async def _startup():
         "events_dir": str(EVENTS_DIR),
         "adb_path": ADB_PATH,
     })
+
+    global _stream_thread
+    _stream_thread = threading.Thread(target=_run_stream_loop, daemon=True, name="stream-loop")
+    _stream_thread.start()
+    # Wait for the loop to be ready
+    while _stream_loop is None:
+        time.sleep(0.05)
+    log.info("stream event loop thread started")
+
 
 ADB_PATH = os.getenv("ADB_PATH", r"C:\Program Files\Netease\MuMu\nx_main\adb.exe")
 STREAM_TIME_LIMIT_SEC = int(os.getenv("EXECUTOR_STREAM_TIME_LIMIT_SEC", "180"))
@@ -819,6 +858,42 @@ def app_health(req: PortReq, request: Request):
 # 实时流：WebSocket + adb screenrecord pipe (Annex-B H.264 fan-out)
 # ---------------------------------------------------------------------------
 
+async def _safe_send_bytes(ws: WebSocket, chunk: bytes, stream: "FanoutStream") -> None:
+    """向单个 WebSocket 发送 H.264 帧，超时则踢出订阅者。
+
+    供 FanoutStream._broadcast_bytes 的 create_task 调用。
+
+    Args:
+        ws: 目标 WebSocket 连接。
+        chunk: H.264 Annex-B 字节块。
+        stream: 所属的 FanoutStream 实例。
+    """
+    try:
+        await asyncio.wait_for(ws.send_bytes(chunk), timeout=STREAM_SEND_TIMEOUT_SEC)
+    except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
+        stream.subscribers.discard(ws)
+    except Exception:
+        stream.subscribers.discard(ws)
+
+
+async def _safe_send_text(ws: WebSocket, text: str, stream: "FanoutStream") -> None:
+    """向单个 WebSocket 发送控制消息，超时则踢出订阅者。
+
+    供 FanoutStream._broadcast_restart 的 create_task 调用。
+
+    Args:
+        ws: 目标 WebSocket 连接。
+        text: 控制消息 JSON 文本。
+        stream: 所属的 FanoutStream 实例。
+    """
+    try:
+        await asyncio.wait_for(ws.send_text(text), timeout=STREAM_SEND_TIMEOUT_SEC)
+    except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
+        stream.subscribers.discard(ws)
+    except Exception:
+        stream.subscribers.discard(ws)
+
+
 def _stream_quality_config(quality: str) -> tuple[str, int, str]:
     """返回标准化画质和对应 screenrecord 参数。
 
@@ -965,7 +1040,12 @@ class FanoutStream:
             await self._handle_reader_exit()
 
     async def _broadcast_bytes(self, chunk: bytes) -> None:
-        """广播二进制帧；发送超时或失败的订阅者会被移除。
+        """广播二进制帧；使用 fire-and-forget 避免阻塞事件循环。
+
+        高档位下 H.264 帧到达频率可达 ~50 帧/秒。如果 await 每个 subscriber
+        的 send_bytes 完成，慢订阅者会导致事件循环被长期占用，
+        进而阻塞 REST 端点（tap/swipe 等）。改为 create_task 并发广播，
+        事件循环立即继续读取下一帧。
 
         Args:
             chunk: H.264 Annex-B 字节块。
@@ -973,16 +1053,8 @@ class FanoutStream:
         Returns:
             None.
         """
-        dead: list[WebSocket] = []
         for ws in list(self.subscribers):
-            try:
-                await asyncio.wait_for(ws.send_bytes(chunk), timeout=STREAM_SEND_TIMEOUT_SEC)
-            except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
-                dead.append(ws)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.subscribers.discard(ws)
+            asyncio.create_task(_safe_send_bytes(ws, chunk, self))
 
     async def _broadcast_restart(self) -> None:
         """通知前端 screenrecord 已重启，需要重置解码器。
@@ -990,16 +1062,8 @@ class FanoutStream:
         Returns:
             None.
         """
-        dead: list[WebSocket] = []
         for ws in list(self.subscribers):
-            try:
-                await asyncio.wait_for(ws.send_text('{"event":"restart"}'), timeout=STREAM_SEND_TIMEOUT_SEC)
-            except (asyncio.TimeoutError, RuntimeError, WebSocketDisconnect):
-                dead.append(ws)
-            except Exception:
-                dead.append(ws)
-        for ws in dead:
-            self.subscribers.discard(ws)
+            asyncio.create_task(_safe_send_text(ws, '{"event":"restart"}', self))
 
     async def _handle_reader_exit(self) -> None:
         """处理 adb subprocess 退出；有订阅者时自动重启。
@@ -1151,8 +1215,9 @@ stream_manager = StreamManager()
 
 
 @app.on_event("shutdown")
-async def _stream_shutdown() -> None:
-    """应用关闭时回收所有 screenrecord 进程。"""
+async def _shutdown_cleanup() -> None:
+    """应用关闭时通知流线程退出，并回收所有 screenrecord 进程。"""
+    _stream_shutdown_event.set()
     await stream_manager.shutdown_all()
 
 
