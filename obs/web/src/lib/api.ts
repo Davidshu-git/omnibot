@@ -75,11 +75,6 @@ export interface TokenByModel {
   cost: number | null;
 }
 
-export interface ToolStat {
-  tool_name: string;
-  calls: number;
-}
-
 export interface MhxyExecutorStatus {
   service: string;
   executor_url?: string;
@@ -186,9 +181,7 @@ export const api = {
     get<TokenDailyStat[]>("/api/stats/tokens/daily", { ...(project_id ? { project_id } : {}), days }),
   tokensByModel: (project_id?: string) =>
     get<TokenByModel[]>("/api/stats/tokens/by-model", project_id ? { project_id } : undefined),
-  tools: (project_id?: string) =>
-    get<ToolStat[]>("/api/stats/tools", project_id ? { project_id } : undefined),
-  mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/status"),
+mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/status"),
   mhxyExecutorInstances: () => get<MhxyExecutorInstances>("/api/external/mhxy-executor/instances"),
   mhxyExecutorScreenshot: (port: string) =>
     get<{ port: string; image_b64: string }>("/api/external/mhxy-executor/screenshot", { port }),

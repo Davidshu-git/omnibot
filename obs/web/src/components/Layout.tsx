@@ -8,7 +8,6 @@ const NAV = [
   { label: "总览",   href: "/",         icon: "◈" },
   { label: "会话",   href: "/sessions", icon: "◉" },
   { label: "Token",  href: "/tokens",   icon: "◎" },
-  { label: "工具",   href: "/tools",    icon: "◆" },
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
