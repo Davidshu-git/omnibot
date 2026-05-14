@@ -823,7 +823,8 @@ def app_health(req: PortReq, request: Request):
 async def _safe_send_bytes(ws: WebSocket, chunk: bytes, stream: "FanoutStream") -> None:
     """向单个 WebSocket 发送 H.264 帧，超时则踢出订阅者。
 
-    供 FanoutStream._broadcast_bytes 的 create_task 调用。
+    必须由 FanoutStream._broadcast_bytes 顺序 await 调用，不能套 create_task ——
+    Starlette/uvicorn 的 send_bytes 没有内部串行锁，并发派发会导致 H.264 字节序颠倒。
 
     Args:
         ws: 目标 WebSocket 连接。
@@ -841,7 +842,8 @@ async def _safe_send_bytes(ws: WebSocket, chunk: bytes, stream: "FanoutStream") 
 async def _safe_send_text(ws: WebSocket, text: str, stream: "FanoutStream") -> None:
     """向单个 WebSocket 发送控制消息，超时则踢出订阅者。
 
-    供 FanoutStream._broadcast_restart 的 create_task 调用。
+    由 FanoutStream._broadcast_restart 顺序 await 调用，与 _safe_send_bytes 同样
+    不能套 create_task。
 
     Args:
         ws: 目标 WebSocket 连接。
@@ -1243,11 +1245,20 @@ async def ws_stream(websocket: WebSocket, port: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _exec_adb_tap(adb: str, device: str, px: int, py: int) -> bool:
-    """执行单次 ADB tap。"""
+    """执行单次 ADB tap。
+
+    subprocess.run 是同步阻塞调用（adb shell input 通常 50-200ms、最坏 15s）。
+    在 async 函数里直接调会阻塞整个事件循环，期间 FanoutStream._reader_loop
+    读不到 H.264 chunk、广播全停，导致推流卡顿。改走 run_in_executor 隔离。
+    """
+    loop = asyncio.get_running_loop()
     try:
-        r = subprocess.run(
-            [adb, "-s", device, "shell", "input", "tap", str(px), str(py)],
-            capture_output=True, timeout=15,
+        r = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [adb, "-s", device, "shell", "input", "tap", str(px), str(py)],
+                capture_output=True, timeout=15,
+            ),
         )
         return r.returncode == 0
     except Exception:
@@ -1258,12 +1269,20 @@ async def _exec_adb_swipe(
     adb: str, device: str,
     x1: int, y1: int, x2: int, y2: int, duration_ms: int,
 ) -> bool:
-    """执行单次 ADB swipe。"""
+    """执行单次 ADB swipe。
+
+    同 _exec_adb_tap：subprocess.run 同步阻塞，必须走 run_in_executor，
+    否则 swipe 期间整个事件循环停转，H.264 推流会卡顿。
+    """
+    loop = asyncio.get_running_loop()
     try:
-        r = subprocess.run(
-            [adb, "-s", device, "shell", "input", "swipe",
-             str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
-            capture_output=True, timeout=15,
+        r = await loop.run_in_executor(
+            None,
+            lambda: subprocess.run(
+                [adb, "-s", device, "shell", "input", "swipe",
+                 str(x1), str(y1), str(x2), str(y2), str(duration_ms)],
+                capture_output=True, timeout=15,
+            ),
         )
         return r.returncode == 0
     except Exception:
