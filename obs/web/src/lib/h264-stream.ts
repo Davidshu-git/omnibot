@@ -186,22 +186,39 @@ export class StreamPlayer {
 
   close(): void {
     this.closed = true;
-    clearTimeout(this.reconnectTimer);
-    try { this.ws?.close(); } catch {}
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = undefined;
+    }
+    this.detachWebSocket();
     try { this.decoder?.close(); } catch {}
     this.opts.onStatus?.("closed");
   }
 
   private scheduleReconnect(): void {
     if (this.closed) return;
+    // WebSocket spec fires 'error' followed by 'close' on failure — dedupe so we
+    // don't end up with two concurrent reconnect timers feeding the same decoder.
+    if (this.reconnectTimer) return;
     const delay = RECONNECT_DELAYS_MS[
       Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)
     ];
     this.reconnectAttempt += 1;
     this.opts.onStatus?.("restarting");
     this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = undefined;
       if (!this.closed) this.connect();
     }, delay);
+  }
+
+  private detachWebSocket(): void {
+    const ws = this.ws;
+    if (!ws) return;
+    ws.onmessage = null;
+    ws.onerror = null;
+    ws.onclose = null;
+    try { ws.close(); } catch {}
+    this.ws = undefined;
   }
 
   private connect(): void {
@@ -209,12 +226,16 @@ export class StreamPlayer {
       this.opts.onStatus?.("error", "browser does not support WebCodecs");
       return;
     }
+    this.detachWebSocket();
     this.resetDecoder();
+    this.sps = undefined;
+    this.pps = undefined;
     this.opts.onStatus?.("connecting");
     const ws = new WebSocket(this.opts.url);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
     ws.onmessage = (event) => {
+      if (this.ws !== ws) return;
       if (typeof event.data === "string") {
         this.handleControlMessage(event.data);
         return;
@@ -222,10 +243,12 @@ export class StreamPlayer {
       this.ingest(new Uint8Array(event.data));
     };
     ws.onerror = () => {
-      if (!this.closed) this.scheduleReconnect();
+      if (this.ws !== ws || this.closed) return;
+      this.scheduleReconnect();
     };
     ws.onclose = () => {
-      if (!this.closed) this.scheduleReconnect();
+      if (this.ws !== ws || this.closed) return;
+      this.scheduleReconnect();
     };
   }
 
