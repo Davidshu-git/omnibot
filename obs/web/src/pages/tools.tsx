@@ -28,7 +28,6 @@ export default function ToolsPage() {
     <div>
       <div style={{ marginBottom: "1.5rem" }}>
         <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>工具调用分析</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>各 Agent 工具使用频率排行</p>
       </div>
 
       {err && <p style={{ color: "var(--red)", marginBottom: "1rem" }}>{err}</p>}

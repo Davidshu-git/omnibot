@@ -98,7 +98,6 @@ export default function TokensPage() {
     <div>
       <div style={{ marginBottom: "1.5rem" }}>
         <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>Token 统计</h1>
-        <p style={{ color: "var(--text-muted)", fontSize: 12 }}>各项目 LLM 调用消耗分析</p>
       </div>
 
       {err && <p style={{ color: "var(--red)", marginBottom: "1rem" }}>{err}</p>}
