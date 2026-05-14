@@ -1452,75 +1452,81 @@ export default function ExecutorInstancesPage() {
           : instances.map((i) => i.port);
         const pollingPortCount = Math.max(0, visiblePorts.length - streamingPortCount);
         return (
-          <div style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "flex-end", marginBottom: "1rem" }}>
-            <BandwidthBadge
-              streamingPorts={streamingPortCount}
-              nativeStreamQuality={nativeStreamQuality}
-              pollingPortCount={pollingPortCount}
-            />
-            <div style={{ display: "flex", gap: 3, alignItems: "center", marginRight: 4 }}>
-            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>H264 画质</span>
-            {(["low", "medium", "high"] as const).map((q) => (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", marginBottom: "1rem" }}>
+            {/* 行一：点击 / 广播操作按钮 */}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
               <button
-                key={q}
-                onClick={() => setNativeStreamQuality(q)}
+                onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
                 style={{
-                  padding: "4px 8px",
+                  padding: "4px 10px",
                   borderRadius: "var(--r-sm)",
-                  border: `1px solid ${nativeStreamQuality === q ? "var(--teal)" : "var(--border-hi)"}`,
-                  background: nativeStreamQuality === q ? "rgba(56,178,172,0.15)" : "transparent",
-                  color: nativeStreamQuality === q ? "var(--teal)" : "var(--text-muted)",
+                  border: `1px solid ${tapMode ? "var(--green)" : "var(--border-hi)"}`,
+                  background: tapMode ? "rgba(72,187,120,0.15)" : "transparent",
+                  color: tapMode ? "var(--green)" : "var(--text-muted)",
                   fontSize: 11, fontWeight: 500, cursor: "pointer",
                 }}
               >
-                {NATIVE_STREAM_QUALITY_LABEL[q]}
+                📍 点击操作
               </button>
-            ))}
+              <button
+                onClick={() => setBroadcastScope((s) => s === "all" ? "single" : "all")}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: "var(--r-sm)",
+                  border: `1px solid ${broadcastScope === "all" ? "var(--amber)" : "var(--border-hi)"}`,
+                  background: broadcastScope === "all" ? "rgba(246,173,85,0.15)" : "transparent",
+                  color: broadcastScope === "all" ? "var(--amber)" : "var(--text-muted)",
+                  fontSize: 11, fontWeight: 500, cursor: "pointer",
+                }}
+              >
+                📡 广播
+              </button>
+              <button
+                onClick={() => setBroadcastScope((s) => s === "leaders" ? "single" : "leaders")}
+                disabled={leaderPorts.length === 0}
+                title={leaderPorts.length === 0 ? "无队长实例" : `广播至全部 ${leaderPorts.length} 个队长`}
+                style={{
+                  padding: "4px 10px",
+                  borderRadius: "var(--r-sm)",
+                  border: `1px solid ${broadcastScope === "leaders" ? "var(--amber)" : "var(--border-hi)"}`,
+                  background: broadcastScope === "leaders" ? "rgba(246,173,85,0.15)" : "transparent",
+                  color: broadcastScope === "leaders" ? "var(--amber)" : "var(--text-muted)",
+                  fontSize: 11, fontWeight: 500,
+                  cursor: leaderPorts.length === 0 ? "not-allowed" : "pointer",
+                  opacity: leaderPorts.length === 0 ? 0.4 : 1,
+                }}
+              >
+                👑 仅队长
+              </button>
+            </div>
+            {/* 行二：带宽预估 + H264 画质选项 */}
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <BandwidthBadge
+                streamingPorts={streamingPortCount}
+                nativeStreamQuality={nativeStreamQuality}
+                pollingPortCount={pollingPortCount}
+              />
+              <div style={{ display: "flex", gap: 3, alignItems: "center", marginLeft: 4 }}>
+                <span style={{ color: "var(--text-dim)", fontSize: 11 }}>H264 画质</span>
+                {(["low", "medium", "high"] as const).map((q) => (
+                  <button
+                    key={q}
+                    onClick={() => setNativeStreamQuality(q)}
+                    style={{
+                      padding: "4px 8px",
+                      borderRadius: "var(--r-sm)",
+                      border: `1px solid ${nativeStreamQuality === q ? "var(--teal)" : "var(--border-hi)"}`,
+                      background: nativeStreamQuality === q ? "rgba(56,178,172,0.15)" : "transparent",
+                      color: nativeStreamQuality === q ? "var(--teal)" : "var(--text-muted)",
+                      fontSize: 11, fontWeight: 500, cursor: "pointer",
+                    }}
+                  >
+                    {NATIVE_STREAM_QUALITY_LABEL[q]}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
-          <button
-            onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
-            style={{
-              padding: "4px 10px",
-              borderRadius: "var(--r-sm)",
-              border: `1px solid ${tapMode ? "var(--green)" : "var(--border-hi)"}`,
-              background: tapMode ? "rgba(72,187,120,0.15)" : "transparent",
-              color: tapMode ? "var(--green)" : "var(--text-muted)",
-              fontSize: 11, fontWeight: 500, cursor: "pointer",
-            }}
-          >
-            📍 点击操作{tapMode ? " ON" : ""}
-          </button>
-          <button
-            onClick={() => setBroadcastScope((s) => s === "all" ? "single" : "all")}
-            style={{
-              padding: "4px 10px",
-              borderRadius: "var(--r-sm)",
-              border: `1px solid ${broadcastScope === "all" ? "var(--amber)" : "var(--border-hi)"}`,
-              background: broadcastScope === "all" ? "rgba(246,173,85,0.15)" : "transparent",
-              color: broadcastScope === "all" ? "var(--amber)" : "var(--text-muted)",
-              fontSize: 11, fontWeight: 500, cursor: "pointer",
-            }}
-          >
-            📡 广播{broadcastScope === "all" ? " ON" : ""}
-          </button>
-          <button
-            onClick={() => setBroadcastScope((s) => s === "leaders" ? "single" : "leaders")}
-            disabled={leaderPorts.length === 0}
-            title={leaderPorts.length === 0 ? "无队长实例" : `广播至全部 ${leaderPorts.length} 个队长`}
-            style={{
-              padding: "4px 10px",
-              borderRadius: "var(--r-sm)",
-              border: `1px solid ${broadcastScope === "leaders" ? "var(--amber)" : "var(--border-hi)"}`,
-              background: broadcastScope === "leaders" ? "rgba(246,173,85,0.15)" : "transparent",
-              color: broadcastScope === "leaders" ? "var(--amber)" : "var(--text-muted)",
-              fontSize: 11, fontWeight: 500,
-              cursor: leaderPorts.length === 0 ? "not-allowed" : "pointer",
-              opacity: leaderPorts.length === 0 ? 0.4 : 1,
-            }}
-          >
-            👑 仅队长{broadcastScope === "leaders" ? ` ON (${leaderPorts.length})` : ""}
-          </button>
-        </div>
       ); })()}
 
       {data?.app_health_checked_at && (
@@ -1542,13 +1548,6 @@ export default function ExecutorInstancesPage() {
             {lastRefreshAt
               ? `截图刷新于 ${lastRefreshAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`
               : "截图加载中…"}
-            {viewMode === "grid" && (tapMode
-              ? (broadcastScope === "leaders"
-                  ? ` · 队长广播：点击任意截图 → 同步到 ${leaderPorts.length} 个队长实例`
-                  : broadcastScope === "all"
-                    ? ` · 广播模式：点击任意截图 → 同步到全部 ${allPorts.length} 个实例`
-                    : " · 点击截图操作当前实例，黑边区域打开详情")
-              : " · 点击卡片可放大")}
           </span>
         </p>
       )}
