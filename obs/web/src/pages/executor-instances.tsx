@@ -3,6 +3,7 @@ import Link from "next/link";
 import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/api";
 import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
 import { useIsMobile } from "@/lib/useIsMobile";
+import { useFocusMode } from "@/lib/focus-mode-context";
 
 const ROLE_LABEL: Record<string, string> = {
   leader: "队长",
@@ -1508,7 +1509,7 @@ export default function ExecutorInstancesPage() {
   const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
   const [tapMode, setTapMode] = useState(true);
   const [swipeEnabled, setSwipeEnabled] = useState(false);
-  const [focusMode, setFocusMode] = useState(false);
+  const { focus: focusMode, setFocus: setFocusMode } = useFocusMode();
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
   const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
   const [customSelectionActive, setCustomSelectionActive] = useState(false);
@@ -1884,7 +1885,7 @@ export default function ExecutorInstancesPage() {
               active={focusMode}
               tone="blue"
               title={focusMode ? "退出专注模式" : "隐藏页面头部，全屏显示"}
-              onClick={() => setFocusMode((v) => !v)}
+              onClick={() => setFocusMode(!focusMode)}
             >
               专注模式
             </ToolbarButton>

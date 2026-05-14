@@ -2,6 +2,7 @@ import Link from "next/link";
 import { useRouter } from "next/router";
 import { useEffect, useState, type ReactNode } from "react";
 import { useIsMobile } from "@/lib/useIsMobile";
+import { useFocusMode } from "@/lib/focus-mode-context";
 
 const NAV = [
   { label: "总览",   href: "/",         icon: "◈" },
@@ -13,6 +14,7 @@ const NAV = [
 export default function Layout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [collapsed, setCollapsed] = useState(false);
+  const { focus } = useFocusMode();
   const isMobile = useIsMobile();
 
   useEffect(() => {
@@ -27,6 +29,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div style={{ display: "flex", height: "100vh", overflow: "hidden" }}>
+      {!focus && (
       <nav
         className="sidebar"
         style={{
@@ -139,6 +142,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           Agent Observability
         </div>
       </nav>
+      )}
 
       <main style={{
         flex: 1,
