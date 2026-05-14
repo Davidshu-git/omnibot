@@ -201,7 +201,7 @@ export default function OverviewPage() {
 
       <ExecutorStatusCard status={executorStatus} error={executorErr} instances={executorInstances} onRefresh={loadExecutorStatus} />
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
         {loading
           ? [0, 1, 2].map((i) => <SkeletonCard key={i} />)
           : rows.map((p) => <ProjectCard key={p.project_id} p={p} rt={runtimeMap.get(p.project_id)} syncingKey={syncingKey} syncMsg={syncMsgs[p.project_id]} onSync={handleSync} />)
