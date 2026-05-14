@@ -296,10 +296,10 @@ function ExecutorStatusCard({
   const failures = `${status?.consecutive_failures ?? 0}/${status?.fail_threshold ?? "—"}`;
 
   return (
-    <div className="card" style={{ marginBottom: "1rem", borderColor: border, position: "relative", overflow: "hidden" }}>
+    <div className="card" style={{ marginBottom: "1rem", borderColor: border, position: "relative", overflow: "hidden", paddingTop: "1rem", paddingBottom: "1rem" }}>
       <div style={{ position: "absolute", inset: 0, background: `linear-gradient(180deg, ${bg}, transparent 120px)`, pointerEvents: "none" }} />
       <div style={{ position: "relative" }}>
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: "0.75rem" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", rowGap: 4 }}>
               <span style={{ width: 8, height: 8, borderRadius: 999, background: color, boxShadow: healthy ? "0 0 0 4px rgba(52,211,153,.12)" : "none" }} />
@@ -308,9 +308,6 @@ function ExecutorStatusCard({
               <span className="badge" style={{ color: "var(--text-muted)", background: "var(--border)", border: "1px solid var(--border-hi)", gap: 4 }}>
                 <span>🎮</span><span>mhxy</span>
               </span>
-            </div>
-            <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 3, fontFamily: "var(--font-mono)" }}>
-              {status?.executor_url ?? "mhxy executor"}
             </div>
           </div>
           <button
@@ -331,14 +328,14 @@ function ExecutorStatusCard({
 
         <div style={{
           display: "flex",
-          gap: isMobile ? "0.85rem" : "1.25rem",
+          gap: isMobile ? "0.75rem" : "1.1rem",
           alignItems: "flex-start",
           flexDirection: isMobile ? "column" : "row",
         }}>
           <div style={{
             display: "grid",
             gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, auto)",
-            gap: "0.75rem 1.25rem",
+            gap: "0.6rem 1.1rem",
             flexShrink: 0,
             width: isMobile ? "100%" : undefined,
           }}>
@@ -365,7 +362,7 @@ function ExecutorStatusCard({
           )}
         </div>
 
-        <div style={{ marginTop: "0.85rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
+        <div style={{ marginTop: "0.65rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", borderTop: "1px solid var(--border)", paddingTop: "0.6rem" }}>
           <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
             最近检查：{status?.checked_at ? fmtTime(status.checked_at) : "—"}
             {status?.age_sec !== undefined && status.age_sec !== null && (
