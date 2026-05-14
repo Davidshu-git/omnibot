@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, type TokenOverview, type TokenDailyStat, type TokenByModel } from "@/lib/api";
+import { api, type ProjectOverview, type TokenOverview, type TokenDailyStat, type TokenByModel } from "@/lib/api";
 import type { Project } from "@/types/events";
 import { fmt, fmtCost } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -8,16 +8,19 @@ export default function TokensPage() {
   const ALL = "__all__";
   const isMobile = useIsMobile();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [projectOverviews, setProjectOverviews] = useState<ProjectOverview[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>(ALL);
   const [overview, setOverview] = useState<TokenOverview | null>(null);
   const [daily, setDaily] = useState<TokenDailyStat[]>([]);
   const [byModel, setByModel] = useState<TokenByModel[]>([]);
   const [projectStats, setProjectStats] = useState<Record<string, TokenOverview>>({});
   const [days, setDays] = useState(30);
+  const [distributionMode, setDistributionMode] = useState<"project" | "model">("project");
   const [err, setErr] = useState("");
 
   useEffect(() => {
     api.projects().then(setProjects).catch((e) => setErr(String(e)));
+    api.overview().then(setProjectOverviews).catch((e) => setErr(String(e)));
   }, []);
 
   const projectIdParam = selectedProject === ALL ? undefined : selectedProject;
@@ -40,6 +43,56 @@ export default function TokensPage() {
   const outputPct = total > 0 ? 100 - inputPct : 0;
   const totalCost = byModel.reduce((s, m) => s + (m.cost ?? 0), 0);
   const hasCost = byModel.some((m) => m.cost !== null);
+  const selectedProjectMeta = projects.find((p) => p.id === selectedProject);
+  const projectCostMap = Object.fromEntries(projectOverviews.map((p) => [p.project_id, p.total_cost] as const));
+  const projectRows = overview
+    ? selectedProject === ALL
+      ? projects
+          .map((p) => ({ id: p.id, name: p.display_name, stat: projectStats[p.id] }))
+          .filter((row): row is { id: string; name: string; stat: TokenOverview } => Boolean(row.stat))
+          .map((row) => {
+            const rowTotal = row.stat.input_tokens + row.stat.output_tokens;
+            return {
+              key: row.id,
+              name: row.name,
+              calls: row.stat.calls,
+              inputTokens: row.stat.input_tokens,
+              outputTokens: row.stat.output_tokens,
+              cacheReadTokens: row.stat.cache_read_tokens,
+              totalTokens: rowTotal,
+              pct: total > 0 ? Math.round((rowTotal / total) * 100) : 0,
+              cost: projectCostMap[row.id] ?? null,
+            };
+          })
+      : [{
+          key: selectedProject,
+          name: selectedProjectMeta?.display_name ?? selectedProject,
+          calls: overview.calls,
+          inputTokens: overview.input_tokens,
+          outputTokens: overview.output_tokens,
+          cacheReadTokens: overview.cache_read_tokens,
+          totalTokens: total,
+          pct: total > 0 ? 100 : 0,
+          cost: projectCostMap[selectedProject] ?? null,
+        }]
+    : [];
+  const modelTotal = byModel.reduce((s, m) => s + m.input_tokens + m.output_tokens, 0);
+  const modelRows = byModel.map((m) => {
+    const rowTotal = m.input_tokens + m.output_tokens;
+    return {
+      key: m.model,
+      name: m.model,
+      calls: m.calls,
+      inputTokens: m.input_tokens,
+      outputTokens: m.output_tokens,
+      cacheReadTokens: m.cache_read_tokens,
+      totalTokens: rowTotal,
+      pct: modelTotal > 0 ? Math.round((rowTotal / modelTotal) * 100) : 0,
+      cost: m.cost,
+    };
+  });
+  const distributionRows = distributionMode === "project" ? projectRows : modelRows;
+  const distributionLabel = distributionMode === "project" ? "项目" : "模型";
 
   return (
     <div>
@@ -140,114 +193,6 @@ export default function TokensPage() {
         <p style={{ color: "var(--text-dim)" }}>暂无 Token 数据，请先同步日志。</p>
       )}
 
-      {/* all-projects breakdown table */}
-      {selectedProject === ALL && byModel.length > 0 && overview && (
-        <div style={{ marginTop: "1.5rem" }}>
-          <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600, marginBottom: "0.75rem" }}>各项目占比</div>
-          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 480 }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {["项目", "调用次数", "输入", "输出", "合计", "占比"].map((h) => (
-                    <th key={h} style={{ padding: "8px 12px", textAlign: h === "项目" ? "left" : "right", color: "var(--text-muted)", fontWeight: 600 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {projects.map((p, i) => {
-                  const proj = projectStats[p.id];
-                  if (!proj) return null;
-                  const grandTotal = overview.input_tokens + overview.output_tokens;
-                  const projTotal = proj.input_tokens + proj.output_tokens;
-                  const pct = grandTotal > 0 ? Math.round((projTotal / grandTotal) * 100) : 0;
-                  return (
-                    <tr key={p.id} style={{ borderBottom: i < projects.length - 1 ? "1px solid var(--border)" : undefined }}>
-                      <td style={{ padding: "8px 12px", color: "var(--text)", fontWeight: 500 }}>{p.display_name}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--amber)", fontVariantNumeric: "tabular-nums" }}>{proj.calls.toLocaleString()}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--blue)", fontFamily: "var(--font-mono)" }}>{fmt(proj.input_tokens)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--green)", fontFamily: "var(--font-mono)" }}>{fmt(proj.output_tokens)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{fmt(projTotal)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", minWidth: 90 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
-                          <div style={{ width: 60, height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
-                            <div style={{ width: `${pct}%`, height: "100%", background: "var(--blue)", borderRadius: 2 }} />
-                          </div>
-                          <span style={{ color: "var(--text-dim)", fontSize: 11, minWidth: 28, textAlign: "right" }}>{pct}%</span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* by-model table */}
-      {byModel.length > 0 && (
-        <div style={{ marginTop: "2rem" }}>
-          <div style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600, marginBottom: "0.75rem" }}>按模型分布</div>
-          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-            <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 480 }}>
-              <thead>
-                <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                  {["模型", "调用次数", "输入", "缓存命中", "输出", "合计", "费用"].map((h) => (
-                    <th key={h} style={{ padding: "8px 12px", textAlign: h === "模型" ? "left" : "right", color: "var(--text-muted)", fontWeight: 600 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {byModel.map((m, i) => {
-                  const total = m.input_tokens + m.output_tokens;
-                  const grandTotal = byModel.reduce((s, x) => s + x.input_tokens + x.output_tokens, 0);
-                  const pct = grandTotal > 0 ? Math.round((total / grandTotal) * 100) : 0;
-                  return (
-                    <tr key={m.model} style={{ borderBottom: i < byModel.length - 1 ? "1px solid var(--border)" : undefined }}>
-                      <td style={{ padding: "8px 12px" }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                          <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)" }}>{m.model}</span>
-                          <span style={{ fontSize: 10, color: "var(--text-dim)", background: "var(--surface-alt)", padding: "1px 5px", borderRadius: 3 }}>{pct}%</span>
-                        </div>
-                        <div style={{ marginTop: 4, height: 3, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
-                          <div style={{ width: `${pct}%`, height: "100%", background: "var(--blue)", borderRadius: 2 }} />
-                        </div>
-                      </td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--amber)", fontVariantNumeric: "tabular-nums" }}>{m.calls.toLocaleString()}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--blue)", fontFamily: "var(--font-mono)" }}>{fmt(m.input_tokens)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
-                        {m.cache_read_tokens > 0 ? (
-                          <span style={{ fontFamily: "var(--font-mono)" }}>
-                            <span style={{ color: "var(--text)" }}>{fmt(m.cache_read_tokens)}</span>
-                            <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 4 }}>
-                              {Math.round(m.cache_read_tokens / m.input_tokens * 100)}%
-                            </span>
-                          </span>
-                        ) : (
-                          <span style={{ color: "var(--text-dim)" }}>—</span>
-                        )}
-                      </td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--green)", fontFamily: "var(--font-mono)" }}>{fmt(m.output_tokens)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{fmt(total)}</td>
-                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
-                        {m.cost !== null
-                          ? <span style={{ color: "var(--amber)", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmtCost(m.cost)}</span>
-                          : <span style={{ color: "var(--text-dim)", fontSize: 11 }}>包月</span>
-                        }
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* daily chart */}
       <div style={{ marginTop: "2rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem" }}>
@@ -267,6 +212,87 @@ export default function TokensPage() {
           <p style={{ color: "var(--text-dim)", fontSize: 12 }}>暂无每日数据</p>
         )}
       </div>
+
+      {/* distribution table */}
+      {overview && (projectRows.length > 0 || modelRows.length > 0) && (
+        <div style={{ marginTop: "1.5rem" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "0.75rem" }}>
+            <span style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600 }}>分布明细</span>
+            {(["project", "model"] as const).map((mode) => (
+              <button
+                key={mode}
+                onClick={() => setDistributionMode(mode)}
+                className={`tag-btn${distributionMode === mode ? " active" : ""}`}
+                style={{ fontSize: 11, minWidth: 42 }}
+              >
+                {mode === "project" ? "项目" : "模型"}
+              </button>
+            ))}
+          </div>
+          <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 760, tableLayout: "fixed" }}>
+                <colgroup>
+                  <col style={{ width: 180 }} />
+                  <col style={{ width: 86 }} />
+                  <col style={{ width: 92 }} />
+                  <col style={{ width: 92 }} />
+                  <col style={{ width: 104 }} />
+                  <col style={{ width: 92 }} />
+                  <col style={{ width: 116 }} />
+                  <col style={{ width: 82 }} />
+                </colgroup>
+                <thead>
+                  <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                    {[distributionLabel, "调用次数", "输入", "输出", "缓存命中", "合计", "占比", "费用"].map((h) => (
+                      <th key={h} style={{ padding: "8px 12px", textAlign: h === distributionLabel ? "left" : "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {distributionRows.map((row, i) => (
+                    <tr key={row.key} style={{ borderBottom: i < distributionRows.length - 1 ? "1px solid var(--border)" : undefined }}>
+                      <td style={{ padding: "8px 12px", color: "var(--text)", fontWeight: distributionMode === "project" ? 500 : 400, fontFamily: distributionMode === "model" ? "var(--font-mono)" : undefined, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={row.name}>{row.name}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--amber)", fontVariantNumeric: "tabular-nums" }}>{row.calls.toLocaleString()}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--blue)", fontFamily: "var(--font-mono)" }}>{fmt(row.inputTokens)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--green)", fontFamily: "var(--font-mono)" }}>{fmt(row.outputTokens)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        {row.cacheReadTokens > 0 ? (
+                          <span style={{ fontFamily: "var(--font-mono)" }}>
+                            <span style={{ color: "var(--text)" }}>{fmt(row.cacheReadTokens)}</span>
+                            {row.inputTokens > 0 && (
+                              <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: 4 }}>
+                                {Math.round(row.cacheReadTokens / row.inputTokens * 100)}%
+                              </span>
+                            )}
+                          </span>
+                        ) : (
+                          <span style={{ color: "var(--text-dim)" }}>—</span>
+                        )}
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{fmt(row.totalTokens)}</td>
+                      <td style={{ padding: "8px 12px", textAlign: "right", minWidth: 90 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+                          <div style={{ width: 60, height: 4, background: "var(--border)", borderRadius: 2, overflow: "hidden" }}>
+                            <div style={{ width: `${row.pct}%`, height: "100%", background: "var(--blue)", borderRadius: 2 }} />
+                          </div>
+                          <span style={{ color: "var(--text-dim)", fontSize: 11, minWidth: 28, textAlign: "right" }}>{row.pct}%</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                        {row.cost !== null
+                          ? <span style={{ color: "var(--amber)", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmtCost(row.cost)}</span>
+                          : <span style={{ color: "var(--text-dim)", fontSize: 11 }}>包月</span>
+                        }
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
