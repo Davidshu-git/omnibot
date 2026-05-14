@@ -336,8 +336,8 @@ function ScreenshotModal({
 // List view components
 // ---------------------------------------------------------------------------
 
-const LIST_COLS = "60px 80px 56px 48px 48px 48px 64px 1fr 120px";
-const LIST_HEADERS = ["端口", "门派", "身份", "ADB", "截图", "OCR", "OCR耗时", "状态", "预览"];
+const LIST_COLS = "60px 48px 48px 48px 64px 1fr 120px";
+const LIST_HEADERS = ["端口", "ADB", "截图", "OCR", "OCR耗时", "状态", "预览"];
 
 function InstanceRow({
   inst,
@@ -368,10 +368,6 @@ function InstanceRow({
     }}>
       <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
         {inst.port}
-      </span>
-      <span style={{ color: "var(--text)" }}>{inst.school || "—"}</span>
-      <span style={{ color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", fontSize: 12 }}>
-        {ROLE_LABEL[inst.role] ?? (inst.role || "—")}
       </span>
       <span style={{ textAlign: "center" }}><CheckIcon ok={inst.adb} /></span>
       <span style={{ textAlign: "center" }}><CheckIcon ok={inst.screenshot} /></span>
@@ -450,10 +446,6 @@ function InstanceRowMobile({
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
           <span style={{ color: "var(--text)", fontFamily: "var(--font-mono)", fontWeight: 600 }}>
             {inst.port}
-          </span>
-          <span style={{ color: "var(--text)" }}>{inst.school || "—"}</span>
-          <span style={{ color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", fontSize: 11 }}>
-            {ROLE_LABEL[inst.role] ?? (inst.role || "—")}
           </span>
         </div>
         <div style={{ display: "flex", gap: 12, fontSize: 11, color: "var(--text-dim)", flexWrap: "wrap" }}>
@@ -553,11 +545,6 @@ function GroupBlock({
         <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 13 }}>
           第 {groupId + 1} 组
         </span>
-        {leader && (
-          <span style={{ color: "var(--text-dim)", fontSize: 12 }}>
-            队长：{leader.school || leader.port}
-          </span>
-        )}
       </div>
       {!isMobile && <ColumnHeaders />}
       <div style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
@@ -1137,12 +1124,6 @@ function ScreenshotCard({
         <span style={{ fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--text)", fontWeight: 600 }}>
           {inst.port}
         </span>
-        {inst.school && (
-          <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{inst.school}</span>
-        )}
-        <span style={{ fontSize: 10, color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", marginLeft: 2 }}>
-          {ROLE_LABEL[inst.role] ?? inst.role}
-        </span>
         {showSelectionUI && onToggleSelect && (
           <div
             onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
@@ -1419,9 +1400,6 @@ function GroupBlockGrid({
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: "0.75rem" }}>
         <span style={{ width: 8, height: 8, borderRadius: 999, background: badgeColor, flexShrink: 0 }} />
         <span style={{ color: "var(--text)", fontWeight: 600, fontSize: 13 }}>第 {groupId + 1} 组</span>
-        {leader && (
-          <span style={{ color: "var(--text-dim)", fontSize: 12 }}>队长：{leader.school || leader.port}</span>
-        )}
       </div>
       <div style={{
         display: "grid",
