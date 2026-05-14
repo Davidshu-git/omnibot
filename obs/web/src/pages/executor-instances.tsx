@@ -804,6 +804,7 @@ function ScreenshotCard({
   screenshot,
   onClick,
   tapMode = false,
+  swipeEnabled = false,
   broadcastScope = "single",
   allPorts = [],
   leaderPorts = [],
@@ -825,6 +826,7 @@ function ScreenshotCard({
   isSelected?: boolean;
   onToggleSelect?: () => void;
   showSelectionUI?: boolean;
+  swipeEnabled?: boolean;
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe" } | null>(null);
   const tapPendingRef = useRef(false);
@@ -1077,10 +1079,10 @@ function ScreenshotCard({
       return;
     }
     setHoverCoord({ x: point.x, y: point.y });
-    if (dragStartRef.current) {
+    if (swipeEnabled && dragStartRef.current) {
       updateSwipePreview(dragStartRef.current.localX, dragStartRef.current.localY, point.localX, point.localY);
     }
-  }, [tapMode, pointFromClient, updateSwipePreview]);
+  }, [tapMode, swipeEnabled, pointFromClient, updateSwipePreview]);
 
 
   const handleImgAreaPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -1121,9 +1123,10 @@ function ScreenshotCard({
       performTap(start.px, start.py, containerRect, start.clientX, start.clientY);
       return;
     }
+    if (!swipeEnabled) return;
     if (Math.hypot(dx, dy) < 24) return;
     performSwipe(start.px, start.py, point.x, point.y, 300);
-  }, [tapMode, pointFromClient, performTap, performSwipe, hideSwipePreview]);
+  }, [tapMode, swipeEnabled, pointFromClient, performTap, performSwipe, hideSwipePreview]);
 
   const clearDragState = useCallback(() => {
     dragStartRef.current = null;
@@ -1425,6 +1428,7 @@ function GroupBlockGrid({
   togglePortSelection,
   customSelectionActive,
   gridColumns,
+  swipeEnabled,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
@@ -1440,6 +1444,7 @@ function GroupBlockGrid({
   togglePortSelection: (port: string) => void;
   customSelectionActive: boolean;
   gridColumns: 1 | 2 | 3 | 4;
+  swipeEnabled: boolean;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -1483,6 +1488,7 @@ function GroupBlockGrid({
             isSelected={selectedPorts.has(inst.port)}
             onToggleSelect={() => togglePortSelection(inst.port)}
             showSelectionUI={broadcastScope === "custom" && !customSelectionActive}
+            swipeEnabled={swipeEnabled}
           />
         ))}
       </div>
@@ -1501,6 +1507,7 @@ export default function ExecutorInstancesPage() {
   const [error, setError] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
   const [tapMode, setTapMode] = useState(true);
+  const [swipeEnabled, setSwipeEnabled] = useState(false);
   const [focusMode, setFocusMode] = useState(false);
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
   const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
@@ -1781,13 +1788,6 @@ export default function ExecutorInstancesPage() {
                 border: "1px solid var(--border)",
               }}>
               <ToolbarButton
-                active={tapMode}
-                tone="green"
-                onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
-              >
-                手势操作
-              </ToolbarButton>
-              <ToolbarButton
                 active={broadcastScope === "all"}
                 tone="amber"
                 onClick={() => setBroadcastScope((s) => s === "all" ? "single" : "all")}
@@ -1890,6 +1890,32 @@ export default function ExecutorInstancesPage() {
             </ToolbarButton>
 
             <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 2,
+                padding: 2,
+                borderRadius: "var(--r-sm)",
+                background: "rgba(0,0,0,0.16)",
+                border: "1px solid var(--border)",
+              }}>
+                <ToolbarButton
+                  active={tapMode}
+                  tone="green"
+                  onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
+                >
+                  手势操作
+                </ToolbarButton>
+                <ToolbarDivider />
+                <ToolbarButton
+                  active={swipeEnabled}
+                  tone="green"
+                  onClick={() => setSwipeEnabled((v) => !v)}
+                >
+                  滑动
+                </ToolbarButton>
+              </div>
+
               <ToolbarDivider />
               <ToolbarSection label="链路">
                 <BandwidthBadge
@@ -1964,6 +1990,7 @@ export default function ExecutorInstancesPage() {
                 togglePortSelection={togglePortSelection}
                 customSelectionActive={customSelectionActive}
                 gridColumns={gridColumns}
+                swipeEnabled={swipeEnabled}
               />
             ))}
 
@@ -1999,6 +2026,7 @@ export default function ExecutorInstancesPage() {
                       isSelected={selectedPorts.has(inst.port)}
                       onToggleSelect={() => togglePortSelection(inst.port)}
                       showSelectionUI={broadcastScope === "custom" && !customSelectionActive}
+                      swipeEnabled={swipeEnabled}
                     />
                   ))}
                 </div>
