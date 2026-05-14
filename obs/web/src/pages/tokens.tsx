@@ -4,17 +4,9 @@ import type { Project } from "@/types/events";
 import { fmt, fmtCost } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
 
-function Bar({ value, max, color }: { value: number; max: number; color: string }) {
-  const pct = max > 0 ? Math.round((value / max) * 100) : 0;
-  return (
-    <div style={{ background: "var(--border)", borderRadius: 3, height: 6, overflow: "hidden" }}>
-      <div style={{ width: `${pct}%`, background: color, height: "100%", transition: "width 0.4s" }} />
-    </div>
-  );
-}
-
 export default function TokensPage() {
   const ALL = "__all__";
+  const isMobile = useIsMobile();
   const [projects, setProjects] = useState<Project[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>(ALL);
   const [overview, setOverview] = useState<TokenOverview | null>(null);
@@ -44,6 +36,8 @@ export default function TokensPage() {
   }, [selectedProject, projects]);
 
   const total = overview ? overview.input_tokens + overview.output_tokens : 0;
+  const inputPct = overview && total > 0 ? Math.round((overview.input_tokens / total) * 100) : 0;
+  const outputPct = total > 0 ? 100 - inputPct : 0;
   const totalCost = byModel.reduce((s, m) => s + (m.cost ?? 0), 0);
   const hasCost = byModel.some((m) => m.cost !== null);
 
@@ -76,41 +70,69 @@ export default function TokensPage() {
       </div>
 
       {overview && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem" }}>
-          {/* calls card */}
-          <div className="card" style={{ minWidth: 200 }}>
-            <div className="stat-label">LLM 调用次数</div>
-            <div style={{ fontSize: 36, fontWeight: 800, color: "var(--amber)", fontVariantNumeric: "tabular-nums", marginTop: 8 }}>
-              {overview.calls.toLocaleString()}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))",
+          gap: "1rem",
+          width: "100%",
+        }}>
+          {/* usage summary card */}
+          <div className="card" style={{
+            padding: "0.85rem 1.1rem",
+            minWidth: 0,
+          }}>
+            <SummaryCardTitle>LLM 调用与费用</SummaryCardTitle>
+            <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: "1rem" }}>
+              <div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>调用次数</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: "var(--amber)", fontVariantNumeric: "tabular-nums", lineHeight: 1.15 }}>
+                  {overview.calls.toLocaleString()}
+                </div>
+              </div>
+              <div>
+                <div style={{ color: "var(--text-muted)", fontSize: 12, marginBottom: 4 }}>估算费用</div>
+                <div style={{ fontSize: 24, fontWeight: 800, color: hasCost ? "var(--amber)" : "var(--text-dim)", fontVariantNumeric: "tabular-nums", lineHeight: 1.15 }}>
+                  {hasCost ? fmtCost(totalCost) : "包月"}
+                </div>
+              </div>
             </div>
-            <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 4 }}>次 model_call 事件</div>
           </div>
 
           {/* token breakdown card */}
-          <div className="card" style={{ minWidth: 340, flex: 1, maxWidth: 480 }}>
-            <div className="stat-label" style={{ marginBottom: "1rem" }}>Token 分布</div>
-
-            <TokenRow label="输入" value={fmt(overview.input_tokens)} raw={overview.input_tokens} max={total} color="var(--blue)" />
-            <TokenRow label="输出" value={fmt(overview.output_tokens)} raw={overview.output_tokens} max={total} color="var(--green)" />
-
-            <div style={{ marginTop: "1rem", paddingTop: "0.75rem", borderTop: "1px solid var(--border)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ color: "var(--text-muted)", fontSize: 12 }}>合计（输入 + 输出）</span>
-              <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 15, fontVariantNumeric: "tabular-nums" }}>
+          <div className="card" style={{
+            padding: "0.85rem 1.1rem",
+            display: "flex",
+            flexDirection: "column",
+            gap: "0.4rem",
+            minWidth: 0,
+          }}>
+            <SummaryCardTitle>Token 分布</SummaryCardTitle>
+            <div style={{
+              display: "flex",
+              alignItems: "baseline",
+              gap: "0.85rem",
+              flexWrap: "wrap",
+              fontVariantNumeric: "tabular-nums",
+              fontFeatureSettings: "\"tnum\"",
+            }}>
+              <span style={{ color: "var(--text)", fontWeight: 700, fontSize: 16 }}>
                 {fmt(total)}
+                <span style={{ color: "var(--text-dim)", fontWeight: 400, fontSize: 11, marginLeft: 3 }}>tok</span>
               </span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <span style={{ color: "var(--blue)" }}>↑</span> {fmt(overview.input_tokens)}
+              </span>
+              <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                <span style={{ color: "var(--green)" }}>↓</span> {fmt(overview.output_tokens)}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--text-dim)" }}>{inputPct}% 输入 · {outputPct}% 输出</span>
+            </div>
+            <div style={{ display: "flex", height: 3, borderRadius: 2, overflow: "hidden", background: "var(--border)" }}>
+              <div style={{ width: `${inputPct}%`, background: "var(--blue)", transition: "width 0.5s var(--ease)" }} />
+              <div style={{ flex: 1, background: "var(--green)" }} />
             </div>
           </div>
 
-          {/* cost summary card */}
-          {hasCost && (
-            <div className="card" style={{ minWidth: 200 }}>
-              <div className="stat-label">按量计费 · 估算费用</div>
-              <div style={{ fontSize: 32, fontWeight: 800, color: "var(--amber)", fontVariantNumeric: "tabular-nums", marginTop: 8 }}>
-                {fmtCost(totalCost)}
-              </div>
-              <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 4 }}>仅含 DeepSeek / Qwen-VL</div>
-            </div>
-          )}
         </div>
       )}
 
@@ -249,17 +271,19 @@ export default function TokensPage() {
   );
 }
 
-function TokenRow({ label, value, raw, max, color }: {
-  label: string; value: string; raw: number; max: number; color: string;
-}) {
+function SummaryCardTitle({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ marginBottom: "0.875rem" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 5 }}>
-        <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{label}</span>
-        <span style={{ color, fontWeight: 700, fontSize: 13, fontFamily: "var(--font-mono)" }}>{value}</span>
-      </div>
-      <Bar value={raw} max={max} color={color} />
-    </div>
+    <span style={{
+      display: "block",
+      color: "var(--text-muted)",
+      fontSize: 11,
+      fontWeight: 600,
+      letterSpacing: "0.04em",
+      textTransform: "uppercase",
+      marginBottom: "0.475rem",
+    }}>
+      {children}
+    </span>
   );
 }
 
