@@ -3,7 +3,6 @@ import Link from "next/link";
 import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/api";
 import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
 import { useIsMobile } from "@/lib/useIsMobile";
-import { useFocusMode } from "@/lib/focus-mode-context";
 import { sendInput } from "@/lib/input-ws";
 
 const ROLE_LABEL: Record<string, string> = {
@@ -1464,7 +1463,6 @@ export default function ExecutorInstancesPage() {
   const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
   const [tapMode, setTapMode] = useState(true);
   const [swipeEnabled, setSwipeEnabled] = useState(false);
-  const { focus: focusMode, setFocus: setFocusMode } = useFocusMode();
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
   const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
   const [customSelectionActive, setCustomSelectionActive] = useState(false);
@@ -1657,8 +1655,7 @@ export default function ExecutorInstancesPage() {
         />
       )}
 
-      {/* Page header — 视图切换和刷新固定在此行，不随模式变化 */}
-      {!focusMode && (
+      {/* Page header */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "0.75rem", flexWrap: "wrap" }}>
         <Link href="/" style={{ color: "var(--text-muted)", fontSize: 13 }}>← 返回总览</Link>
         <span style={{ color: "var(--border-hi)" }}>|</span>
@@ -1708,7 +1705,6 @@ export default function ExecutorInstancesPage() {
           </button>
         </div>
       </div>
-      )}
 
       {/* 截图巡检子工具栏 — 仅 grid 模式下展示 */}
       {viewMode === "grid" && (() => {
@@ -1832,17 +1828,6 @@ export default function ExecutorInstancesPage() {
                 ))}
               </div>
             </ToolbarSection>
-
-            <ToolbarDivider />
-
-            <ToolbarButton
-              active={focusMode}
-              tone="blue"
-              title={focusMode ? "退出专注模式" : "隐藏页面头部，全屏显示"}
-              onClick={() => setFocusMode(!focusMode)}
-            >
-              专注模式
-            </ToolbarButton>
 
             <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
               <div style={{
