@@ -348,6 +348,55 @@ async def mhxy_executor_batch_tap(body: dict):
         raise HTTPException(status_code=502, detail=f"Cannot reach executor: {exc}")
 
 
+@router.post("/external/mhxy-executor/batch-swipe")
+async def mhxy_executor_batch_swipe(body: dict):
+    """Proxy batch-swipe to the Windows executor.
+
+    body: {ports: [str], x1: int, y1: int, x2: int, y2: int, duration_ms?: int}
+    """
+    import httpx as _httpx
+    ports = body.get("ports") or []
+    x1 = body.get("x1")
+    y1 = body.get("y1")
+    x2 = body.get("x2")
+    y2 = body.get("y2")
+    duration_ms = int(body.get("duration_ms") or 300)
+    if x1 is None or y1 is None or x2 is None or y2 is None:
+        raise HTTPException(status_code=400, detail="x1, y1, x2 and y2 are required")
+    if duration_ms < 50 or duration_ms > 5000:
+        raise HTTPException(status_code=400, detail="duration_ms must be between 50 and 5000")
+    if not ports:
+        status_path = Path(settings.mhxy_executor_status_file)
+        if status_path.exists():
+            try:
+                raw = json.loads(status_path.read_text(encoding="utf-8"))
+                ports = [str(item.get("port", "")) for item in (raw.get("app_health") or []) if item.get("port")]
+            except Exception:
+                pass
+    if not ports:
+        raise HTTPException(status_code=400, detail="No ports specified and none found in status file")
+    executor_url = settings.mhxy_executor_url.rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=len(ports) * (duration_ms / 1000 + 2) + 10) as client:
+            r = await client.post(
+                f"{executor_url}/batch_swipe",
+                json={
+                    "ports": ports,
+                    "x1": int(x1),
+                    "y1": int(y1),
+                    "x2": int(x2),
+                    "y2": int(y2),
+                    "duration_ms": duration_ms,
+                },
+            )
+            r.raise_for_status()
+            return r.json()
+    except _httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=502, detail=f"Executor HTTP error: {exc.response.status_code}")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach executor: {exc}")
+
+
 @router.get("/external/mhxy-executor/status")
 async def mhxy_executor_status():
     path = Path(settings.mhxy_executor_status_file)

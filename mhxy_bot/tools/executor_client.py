@@ -113,6 +113,26 @@ class ExecutorClient:
     def batch_tap(self, ports: list[str], px: int, py: int) -> dict[str, bool]:
         return self._post("/batch_tap", ports=ports, px=px, py=py)["results"]
 
+    def batch_swipe(
+        self,
+        ports: list[str],
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        duration_ms: int = 300,
+    ) -> dict[str, bool]:
+        return self._post(
+            "/batch_swipe",
+            ports=ports,
+            x1=x1,
+            y1=y1,
+            x2=x2,
+            y2=y2,
+            duration_ms=duration_ms,
+            _timeout=max(self._timeout, int(len(ports) * (duration_ms / 1000 + 2) + 5)),
+        )["results"]
+
     def batch_back(self, ports: list[str]) -> dict[str, bool]:
         return self._post("/batch_back", ports=ports)["results"]
 

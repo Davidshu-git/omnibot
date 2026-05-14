@@ -443,6 +443,14 @@ class SwipeReq(BaseModel):
     y2: int
     duration_ms: int = 300
 
+class BatchSwipeReq(BaseModel):
+    ports: list[str]
+    x1: int
+    y1: int
+    x2: int
+    y2: int
+    duration_ms: int = 300
+
 class TapTextReq(BaseModel):
     port: str
     text_candidates: list[str]
@@ -613,6 +621,28 @@ def swipe(req: SwipeReq, request: Request):
     except Exception as e:
         log.exception("swipe error port=%s", req.port)
         raise HTTPException(500, str(e))
+
+
+@app.post("/batch_swipe")
+def batch_swipe(req: BatchSwipeReq, request: Request):
+    """批量 ADB 滑动，顺序执行。"""
+    request.state.port = ",".join(req.ports)
+    results: dict[str, bool] = {}
+    duration_ms = max(50, min(int(req.duration_ms), 5000))
+    for port in req.ports:
+        try:
+            r = _adb(
+                port,
+                "shell", "input", "swipe",
+                str(req.x1), str(req.y1), str(req.x2), str(req.y2), str(duration_ms),
+                event_ctx=_event_context(request, port),
+            )
+            results[port] = r.returncode == 0
+        except Exception as e:
+            log.warning("batch_swipe port=%s error: %s", port, e)
+            results[port] = False
+        time.sleep(duration_ms / 1000 + 0.08)
+    return {"results": results}
 
 
 @app.post("/tap_text")

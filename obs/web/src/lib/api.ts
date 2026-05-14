@@ -193,6 +193,15 @@ export const api = {
     get<{ port: string; image_b64: string }>("/api/external/mhxy-executor/screenshot", { port }),
   mhxyExecutorBatchTap: (ports: string[], px: number, py: number) =>
     postJson<{ results: Record<string, boolean> }>("/api/external/mhxy-executor/batch-tap", { ports, px, py }),
+  mhxyExecutorBatchSwipe: (
+    ports: string[],
+    x1: number,
+    y1: number,
+    x2: number,
+    y2: number,
+    duration_ms = 300,
+  ) =>
+    postJson<{ results: Record<string, boolean> }>("/api/external/mhxy-executor/batch-swipe", { ports, x1, y1, x2, y2, duration_ms }),
   think: (params: { project_id?: string; session_id?: string; limit?: number }) =>
     get<NormalizedEvent[]>("/api/think", params),
 

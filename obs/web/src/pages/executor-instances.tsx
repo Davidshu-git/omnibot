@@ -820,10 +820,25 @@ function ScreenshotCard({
   nativeStreamQuality: NativeStreamQuality;
   onStreamModeChange?: (port: string, streaming: boolean) => void;
 }) {
-  const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number } | null>(null);
+  const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe" } | null>(null);
   const tapPendingRef = useRef(false);
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const swipeLineRef = useRef<HTMLDivElement>(null);
+  const swipeStartDotRef = useRef<HTMLDivElement>(null);
+  const swipeEndDotRef = useRef<HTMLDivElement>(null);
+  const swipeRafRef = useRef<number | null>(null);
+  const dragStartRef = useRef<{
+    px: number;
+    py: number;
+    clientX: number;
+    clientY: number;
+    localX: number;
+    localY: number;
+    pctX: number;
+    pctY: number;
+  } | null>(null);
   const [streamMode, setStreamMode] = useState(false);
   const [nativeStreamMode, setNativeStreamMode] = useState(true);
   const [nativeStreamStatus, setNativeStreamStatus] = useState<StreamPlayerStatus>("closed");
@@ -907,6 +922,12 @@ function ScreenshotCard({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const currentTargets = useCallback(() => {
+    return broadcastScope === "leaders" ? leaderPorts
+      : broadcastScope === "all" ? allPorts
+      : [inst.port];
+  }, [broadcastScope, allPorts, leaderPorts, inst.port]);
+
   const performTap = useCallback((px: number, py: number, containerRect: DOMRect, clientX: number, clientY: number) => {
     setRipple({
       pctX: (clientX - containerRect.left) / containerRect.width * 100,
@@ -914,27 +935,45 @@ function ScreenshotCard({
       key: Date.now(),
     });
     if (tapPendingRef.current) return;
-    const targets = broadcastScope === "leaders" ? leaderPorts
-                  : broadcastScope === "all" ? allPorts
-                  : [inst.port];
+    const targets = currentTargets();
     if (targets.length === 0) return;
     tapPendingRef.current = true;
-    setTapStatus({ pending: true });
+    setTapStatus({ pending: true, kind: "tap" });
     api.mhxyExecutorBatchTap(targets, px, py)
       .then((d) => {
         const ok = Object.values(d.results).filter(Boolean).length;
-        setTapStatus({ pending: false, ok, fail: targets.length - ok });
+        setTapStatus({ pending: false, ok, fail: targets.length - ok, kind: "tap" });
         setTimeout(() => setTapStatus(null), 2500);
       })
       .catch(() => {
-        setTapStatus({ pending: false, ok: 0, fail: targets.length });
+        setTapStatus({ pending: false, ok: 0, fail: targets.length, kind: "tap" });
         setTimeout(() => setTapStatus(null), 2500);
       })
       .finally(() => { tapPendingRef.current = false; });
-  }, [broadcastScope, allPorts, leaderPorts, inst.port]);
+  }, [currentTargets]);
 
-  const handleImgAreaMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  const performSwipe = useCallback((x1: number, y1: number, x2: number, y2: number, durationMs = 300) => {
+    if (tapPendingRef.current) return;
+    const targets = currentTargets();
+    if (targets.length === 0) return;
+    tapPendingRef.current = true;
+    setTapStatus({ pending: true, kind: "swipe" });
+    api.mhxyExecutorBatchSwipe(targets, x1, y1, x2, y2, durationMs)
+      .then((d) => {
+        const ok = Object.values(d.results).filter(Boolean).length;
+        setTapStatus({ pending: false, ok, fail: targets.length - ok, kind: "swipe" });
+        setTimeout(() => setTapStatus(null), 2500);
+      })
+      .catch(() => {
+        setTapStatus({ pending: false, ok: 0, fail: targets.length, kind: "swipe" });
+        setTimeout(() => setTapStatus(null), 2500);
+      })
+      .finally(() => { tapPendingRef.current = false; });
+  }, [currentTargets]);
+
+  const pointFromClient = useCallback((elem: HTMLDivElement, clientX: number, clientY: number) => {
     if (!tapMode) return;
+    const elemRect = elem.getBoundingClientRect();
     if (nativeStreamMode) {
       if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
       const videoW = canvasRef.current.width;
@@ -944,90 +983,148 @@ function ScreenshotCard({
         videoW,
         videoH,
       );
-      const frameX = (e.clientX - cx) / cw * videoW;
-      const frameY = (e.clientY - cy) / ch * videoH;
-      if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) { setHoverCoord(null); return; }
+      const frameX = (clientX - cx) / cw * videoW;
+      const frameY = (clientY - cy) / ch * videoH;
+      if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) return null;
       const content = getVideoContentBounds(videoW, videoH, deviceSize.w, deviceSize.h);
       const rx = frameX - content.left;
       const ry = frameY - content.top;
-      if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) { setHoverCoord(null); return; }
-      setHoverCoord({
+      if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) return null;
+      return {
         x: Math.round(rx / content.width * deviceSize.w),
         y: Math.round(ry / content.height * deviceSize.h),
-      });
-      return;
+        localX: clientX - elemRect.left,
+        localY: clientY - elemRect.top,
+        pctX: (clientX - elemRect.left) / elemRect.width * 100,
+        pctY: (clientY - elemRect.top) / elemRect.height * 100,
+      };
     }
     if (streamMode) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const { left, top, width, height } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
-      const rx = e.clientX - rect.left - left;
-      const ry = e.clientY - rect.top - top;
-      if (rx < 0 || rx > width || ry < 0 || ry > height) { setHoverCoord(null); return; }
-      setHoverCoord({
+      const { left, top, width, height } = streamVideoBounds(elemRect.width, elemRect.height, deviceSize.w, deviceSize.h);
+      const rx = clientX - elemRect.left - left;
+      const ry = clientY - elemRect.top - top;
+      if (rx < 0 || rx > width || ry < 0 || ry > height) return null;
+      return {
         x: Math.round(rx / width * deviceSize.w),
         y: Math.round(ry / height * deviceSize.h),
-      });
-      return;
+        localX: clientX - elemRect.left,
+        localY: clientY - elemRect.top,
+        pctX: (clientX - elemRect.left) / elemRect.width * 100,
+        pctY: (clientY - elemRect.top) / elemRect.height * 100,
+      };
     }
-    if (!imgRef.current || !isImageLoaded) return;
+    if (!imgRef.current || !isImageLoaded) return null;
     const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
-    const rx = e.clientX - cx;
-    const ry = e.clientY - cy;
-    if (rx < 0 || rx > cw || ry < 0 || ry > ch) { setHoverCoord(null); return; }
-    setHoverCoord({
+    const rx = clientX - cx;
+    const ry = clientY - cy;
+    if (rx < 0 || rx > cw || ry < 0 || ry > ch) return null;
+    return {
       x: Math.round(rx / cw * imgRef.current.naturalWidth),
       y: Math.round(ry / ch * imgRef.current.naturalHeight),
-    });
+      localX: clientX - elemRect.left,
+      localY: clientY - elemRect.top,
+      pctX: (clientX - elemRect.left) / elemRect.width * 100,
+      pctY: (clientY - elemRect.top) / elemRect.height * 100,
+    };
   }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded]);
 
-  const handleImgAreaClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  const updateSwipePreview = useCallback((fromX: number, fromY: number, toX: number, toY: number) => {
+    if (swipeRafRef.current !== null) {
+      cancelAnimationFrame(swipeRafRef.current);
+    }
+    swipeRafRef.current = requestAnimationFrame(() => {
+      swipeRafRef.current = null;
+      const line = swipeLineRef.current;
+      const startDot = swipeStartDotRef.current;
+      const endDot = swipeEndDotRef.current;
+      if (!line || !startDot || !endDot) return;
+      const dx = toX - fromX;
+      const dy = toY - fromY;
+      const length = Math.hypot(dx, dy);
+      line.style.display = length >= 3 ? "block" : "none";
+      line.style.width = `${length}px`;
+      line.style.transform = `translate(${fromX}px, ${fromY}px) rotate(${Math.atan2(dy, dx)}rad)`;
+      startDot.style.display = "block";
+      endDot.style.display = "block";
+      startDot.style.transform = `translate(${fromX - 4}px, ${fromY - 4}px)`;
+      endDot.style.transform = `translate(${toX - 4}px, ${toY - 4}px)`;
+    });
+  }, []);
+
+  const hideSwipePreview = useCallback(() => {
+    if (swipeRafRef.current !== null) {
+      cancelAnimationFrame(swipeRafRef.current);
+      swipeRafRef.current = null;
+    }
+    if (swipeLineRef.current) swipeLineRef.current.style.display = "none";
+    if (swipeStartDotRef.current) swipeStartDotRef.current.style.display = "none";
+    if (swipeEndDotRef.current) swipeEndDotRef.current.style.display = "none";
+  }, []);
+
+  useEffect(() => () => hideSwipePreview(), [hideSwipePreview]);
+
+  const handleImgAreaPointerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!tapMode) return;
-    if (nativeStreamMode) {
-      if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
-      const videoW = canvasRef.current.width;
-      const videoH = canvasRef.current.height;
-      const { cx, cy, cw, ch } = getContainBoundsGeneric(
-        canvasRef.current,
-        videoW,
-        videoH,
-      );
-      const frameX = (e.clientX - cx) / cw * videoW;
-      const frameY = (e.clientY - cy) / ch * videoH;
-      if (frameX < 0 || frameX > videoW || frameY < 0 || frameY > videoH) return;
-      const content = getVideoContentBounds(videoW, videoH, deviceSize.w, deviceSize.h);
-      const rx = frameX - content.left;
-      const ry = frameY - content.top;
-      if (rx < 0 || rx > content.width || ry < 0 || ry > content.height) return;
-      e.stopPropagation();
-      const px = Math.round(rx / content.width * deviceSize.w);
-      const py = Math.round(ry / content.height * deviceSize.h);
-      const containerRect = e.currentTarget.getBoundingClientRect();
-      performTap(px, py, containerRect, e.clientX, e.clientY);
+    const point = pointFromClient(e.currentTarget, e.clientX, e.clientY);
+    if (!point) {
+      setHoverCoord(null);
       return;
     }
-    if (streamMode) {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const { left, top, width, height } = streamVideoBounds(rect.width, rect.height, deviceSize.w, deviceSize.h);
-      const rx = e.clientX - rect.left - left;
-      const ry = e.clientY - rect.top - top;
-      if (rx < 0 || rx > width || ry < 0 || ry > height) return; // toolbar / letterbox → bubble up to card onClick
-      e.stopPropagation();
-      const px = Math.round(rx / width * deviceSize.w);
-      const py = Math.round(ry / height * deviceSize.h);
-      performTap(px, py, rect, e.clientX, e.clientY);
-      return;
+    setHoverCoord({ x: point.x, y: point.y });
+    if (dragStartRef.current) {
+      updateSwipePreview(dragStartRef.current.localX, dragStartRef.current.localY, point.localX, point.localY);
     }
-    if (!imgRef.current || !isImageLoaded) return;
-    const { cx, cy, cw, ch } = getContainBounds(imgRef.current);
-    const rx = e.clientX - cx;
-    const ry = e.clientY - cy;
-    if (rx < 0 || rx > cw || ry < 0 || ry > ch) return; // black bar → bubble up to card onClick (modal)
+  }, [tapMode, pointFromClient, updateSwipePreview]);
+
+
+  const handleImgAreaPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!tapMode) return;
+    const point = pointFromClient(e.currentTarget, e.clientX, e.clientY);
+    if (!point) return;
     e.stopPropagation();
-    const px = Math.round(rx / cw * imgRef.current.naturalWidth);
-    const py = Math.round(ry / ch * imgRef.current.naturalHeight);
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStartRef.current = {
+      px: point.x,
+      py: point.y,
+      clientX: e.clientX,
+      clientY: e.clientY,
+      localX: point.localX,
+      localY: point.localY,
+      pctX: point.pctX,
+      pctY: point.pctY,
+    };
+    setIsDragging(true);
+    updateSwipePreview(point.localX, point.localY, point.localX, point.localY);
+  }, [tapMode, pointFromClient, updateSwipePreview]);
+
+  const handleImgAreaPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!tapMode) return;
+    const start = dragStartRef.current;
+    dragStartRef.current = null;
+    setIsDragging(false);
+    hideSwipePreview();
+    if (!start) return;
+    const point = pointFromClient(e.currentTarget, e.clientX, e.clientY);
+    if (!point) return;
+    e.stopPropagation();
+    const dx = point.x - start.px;
+    const dy = point.y - start.py;
+    const clientDistance = Math.hypot(e.clientX - start.clientX, e.clientY - start.clientY);
     const containerRect = e.currentTarget.getBoundingClientRect();
-    performTap(px, py, containerRect, e.clientX, e.clientY);
-  }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded, performTap]);
+    if (clientDistance <= 10) {
+      performTap(start.px, start.py, containerRect, start.clientX, start.clientY);
+      return;
+    }
+    if (Math.hypot(dx, dy) < 24) return;
+    performSwipe(start.px, start.py, point.x, point.y, 300);
+  }, [tapMode, pointFromClient, performTap, performSwipe, hideSwipePreview]);
+
+  const clearDragState = useCallback(() => {
+    dragStartRef.current = null;
+    setIsDragging(false);
+    setHoverCoord(null);
+    hideSwipePreview();
+  }, [hideSwipePreview]);
 
   const statusColor = inst.healthy === true
     ? "var(--green)"
@@ -1106,11 +1203,17 @@ function ScreenshotCard({
           aspectRatio: "16/9",
           display: "flex", alignItems: "center", justifyContent: "center",
           position: "relative",
-          cursor: tapMode && (nativeStreamMode || streamMode || isImageLoaded) ? "crosshair" : undefined,
+          cursor: tapMode && (nativeStreamMode || streamMode || isImageLoaded)
+            ? isDragging ? "grabbing" : "crosshair"
+            : undefined,
+          touchAction: tapMode ? "none" : undefined,
         }}
-        onMouseMove={handleImgAreaMouseMove}
-        onMouseLeave={() => setHoverCoord(null)}
-        onClick={handleImgAreaClick}
+        onPointerMove={handleImgAreaPointerMove}
+        onMouseLeave={clearDragState}
+        onPointerDown={handleImgAreaPointerDown}
+        onPointerUp={handleImgAreaPointerUp}
+        onPointerCancel={clearDragState}
+        onClick={(e) => { if (tapMode) e.stopPropagation(); }}
       >
         {nativeStreamMode ? (
           <>
@@ -1185,6 +1288,54 @@ function ScreenshotCard({
             onAnimationEnd={() => setRipple(null)}
           />
         )}
+        <div
+          ref={swipeLineRef}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            display: "none",
+            width: 0,
+            height: 2,
+            background: "var(--amber)",
+            transformOrigin: "0 50%",
+            pointerEvents: "none",
+            boxShadow: "0 0 0 1px rgba(0,0,0,0.55), 0 0 10px rgba(251,191,36,0.35)",
+            zIndex: 3,
+          }}
+        />
+        <div
+          ref={swipeStartDotRef}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            display: "none",
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: "var(--amber)",
+            border: "1px solid rgba(0,0,0,0.65)",
+            pointerEvents: "none",
+            zIndex: 4,
+          }}
+        />
+        <div
+          ref={swipeEndDotRef}
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            display: "none",
+            width: 8,
+            height: 8,
+            borderRadius: 999,
+            background: "var(--green)",
+            border: "1px solid rgba(0,0,0,0.65)",
+            pointerEvents: "none",
+            zIndex: 4,
+          }}
+        />
         {/* Hover coordinate */}
         {tapMode && hoverCoord && (
           <div style={{
@@ -1208,10 +1359,10 @@ function ScreenshotCard({
             color: tapStatus.pending ? "var(--text-dim)" : tapStatus.fail === 0 ? "var(--green)" : "var(--amber)",
           }}>
             {tapStatus.pending
-              ? (broadcastScope === "leaders" ? `队长 ${leaderPorts.length}…`
-                : broadcastScope === "all" ? `广播 ${allPorts.length}…`
-                : "…")
-              : `✓${tapStatus.ok}${tapStatus.fail ? ` ✗${tapStatus.fail}` : ""}`}
+              ? (broadcastScope === "leaders" ? `${tapStatus.kind === "swipe" ? "滑动队长" : "队长"} ${leaderPorts.length}…`
+                : broadcastScope === "all" ? `${tapStatus.kind === "swipe" ? "滑动广播" : "广播"} ${allPorts.length}…`
+                : tapStatus.kind === "swipe" ? "滑动…" : "…")
+              : `${tapStatus.kind === "swipe" ? "滑" : "点"} ✓${tapStatus.ok}${tapStatus.fail ? ` ✗${tapStatus.fail}` : ""}`}
           </div>
         )}
       </div>
@@ -1576,7 +1727,7 @@ export default function ExecutorInstancesPage() {
                 tone="green"
                 onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
               >
-                点击操作
+                手势操作
               </ToolbarButton>
               <ToolbarButton
                 active={broadcastScope === "all"}
