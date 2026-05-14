@@ -1185,6 +1185,18 @@ async def stats_overview(db: AsyncSession = Depends(get_db)):
         if c is not None:
             cost_by_project[r.project_id] = (cost_by_project.get(r.project_id) or 0.0) + c
 
+    # Batch 4: latest session_id per project (excluding windows-executor)
+    latest_session_r = await db.execute(
+        select(Session.project_id, Session.id)
+        .distinct(Session.project_id)
+        .where(
+            Session.project_id.in_(project_ids),
+            Session.agent_id != "windows-executor",
+        )
+        .order_by(Session.project_id, Session.started_at.desc())
+    )
+    latest_session = {r.project_id: r.id for r in latest_session_r.all()}
+
     output = []
     for p in projects:
         ss = session_stats.get(p.id)
@@ -1196,6 +1208,7 @@ async def stats_overview(db: AsyncSession = Depends(get_db)):
             "today_sessions": ss.today_sessions if ss else 0,
             "today_calls": es.today_calls if es else 0,
             "last_session_at": ss.last_session_at if ss else None,
+            "last_session_id": latest_session.get(p.id),
             "total_input_tokens": es.input_tokens or 0 if es else 0,
             "total_output_tokens": es.output_tokens or 0 if es else 0,
             "total_cost": cost_by_project.get(p.id),

@@ -43,6 +43,7 @@ export interface ProjectOverview {
   today_sessions: number;
   today_calls: number;
   last_session_at: string | null;
+  last_session_id: string | null;
   total_input_tokens: number;
   total_output_tokens: number;
   total_cost: number | null;

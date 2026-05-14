@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useRouter } from "next/router";
 import { api, type ProjectOverview, type TokenOverview, type TokenDailyStat, type TokenByModel } from "@/lib/api";
 import type { Project } from "@/types/events";
 import { fmt, fmtCost } from "@/lib/format";
@@ -6,10 +7,17 @@ import { useIsMobile } from "@/lib/useIsMobile";
 
 export default function TokensPage() {
   const ALL = "__all__";
+  const router = useRouter();
   const isMobile = useIsMobile();
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectOverviews, setProjectOverviews] = useState<ProjectOverview[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>(ALL);
+
+  useEffect(() => {
+    if (!router.isReady) return;
+    const pid = router.query.project_id;
+    if (typeof pid === "string" && pid) setSelectedProject(pid);
+  }, [router.isReady, router.query.project_id]);
   const [overview, setOverview] = useState<TokenOverview | null>(null);
   const [daily, setDaily] = useState<TokenDailyStat[]>([]);
   const [byModel, setByModel] = useState<TokenByModel[]>([]);

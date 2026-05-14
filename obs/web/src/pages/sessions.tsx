@@ -46,6 +46,15 @@ const TASK_EVENT_ICONS: Record<string, string> = {
   executor_startup:       "🚀",
 };
 
+const AGENT_DISPLAY: Record<string, string> = {
+  "game-bot":  "梦幻西游 Bot",
+  "stock-bot": "OmniStock 量化助理",
+  "ehs-bot":   "OmniEHS 安全合规助理",
+  "mhxy":      "梦幻西游 Bot",
+  "stock":     "OmniStock 量化助理",
+  "ehs":       "OmniEHS 安全合规助理",
+};
+
 const AGENT_PALETTE = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)"];
 const _colorCache: Record<string, string> = {};
 let _colorIdx = 0;
@@ -819,7 +828,7 @@ function AgentBadge({ label }: { label: string }) {
   const color = agentColor(label);
   return (
     <span className="badge" style={{ background: color + "18", color, border: `1px solid ${color}30` }}>
-      {label}
+      {AGENT_DISPLAY[label] ?? label}
     </span>
   );
 }
@@ -858,7 +867,7 @@ export default function SessionsPage() {
     if (!router.isReady) return;
     setLoadingSessions(true);
     api.sessions({ project_id: projectId || undefined, limit: 100 })
-      .then(setSessions)
+      .then((list) => setSessions(list.filter((s) => s.agent_id !== "windows-executor")))
       .catch((e) => setErr(String(e)))
       .finally(() => setLoadingSessions(false));
   }, [router.isReady, projectId]);
@@ -991,7 +1000,7 @@ export default function SessionsPage() {
                     : { color: "var(--text-muted)" }
                   }
                 >
-                  {k === "all" ? `全部 (${sessions.length})` : k}
+                  {k === "all" ? `全部 (${sessions.length})` : (AGENT_DISPLAY[k] ?? k)}
                 </button>
               ))}
             </div>
@@ -1014,8 +1023,9 @@ export default function SessionsPage() {
                     >
                       <div style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 4 }}>
                         <AgentBadge label={botKey} />
-                        {!projectId && s.project_id !== botKey && (
-                          <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{s.project_id}</span>
+                        {!projectId && s.project_id !== botKey &&
+                          (AGENT_DISPLAY[s.project_id] ?? s.project_id) !== (AGENT_DISPLAY[botKey] ?? botKey) && (
+                          <span style={{ color: "var(--text-dim)", fontSize: 10 }}>{AGENT_DISPLAY[s.project_id] ?? s.project_id}</span>
                         )}
                       </div>
                       <div style={{

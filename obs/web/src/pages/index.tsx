@@ -381,6 +381,9 @@ function ExecutorStatusCard({
             }}>
               {error || status?.error || status?.health?.error || status?.last_restart?.reason || "watchdog 状态文件正常"}
             </span>
+            <Link href="/executor-logs" style={{ color: "var(--text-muted)", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>
+              执行日志 →
+            </Link>
             <Link href="/executor-instances" style={{ color: "var(--blue)", fontSize: 12, whiteSpace: "nowrap", flexShrink: 0 }}>
               实例详情 →
             </Link>
@@ -556,7 +559,15 @@ function ProjectCard({
                 {syncMsg}
               </span>
             )}
-            <Link href={`/sessions?project_id=${p.project_id}`} style={{ color: "var(--blue)", fontSize: 12 }}>
+            <Link href={`/tokens?project_id=${p.project_id}`} style={{ color: "var(--text-muted)", fontSize: 12 }}>
+              用量 →
+            </Link>
+            <Link
+              href={p.last_session_id
+                ? `/sessions?project_id=${p.project_id}&session_id=${p.last_session_id}`
+                : `/sessions?project_id=${p.project_id}`}
+              style={{ color: "var(--blue)", fontSize: 12 }}
+            >
               会话 →
             </Link>
           </div>

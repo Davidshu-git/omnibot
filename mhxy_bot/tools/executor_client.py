@@ -41,12 +41,8 @@ class ExecutorClient:
         set_executor_context(session_id=session_id, trace_id=trace_id)
 
     def _headers(self) -> dict[str, str]:
-        """构造每次请求的 trace/session header。"""
+        """构造每次请求的 trace header。session_id 不转发，executor 事件进独立日期 session。"""
         headers = {"X-Request-ID": uuid.uuid4().hex[:12]}
-        session_id = _session_id_ctx.get() or self._session_id
-        if session_id:
-            headers["X-Session-Id"] = session_id
-
         trace_id = _trace_id_ctx.get()
         if trace_id is None and self._trace_id_provider is not None:
             trace_id = self._trace_id_provider()
