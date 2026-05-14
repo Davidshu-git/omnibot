@@ -1439,7 +1439,7 @@ function GroupBlockGrid({
   selectedPorts: Set<string>;
   togglePortSelection: (port: string) => void;
   customSelectionActive: boolean;
-  gridColumns: 2 | 3 | 4;
+  gridColumns: 1 | 2 | 3 | 4;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -1513,7 +1513,7 @@ export default function ExecutorInstancesPage() {
     });
   }, []);
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
-  const [gridColumns, setGridColumns] = useState<2 | 3 | 4>(3);
+  const [gridColumns, setGridColumns] = useState<1 | 2 | 3 | 4>(3);
 
   // Modal state
   const [modalPort, setModalPort] = useState<string | null>(null);
@@ -1865,14 +1865,14 @@ export default function ExecutorInstancesPage() {
                 background: "rgba(0,0,0,0.16)",
                 border: "1px solid var(--border)",
               }}>
-                {([2, 3, 4] as const).map((c) => (
+                {([1, 2, 3, 4] as const).map((c) => (
                   <ToolbarButton
                     key={c}
                     active={gridColumns === c}
                     tone="blue"
                     onClick={() => setGridColumns(c)}
                   >
-                    {c} 列
+                    {c}
                   </ToolbarButton>
                 ))}
               </div>
