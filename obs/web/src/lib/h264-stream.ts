@@ -178,6 +178,7 @@ export class StreamPlayer {
   private accessUnitHasIdr = false;
   private reconnectAttempt = 0;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  private connectTimer?: ReturnType<typeof setTimeout>;
 
   constructor(private opts: StreamPlayerOptions) {
     this.ctx = opts.canvas.getContext("2d");
@@ -186,6 +187,8 @@ export class StreamPlayer {
 
   close(): void {
     this.closed = true;
+    clearTimeout(this.connectTimer);
+    this.connectTimer = undefined;
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
@@ -231,6 +234,16 @@ export class StreamPlayer {
     this.sps = undefined;
     this.pps = undefined;
     this.opts.onStatus?.("connecting");
+    // 15s 超时：如果 screenrecord 子进程启动失败或 emulator 无响应，
+    // 避免永久卡在"连接中"状态。
+    clearTimeout(this.connectTimer);
+    this.connectTimer = setTimeout(() => {
+      if (this.closed) return;
+      if (this.gotFirstKeyframe) return; // 已经播放过
+      this.opts.onStatus?.("error", "stream connect timeout");
+      this.scheduleReconnect();
+    }, 15_000);
+
     const ws = new WebSocket(this.opts.url);
     ws.binaryType = "arraybuffer";
     this.ws = ws;
@@ -240,14 +253,25 @@ export class StreamPlayer {
         this.handleControlMessage(event.data);
         return;
       }
+      clearTimeout(this.connectTimer);
       this.ingest(new Uint8Array(event.data));
+    };
+    ws.onopen = () => {
+      clearTimeout(this.connectTimer);
+      this.connectTimer = setTimeout(() => {
+        if (this.closed || this.gotFirstKeyframe) return;
+        this.opts.onStatus?.("error", "stream connect timeout");
+        this.scheduleReconnect();
+      }, 15_000);
     };
     ws.onerror = () => {
       if (this.ws !== ws || this.closed) return;
+      clearTimeout(this.connectTimer);
       this.scheduleReconnect();
     };
     ws.onclose = () => {
       if (this.ws !== ws || this.closed) return;
+      clearTimeout(this.connectTimer);
       this.scheduleReconnect();
     };
   }

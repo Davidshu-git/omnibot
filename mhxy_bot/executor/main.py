@@ -959,6 +959,10 @@ class FanoutStream:
     async def _spawn(self) -> None:
         """启动 adb screenrecord subprocess 和后台 stdout 转发任务。
 
+        使用 run_in_executor 执行 Popen，避免同步调用阻塞事件循环。
+        高档位下多个 stream 同时启动时，subprocess.Popen 在 Windows 上
+        可能耗时 200-500ms，同步调用会卡住整个事件循环。
+
         Returns:
             None.
         """
@@ -980,11 +984,15 @@ class FanoutStream:
             "stream spawn port=%s quality=%s addr=%s args=%r",
             self.port, self.quality, addr, args[2:],
         )
-        self._proc = subprocess.Popen(
-            args,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            bufsize=0,
+        loop = asyncio.get_running_loop()
+        self._proc = await loop.run_in_executor(
+            None,
+            lambda: subprocess.Popen(
+                args,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=0,
+            ),
         )
         self._reader_task = asyncio.create_task(self._reader_loop())
         emit_event({
@@ -1040,12 +1048,14 @@ class FanoutStream:
             await self._handle_reader_exit()
 
     async def _broadcast_bytes(self, chunk: bytes) -> None:
-        """广播二进制帧；使用 fire-and-forget 避免阻塞事件循环。
+        """广播二进制帧；顺序 await 保证 H.264 字节序不被并发 send 打乱。
 
-        高档位下 H.264 帧到达频率可达 ~50 帧/秒。如果 await 每个 subscriber
-        的 send_bytes 完成，慢订阅者会导致事件循环被长期占用，
-        进而阻塞 REST 端点（tap/swipe 等）。改为 create_task 并发广播，
-        事件循环立即继续读取下一帧。
+        不能改成 fire-and-forget——Starlette/uvicorn 的 ws.send_bytes 没有
+        内部串行锁，对同一个 WebSocket 并发派发两个 send 任务时帧次序可能颠倒，
+        H.264 接收端会卡在等待关键帧。高码率（1.5 Mbps、~46 chunks/s）下尤其明显。
+
+        慢订阅者会通过 _safe_send_bytes 的 STREAM_SEND_TIMEOUT_SEC 超时被立刻踢出，
+        不会长期拖累 reader。
 
         Args:
             chunk: H.264 Annex-B 字节块。
@@ -1054,7 +1064,7 @@ class FanoutStream:
             None.
         """
         for ws in list(self.subscribers):
-            asyncio.create_task(_safe_send_bytes(ws, chunk, self))
+            await _safe_send_bytes(ws, chunk, self)
 
     async def _broadcast_restart(self) -> None:
         """通知前端 screenrecord 已重启，需要重置解码器。
@@ -1063,7 +1073,7 @@ class FanoutStream:
             None.
         """
         for ws in list(self.subscribers):
-            asyncio.create_task(_safe_send_text(ws, '{"event":"restart"}', self))
+            await _safe_send_text(ws, '{"event":"restart"}', self)
 
     async def _handle_reader_exit(self) -> None:
         """处理 adb subprocess 退出；有订阅者时自动重启。
@@ -1095,15 +1105,20 @@ class FanoutStream:
         })
         self._proc = None
         self._reader_task = None
-        if self._stopping or not self.subscribers:
-            return
-        await self._broadcast_restart()
-        if not self.subscribers:
-            return
-        await asyncio.sleep(STREAM_RESTART_DELAY_SEC)
-        async with self._lock:
-            if not self._stopping and self.subscribers and self._proc is None:
-                await self._spawn()
+
+        # 非主动终止且仍有订阅者：关闭所有 WebSocket，让前端感知断开并重连。
+        if not self._stopping and self.subscribers:
+            for ws in list(self.subscribers):
+                try:
+                    await ws.close(code=ws_status.WS_1012_SERVICE_RESTART)
+                except Exception:
+                    pass
+            self.subscribers.clear()
+            # 延迟后重启
+            await asyncio.sleep(STREAM_RESTART_DELAY_SEC)
+            async with self._lock:
+                if not self._stopping and self.subscribers and self._proc is None:
+                    await self._spawn()
 
     async def _terminate_locked(self) -> None:
         """在持有锁时终止 subprocess。
