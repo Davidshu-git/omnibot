@@ -1778,15 +1778,6 @@ export default function ExecutorInstancesPage() {
                 border: "1px solid var(--border)",
               }}>
               <ToolbarButton
-                active={focusMode}
-                tone="blue"
-                title={focusMode ? "退出专注模式" : "隐藏页面头部，全屏显示"}
-                onClick={() => setFocusMode((v) => !v)}
-              >
-                专注模式
-              </ToolbarButton>
-              <ToolbarDivider />
-              <ToolbarButton
                 active={tapMode}
                 tone="green"
                 onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
@@ -1858,6 +1849,17 @@ export default function ExecutorInstancesPage() {
                 ))}
               </div>
             </ToolbarSection>
+
+            <ToolbarDivider />
+
+            <ToolbarButton
+              active={focusMode}
+              tone="blue"
+              title={focusMode ? "退出专注模式" : "隐藏页面头部，全屏显示"}
+              onClick={() => setFocusMode((v) => !v)}
+            >
+              专注模式
+            </ToolbarButton>
 
             <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
               <ToolbarDivider />
