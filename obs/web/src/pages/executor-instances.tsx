@@ -1396,20 +1396,6 @@ function ScreenshotCard({
           </div>
         )}
       </div>
-
-      {/* health badges */}
-      <div style={{
-        padding: "0.3rem 0.6rem",
-        display: "flex", gap: 8, fontSize: 11, color: "var(--text-dim)",
-        borderTop: "1px solid var(--border)",
-      }}>
-        <span>ADB <CheckIcon ok={inst.adb} /></span>
-        <span>截图 <CheckIcon ok={inst.screenshot} /></span>
-        <span>OCR <CheckIcon ok={inst.ocr} /></span>
-        {inst.latency_ms !== null && inst.latency_ms !== undefined && (
-          <span style={{ marginLeft: "auto", fontFamily: "var(--font-mono)" }}>{inst.latency_ms} ms</span>
-        )}
-      </div>
     </div>
   );
 }
