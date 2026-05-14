@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/router";
+import Link from "next/link";
 import { api, type ProjectOverview, type TokenOverview, type TokenDailyStat, type TokenByModel } from "@/lib/api";
 import type { Project } from "@/types/events";
 import { fmt, fmtCost } from "@/lib/format";
@@ -104,8 +105,10 @@ export default function TokensPage() {
 
   return (
     <div>
-      <div style={{ marginBottom: "1.5rem" }}>
-        <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", marginBottom: 4 }}>Token 统计</h1>
+      <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1.5rem" }}>
+        <Link href="/" style={{ color: "var(--text-muted)", fontSize: 13 }}>← 返回总览</Link>
+        <span style={{ color: "var(--border-hi)" }}>|</span>
+        <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", margin: 0 }}>Token 统计</h1>
       </div>
 
       {err && <p style={{ color: "var(--red)", marginBottom: "1rem" }}>{err}</p>}

@@ -964,7 +964,9 @@ export default function SessionsPage() {
     <div style={{ height: "calc(100vh - 3.5rem)", display: "flex", flexDirection: "column" }}>
       {/* header */}
       <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
-        <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)" }}>会话时间线</h1>
+        <Link href="/" style={{ color: "var(--text-muted)", fontSize: 13 }}>← 返回总览</Link>
+        <span style={{ color: "var(--border-hi)" }}>|</span>
+        <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", margin: 0 }}>会话时间线</h1>
         {projectId && <AgentBadge label={projectId} />}
         {err && <span style={{ color: "var(--red)", fontSize: 12 }}>{err}</span>}
       </div>
