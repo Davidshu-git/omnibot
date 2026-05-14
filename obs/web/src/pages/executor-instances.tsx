@@ -628,7 +628,7 @@ function getVideoContentBounds(
   return { left: (videoW - width) / 2, top: 0, width, height: videoH };
 }
 
-type BroadcastScope = "single" | "all" | "leaders";
+type BroadcastScope = "single" | "all" | "leaders" | "custom";
 type NativeStreamQuality = "low" | "medium" | "high";
 
 const NATIVE_STREAM_QUALITY_LABEL: Record<NativeStreamQuality, string> = {
@@ -809,6 +809,9 @@ function ScreenshotCard({
   leaderPorts = [],
   nativeStreamQuality,
   onStreamModeChange,
+  isSelected = false,
+  onToggleSelect,
+  showSelectionUI = false,
 }: {
   inst: MhxyInstanceDetail;
   screenshot: ScreenshotState;
@@ -819,6 +822,9 @@ function ScreenshotCard({
   leaderPorts?: string[];
   nativeStreamQuality: NativeStreamQuality;
   onStreamModeChange?: (port: string, streaming: boolean) => void;
+  isSelected?: boolean;
+  onToggleSelect?: () => void;
+  showSelectionUI?: boolean;
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe" } | null>(null);
   const tapPendingRef = useRef(false);
@@ -1136,15 +1142,19 @@ function ScreenshotCard({
     <div
       onClick={onClick}
       style={{
-        border: "1px solid var(--border)",
+        border: showSelectionUI && isSelected
+          ? "1.5px solid var(--blue)"
+          : "1px solid var(--border)",
         borderRadius: "var(--r-sm)",
         overflow: "hidden",
         cursor: "pointer",
-        background: "var(--bg2)",
+        background: showSelectionUI && isSelected
+          ? "rgba(99,179,237,0.04)"
+          : "var(--bg2)",
         transition: "border-color 0.15s",
       }}
-      onMouseEnter={(e) => (e.currentTarget.style.borderColor = "var(--blue)")}
-      onMouseLeave={(e) => (e.currentTarget.style.borderColor = "var(--border)")}
+      onMouseEnter={(e) => (e.currentTarget.style.borderColor = showSelectionUI && isSelected ? "var(--blue)" : "var(--blue)")}
+      onMouseLeave={(e) => (e.currentTarget.style.borderColor = showSelectionUI && isSelected ? "var(--blue)" : "var(--border)")}
     >
       {/* header */}
       <div style={{
@@ -1161,6 +1171,22 @@ function ScreenshotCard({
         <span style={{ fontSize: 10, color: ROLE_COLOR[inst.role] ?? "var(--text-muted)", marginLeft: 2 }}>
           {ROLE_LABEL[inst.role] ?? inst.role}
         </span>
+        {showSelectionUI && onToggleSelect && (
+          <div
+            onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
+            title={isSelected ? "取消选中" : "选中此实例"}
+            style={{
+              width: 16, height: 16, borderRadius: 3,
+              border: isSelected ? "1.5px solid var(--blue)" : "1.5px solid var(--border-hi)",
+              background: isSelected ? "rgba(99,179,237,0.2)" : "transparent",
+              display: "inline-flex", alignItems: "center", justifyContent: "center",
+              fontSize: 10, lineHeight: 1, cursor: "pointer",
+              flexShrink: 0,
+            }}
+          >
+            {isSelected && <span style={{ color: "var(--blue)", fontWeight: 700 }}>✓</span>}
+          </div>
+        )}
         <button
           onClick={(e) => { e.stopPropagation(); toggleStream(); }}
           title={streamMode ? "切回截图轮询" : "切换到 ws-scrcpy 实时流"}
@@ -1395,6 +1421,9 @@ function GroupBlockGrid({
   leaderPorts,
   nativeStreamQuality,
   onStreamModeChange,
+  selectedPorts,
+  togglePortSelection,
+  customSelectionActive,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
@@ -1406,6 +1435,9 @@ function GroupBlockGrid({
   leaderPorts: string[];
   nativeStreamQuality: NativeStreamQuality;
   onStreamModeChange: (port: string, streaming: boolean) => void;
+  selectedPorts: Set<string>;
+  togglePortSelection: (port: string) => void;
+  customSelectionActive: boolean;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -1414,6 +1446,8 @@ function GroupBlockGrid({
   const badgeColor = allOk ? "var(--green)" : anyFail ? "var(--red)" : "var(--amber)";
   const ordered = broadcastScope === "leaders"
     ? (leader ? [leader] : [])
+    : broadcastScope === "custom" && customSelectionActive
+    ? instances.filter((i) => selectedPorts.has(i.port))
     : (leader ? [leader, ...members] : members);
 
   if (broadcastScope === "leaders" && !leader) return null;
@@ -1444,6 +1478,9 @@ function GroupBlockGrid({
             leaderPorts={leaderPorts}
             nativeStreamQuality={nativeStreamQuality}
             onStreamModeChange={onStreamModeChange}
+            isSelected={selectedPorts.has(inst.port)}
+            onToggleSelect={() => togglePortSelection(inst.port)}
+            showSelectionUI={broadcastScope === "custom" && !customSelectionActive}
           />
         ))}
       </div>
@@ -1464,6 +1501,15 @@ export default function ExecutorInstancesPage() {
   const [tapMode, setTapMode] = useState(true);
   const [focusMode, setFocusMode] = useState(false);
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
+  const [selectedPorts, setSelectedPorts] = useState<Set<string>>(new Set());
+  const [customSelectionActive, setCustomSelectionActive] = useState(false);
+  const togglePortSelection = useCallback((port: string) => {
+    setSelectedPorts((prev) => {
+      const next = new Set(prev);
+      if (next.has(port)) next.delete(port); else next.add(port);
+      return next;
+    });
+  }, []);
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
 
   // Modal state
@@ -1563,11 +1609,14 @@ export default function ExecutorInstancesPage() {
   }, []);
 
   const portsKey = instances.map((i) => i.port).join(",");
+  const selectedPortsKey = Array.from(selectedPorts).sort().join(",");
 
   useEffect(() => {
     if (viewMode !== "grid") return;
     const ports = broadcastScope === "leaders"
       ? instances.filter((i) => i.role === "leader").map((i) => i.port)
+      : broadcastScope === "custom" && customSelectionActive
+      ? Array.from(selectedPorts)
       : portsKey ? portsKey.split(",") : [];
     if (ports.length === 0) return;
     const period = 3_000;
@@ -1586,7 +1635,7 @@ export default function ExecutorInstancesPage() {
       timeouts.forEach(clearTimeout);
       intervals.forEach(clearInterval);
     };
-  }, [viewMode, portsKey, broadcastScope, refreshOne]);
+  }, [viewMode, portsKey, selectedPortsKey, broadcastScope, customSelectionActive, refreshOne]);
 
   const openModal = useCallback((port: string) => {
     setModalPort(port);
@@ -1700,6 +1749,8 @@ export default function ExecutorInstancesPage() {
         // Polling ports = all visible instances minus those currently streaming (skip screenshot polling).
         const visiblePorts = broadcastScope === "leaders"
           ? leaderPorts
+          : broadcastScope === "custom" && customSelectionActive
+          ? instances.filter((i) => selectedPorts.has(i.port)).map((i) => i.port)
           : instances.map((i) => i.port);
         const pollingPortCount = Math.max(0, visiblePorts.length - streamingPortCount);
         return (
@@ -1757,6 +1808,28 @@ export default function ExecutorInstancesPage() {
                 title={leaderPorts.length === 0 ? "无队长实例" : `广播至全部 ${leaderPorts.length} 个队长`}
               >
                 仅队长
+              </ToolbarButton>
+              <ToolbarButton
+                active={broadcastScope === "custom"}
+                tone="blue"
+                onClick={() => {
+                  if (broadcastScope === "custom") {
+                    // In custom mode: apply filter if selections exist, otherwise just exit
+                    if (selectedPorts.size > 0) {
+                      setCustomSelectionActive((v) => !v);
+                    } else {
+                      setBroadcastScope("single");
+                    }
+                  } else {
+                    // Enter custom mode (selection mode, show all + checkboxes)
+                    setCustomSelectionActive(false);
+                    setBroadcastScope("custom");
+                  }
+                }}
+              >
+                {broadcastScope === "custom"
+                  ? (customSelectionActive ? `已选 ${selectedPorts.size} 个` : `自选${selectedPorts.size > 0 ? ` (${selectedPorts.size})` : ""}`)
+                  : `自选${selectedPorts.size > 0 ? ` (${selectedPorts.size})` : ""}`}
               </ToolbarButton>
               </div>
             </ToolbarSection>
@@ -1857,12 +1930,17 @@ export default function ExecutorInstancesPage() {
                 leaderPorts={leaderPorts}
                 nativeStreamQuality={nativeStreamQuality}
                 onStreamModeChange={setPortStreaming}
+                selectedPorts={selectedPorts}
+                togglePortSelection={togglePortSelection}
+                customSelectionActive={customSelectionActive}
               />
             ))}
 
           {standalone.length > 0 && (() => {
             const visibleStandalone = broadcastScope === "leaders"
               ? standalone.filter((i) => i.role === "leader")
+              : broadcastScope === "custom" && customSelectionActive
+              ? standalone.filter((i) => selectedPorts.has(i.port))
               : standalone;
             if (visibleStandalone.length === 0) return null;
             return (
@@ -1887,6 +1965,9 @@ export default function ExecutorInstancesPage() {
                       leaderPorts={leaderPorts}
                       nativeStreamQuality={nativeStreamQuality}
                       onStreamModeChange={setPortStreaming}
+                      isSelected={selectedPorts.has(inst.port)}
+                      onToggleSelect={() => togglePortSelection(inst.port)}
+                      showSelectionUI={broadcastScope === "custom" && !customSelectionActive}
                     />
                   ))}
                 </div>
