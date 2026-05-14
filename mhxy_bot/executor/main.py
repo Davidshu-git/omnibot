@@ -31,6 +31,7 @@ import uuid
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status as ws_status
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -87,6 +88,12 @@ def emit_event(event: dict) -> None:
 
 
 app = FastAPI(title="MuMu Executor", version="1.0")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET"])
+
+# EMA of actual stream bitrate per quality tier (bits/sec), updated by _reader_loop.
+_STREAM_BITRATE_EMA: dict[str, float] = {}
+_STREAM_BITRATE_EMA_ALPHA = 0.5
+_stream_bitrate_lock = threading.Lock()
 
 faulthandler.enable()
 
@@ -188,7 +195,7 @@ STREAM_QUALITY_PRESETS = {
     },
     "medium": {
         "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_MEDIUM_BITRATE_BPS", "400000")),
-        "size": os.getenv("EXECUTOR_STREAM_MEDIUM_SIZE", "800x450"),
+        "size": os.getenv("EXECUTOR_STREAM_MEDIUM_SIZE", "512x288"),
     },
     "high": {
         "bitrate_bps": STREAM_BITRATE_BPS,
@@ -461,6 +468,13 @@ class WaitTextReq(BaseModel):
 def health():
     log.info("health check")
     return {"status": "ok", "adb": ADB_PATH}
+
+
+@app.get("/stream/stats")
+def stream_stats():
+    """返回各画质档位的实测码率 EMA（bits/sec）。无数据的档位不返回。"""
+    with _stream_bitrate_lock:
+        return {q: round(bps) for q, bps in _STREAM_BITRATE_EMA.items()}
 
 
 @app.get("/list_devices")
@@ -805,6 +819,8 @@ class FanoutStream:
         self._reader_task: asyncio.Task | None = None
         self._stopping = False
         self._lock = asyncio.Lock()
+        self._bytes_sent = 0
+        self._stats_last_ts = time.monotonic()
 
     async def add_subscriber(self, ws: WebSocket) -> None:
         """添加订阅者；首个订阅者到达时启动 adb screenrecord。
@@ -890,6 +906,27 @@ class FanoutStream:
                 if not chunk:
                     break
                 await self._broadcast_bytes(chunk)
+                self._bytes_sent += len(chunk)
+                now = time.monotonic()
+                if now - self._stats_last_ts >= 10:
+                    interval = now - self._stats_last_ts
+                    actual_bps = self._bytes_sent * 8 / interval
+                    emit_event({
+                        "type": "stream_stats",
+                        "port": self.port,
+                        "quality": self.quality,
+                        "bytes_sent": self._bytes_sent,
+                        "interval_sec": round(interval, 1),
+                        "actual_bps": round(actual_bps),
+                    })
+                    with _stream_bitrate_lock:
+                        prev = _STREAM_BITRATE_EMA.get(self.quality, actual_bps)
+                        _STREAM_BITRATE_EMA[self.quality] = (
+                            _STREAM_BITRATE_EMA_ALPHA * actual_bps
+                            + (1 - _STREAM_BITRATE_EMA_ALPHA) * prev
+                        )
+                    self._bytes_sent = 0
+                    self._stats_last_ts = now
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -959,6 +996,7 @@ class FanoutStream:
             "port": self.port,
             "rc": rc,
             "subscribers": len(self.subscribers),
+            "bytes_sent": self._bytes_sent,
             "stderr": stderr or None,
         })
         self._proc = None

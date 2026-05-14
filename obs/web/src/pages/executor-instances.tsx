@@ -37,6 +37,7 @@ type BroadcastStatus =
 
 const WS_SCRCPY_BASE = "http://192.168.100.149:8000";
 const EXECUTOR_WS_BASE = process.env.NEXT_PUBLIC_EXECUTOR_WS_BASE || "ws://192.168.100.149:8765";
+const EXECUTOR_HTTP_BASE = EXECUTOR_WS_BASE.replace(/^ws(s)?:\/\//, "http$1://");
 
 // ws-scrcpy embeds a sidebar toolbar on the RIGHT: width = 3.715rem at browser-default 16px ≈ 59px.
 // The .device-view uses justify-content:flex-end, so the (video + toolbar) group is flush-right.
@@ -653,12 +654,14 @@ function estimateBandwidthBps({
   streamingPorts,
   streamingQuality,
   pollingPortCount,
+  bitrateOverride = NATIVE_STREAM_BITRATE,
 }: {
   streamingPorts: number;
   streamingQuality: NativeStreamQuality;
   pollingPortCount: number;
+  bitrateOverride?: Record<NativeStreamQuality, number>;
 }): { totalKbps: number; streamKbps: number; screenshotKbps: number } {
-  const streamKbps = (streamingPorts * NATIVE_STREAM_BITRATE[streamingQuality]) / 1000;
+  const streamKbps = (streamingPorts * bitrateOverride[streamingQuality]) / 1000;
   const screenshotKbps = (pollingPortCount * SCREENSHOT_AVG_BYTES * 8) / (SCREENSHOT_INTERVAL_MS / 1000) / 1000;
   return { totalKbps: Math.round(streamKbps + screenshotKbps), streamKbps: Math.round(streamKbps), screenshotKbps: Math.round(screenshotKbps) };
 }
@@ -667,19 +670,22 @@ function BandwidthBadge({
   streamingPorts,
   nativeStreamQuality,
   pollingPortCount,
+  actualBitrate,
 }: {
   streamingPorts: number;
   nativeStreamQuality: NativeStreamQuality;
   pollingPortCount: number;
+  actualBitrate: Partial<Record<NativeStreamQuality, number>>;
 }) {
-  const est = estimateBandwidthBps({ streamingPorts, streamingQuality: nativeStreamQuality, pollingPortCount });
+  const bitrateOverride = { ...NATIVE_STREAM_BITRATE, ...actualBitrate };
+  const est = estimateBandwidthBps({ streamingPorts, streamingQuality: nativeStreamQuality, pollingPortCount, bitrateOverride });
   const label = est.totalKbps >= 1000
     ? `${(est.totalKbps / 1000).toFixed(1)} Mbps`
     : `~${est.totalKbps} kbps`;
   const tooltipLines = [
-    "预估下行带宽（从 NAS 到浏览器）",
+    actualBitrate[nativeStreamQuality] ? "实测下行带宽（从 NAS 到浏览器）" : "预估下行带宽（从 NAS 到浏览器）",
     "",
-    `H264 推流：${streamingPorts} × ${NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}档 → ${est.streamKbps} kbps`,
+    `H264 推流：${streamingPorts} × ${NATIVE_STREAM_QUALITY_LABEL[nativeStreamQuality]}档 → ${est.streamKbps} kbps${actualBitrate[nativeStreamQuality] ? " (实测)" : " (估算)"}`,
     `截图轮询：${pollingPortCount} 端口 / ${SCREENSHOT_INTERVAL_MS / 1000}s × ~${Math.round(SCREENSHOT_AVG_BYTES / 1024)}KB → ${est.screenshotKbps} kbps`,
   ];
   return (
@@ -1221,7 +1227,7 @@ export default function ExecutorInstancesPage() {
   const [data, setData] = useState<MhxyExecutorInstances | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [viewMode, setViewMode] = useState<"list" | "grid">("list");
+  const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
   const [tapMode, setTapMode] = useState(true);
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
@@ -1234,6 +1240,21 @@ export default function ExecutorInstancesPage() {
   const [screenshots, setScreenshots] = useState<Record<string, ScreenshotState>>({});
   const [lastRefreshAt, setLastRefreshAt] = useState<Date | null>(null);
   const fetchingRef = useRef<Set<string>>(new Set());
+
+  // Actual measured bitrate per quality tier, fetched from executor /stream/stats.
+  const [actualBitrate, setActualBitrate] = useState<Partial<Record<NativeStreamQuality, number>>>({});
+
+  useEffect(() => {
+    const fetchStats = () => {
+      fetch(`${EXECUTOR_HTTP_BASE}/stream/stats`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((d) => d && setActualBitrate(d))
+        .catch(() => {});
+    };
+    fetchStats();
+    const id = setInterval(fetchStats, 10_000);
+    return () => clearInterval(id);
+  }, []);
 
   // Ports currently rendered as ws-scrcpy live stream — these skip screenshot polling.
   const streamingPortsRef = useRef<Set<string>>(new Set());
@@ -1505,6 +1526,7 @@ export default function ExecutorInstancesPage() {
                 streamingPorts={streamingPortCount}
                 nativeStreamQuality={nativeStreamQuality}
                 pollingPortCount={pollingPortCount}
+                actualBitrate={actualBitrate}
               />
               <div style={{ display: "flex", gap: 3, alignItems: "center", marginLeft: 4 }}>
                 <span style={{ color: "var(--text-dim)", fontSize: 11 }}>H264 画质</span>
