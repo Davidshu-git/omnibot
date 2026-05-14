@@ -1160,7 +1160,7 @@ export default function ExecutorInstancesPage() {
   const [error, setError] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("list");
   const [tapMode, setTapMode] = useState(true);
-  const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("single");
+  const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
 
   // Modal state
