@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/api";
-import { fmtTime } from "@/lib/format";
 import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
 import { useIsMobile } from "@/lib/useIsMobile";
 
@@ -645,6 +644,98 @@ const NATIVE_STREAM_BITRATE: Record<NativeStreamQuality, number> = {
   high: 1_500_000,
 };
 
+const TONE_STYLE = {
+  blue: {
+    color: "var(--blue)",
+    bg: "rgba(96,165,250,0.12)",
+    border: "rgba(96,165,250,0.38)",
+  },
+  green: {
+    color: "var(--green)",
+    bg: "rgba(52,211,153,0.12)",
+    border: "rgba(52,211,153,0.38)",
+  },
+  amber: {
+    color: "var(--amber)",
+    bg: "rgba(251,191,36,0.12)",
+    border: "rgba(251,191,36,0.38)",
+  },
+  teal: {
+    color: "var(--teal)",
+    bg: "rgba(45,212,191,0.12)",
+    border: "rgba(45,212,191,0.38)",
+  },
+} as const;
+
+type Tone = keyof typeof TONE_STYLE;
+
+function ToolbarSection({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div style={{
+      display: "inline-flex",
+      alignItems: "center",
+      gap: 6,
+      minHeight: 30,
+      padding: "2px 4px",
+      borderRadius: "var(--r-sm)",
+    }}>
+      <span style={{
+        color: "var(--text-dim)",
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.06em",
+      }}>
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function ToolbarButton({
+  active,
+  tone = "blue",
+  disabled = false,
+  title,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  tone?: Tone;
+  disabled?: boolean;
+  title?: string;
+  onClick: () => void;
+  children: ReactNode;
+}) {
+  const selected = TONE_STYLE[tone];
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      style={{
+        height: 28,
+        padding: "0 10px",
+        borderRadius: "var(--r-sm)",
+        border: `1px solid ${active ? selected.border : "transparent"}`,
+        background: active ? selected.bg : "transparent",
+        color: active ? selected.color : "var(--text-muted)",
+        fontSize: 11,
+        fontWeight: 600,
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.42 : 1,
+        transition: "background var(--dur) var(--ease), border-color var(--dur) var(--ease), color var(--dur) var(--ease)",
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ToolbarDivider() {
+  return <span style={{ width: 1, alignSelf: "stretch", minHeight: 26, background: "var(--border)" }} />;
+}
+
 // Estimated average screenshot JPEG payload per fetch (bytes).
 // screencap -p → JPEG quality=85 at 1600×900, typical game scene ~200 KB.
 const SCREENSHOT_AVG_BYTES = 200 * 1024;
@@ -692,16 +783,18 @@ function BandwidthBadge({
     <span
       title={tooltipLines.join("\n")}
       style={{
-        display: "inline-flex", alignItems: "center", gap: 4,
-        padding: "2px 8px", borderRadius: "var(--r-sm)",
-        background: est.totalKbps > 2000 ? "rgba(246,173,85,0.12)" : "rgba(72,187,120,0.12)",
-        border: `1px solid ${est.totalKbps > 2000 ? "rgba(246,173,85,0.3)" : "rgba(72,187,120,0.3)"}`,
-        fontSize: 11, fontWeight: 500,
+        display: "inline-flex", alignItems: "center", gap: 6,
+        height: 28,
+        padding: "0 9px", borderRadius: "var(--r-sm)",
+        background: est.totalKbps > 2000 ? "rgba(251,191,36,0.10)" : "rgba(52,211,153,0.10)",
+        border: `1px solid ${est.totalKbps > 2000 ? "rgba(251,191,36,0.32)" : "rgba(52,211,153,0.32)"}`,
+        fontSize: 11, fontWeight: 650,
         color: est.totalKbps > 2000 ? "var(--amber)" : "var(--green)",
         cursor: "default",
       }}
     >
-      <span>⚡ {label}</span>
+      <span style={{ color: "var(--text-dim)", fontWeight: 700, letterSpacing: "0.04em" }}>BW</span>
+      <span>{label}</span>
     </span>
   );
 }
@@ -1382,8 +1475,6 @@ export default function ExecutorInstancesPage() {
     }
   }
 
-  const totalOk = instances.filter((i) => i.healthy === true).length;
-  const totalAdb = instances.filter((i) => i.adb === true).length;
   const allPorts = instances.map((i) => i.port);
   const leaderPorts = instances.filter((i) => i.role === "leader").map((i) => i.port);
 
@@ -1450,7 +1541,7 @@ export default function ExecutorInstancesPage() {
         </div>
       </div>
 
-      {/* 截图巡检子工具栏 — 仅 grid 模式下展示，右对齐 */}
+      {/* 截图巡检子工具栏 — 仅 grid 模式下展示 */}
       {viewMode === "grid" && (() => {
         // Polling ports = all visible instances minus those currently streaming (skip screenshot polling).
         const visiblePorts = broadcastScope === "leaders"
@@ -1458,101 +1549,92 @@ export default function ExecutorInstancesPage() {
           : instances.map((i) => i.port);
         const pollingPortCount = Math.max(0, visiblePorts.length - streamingPortCount);
         return (
-          <div style={{ display: "flex", flexDirection: "column", gap: 6, alignItems: "flex-end", marginBottom: "1rem" }}>
-            {/* 行一：点击 / 广播操作按钮 */}
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <button
+          <div style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+            padding: "0.35rem 0.5rem",
+            marginBottom: "1rem",
+            border: "1px solid var(--border-hi)",
+            borderRadius: "var(--r-sm)",
+            background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012))",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+          }}>
+            <ToolbarSection label="操作">
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 2,
+                padding: 2,
+                borderRadius: "var(--r-sm)",
+                background: "rgba(0,0,0,0.16)",
+                border: "1px solid var(--border)",
+              }}>
+              <ToolbarButton
+                active={tapMode}
+                tone="green"
                 onClick={() => { setTapMode((v) => !v); if (tapMode) setBroadcastScope("single"); }}
-                style={{
-                  padding: "4px 10px",
-                  borderRadius: "var(--r-sm)",
-                  border: `1px solid ${tapMode ? "var(--green)" : "var(--border-hi)"}`,
-                  background: tapMode ? "rgba(72,187,120,0.15)" : "transparent",
-                  color: tapMode ? "var(--green)" : "var(--text-muted)",
-                  fontSize: 11, fontWeight: 500, cursor: "pointer",
-                }}
               >
-                📍 点击操作
-              </button>
-              <button
+                点击操作
+              </ToolbarButton>
+              <ToolbarButton
+                active={broadcastScope === "all"}
+                tone="amber"
                 onClick={() => setBroadcastScope((s) => s === "all" ? "single" : "all")}
-                style={{
-                  padding: "4px 10px",
-                  borderRadius: "var(--r-sm)",
-                  border: `1px solid ${broadcastScope === "all" ? "var(--amber)" : "var(--border-hi)"}`,
-                  background: broadcastScope === "all" ? "rgba(246,173,85,0.15)" : "transparent",
-                  color: broadcastScope === "all" ? "var(--amber)" : "var(--text-muted)",
-                  fontSize: 11, fontWeight: 500, cursor: "pointer",
-                }}
               >
-                📡 广播
-              </button>
-              <button
+                广播
+              </ToolbarButton>
+              <ToolbarButton
+                active={broadcastScope === "leaders"}
+                tone="amber"
                 onClick={() => setBroadcastScope((s) => s === "leaders" ? "single" : "leaders")}
                 disabled={leaderPorts.length === 0}
                 title={leaderPorts.length === 0 ? "无队长实例" : `广播至全部 ${leaderPorts.length} 个队长`}
-                style={{
-                  padding: "4px 10px",
-                  borderRadius: "var(--r-sm)",
-                  border: `1px solid ${broadcastScope === "leaders" ? "var(--amber)" : "var(--border-hi)"}`,
-                  background: broadcastScope === "leaders" ? "rgba(246,173,85,0.15)" : "transparent",
-                  color: broadcastScope === "leaders" ? "var(--amber)" : "var(--text-muted)",
-                  fontSize: 11, fontWeight: 500,
-                  cursor: leaderPorts.length === 0 ? "not-allowed" : "pointer",
-                  opacity: leaderPorts.length === 0 ? 0.4 : 1,
-                }}
               >
-                👑 仅队长
-              </button>
-            </div>
-            {/* 行二：带宽预估 + H264 画质选项 */}
-            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-              <BandwidthBadge
-                streamingPorts={streamingPortCount}
-                nativeStreamQuality={nativeStreamQuality}
-                pollingPortCount={pollingPortCount}
-                actualBitrate={actualBitrate}
-              />
-              <div style={{ display: "flex", gap: 3, alignItems: "center", marginLeft: 4 }}>
-                <span style={{ color: "var(--text-dim)", fontSize: 11 }}>H264 画质</span>
+                仅队长
+              </ToolbarButton>
+              </div>
+            </ToolbarSection>
+
+            <ToolbarDivider />
+
+            <ToolbarSection label="画质">
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 2,
+                padding: 2,
+                borderRadius: "var(--r-sm)",
+                background: "rgba(0,0,0,0.16)",
+                border: "1px solid var(--border)",
+              }}>
                 {(["low", "medium", "high"] as const).map((q) => (
-                  <button
+                  <ToolbarButton
                     key={q}
+                    active={nativeStreamQuality === q}
+                    tone="teal"
                     onClick={() => setNativeStreamQuality(q)}
-                    style={{
-                      padding: "4px 8px",
-                      borderRadius: "var(--r-sm)",
-                      border: `1px solid ${nativeStreamQuality === q ? "var(--teal)" : "var(--border-hi)"}`,
-                      background: nativeStreamQuality === q ? "rgba(56,178,172,0.15)" : "transparent",
-                      color: nativeStreamQuality === q ? "var(--teal)" : "var(--text-muted)",
-                      fontSize: 11, fontWeight: 500, cursor: "pointer",
-                    }}
                   >
                     {NATIVE_STREAM_QUALITY_LABEL[q]}
-                  </button>
+                  </ToolbarButton>
                 ))}
               </div>
+            </ToolbarSection>
+
+            <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <ToolbarDivider />
+              <ToolbarSection label="链路">
+                <BandwidthBadge
+                  streamingPorts={streamingPortCount}
+                  nativeStreamQuality={nativeStreamQuality}
+                  pollingPortCount={pollingPortCount}
+                  actualBitrate={actualBitrate}
+                />
+              </ToolbarSection>
             </div>
           </div>
       ); })()}
-
-      {data?.app_health_checked_at && (
-        <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: "1.25rem" }}>
-          健康检查时间：{fmtTime(data.app_health_checked_at)}
-          {instances.length > 0 && (
-            <span style={{ marginLeft: 16 }}>
-              <span style={{ color: totalOk === instances.length ? "var(--green)" : "var(--amber)", fontWeight: 600 }}>
-                {totalOk}/{instances.length}
-              </span>
-              <span style={{ marginLeft: 4 }}>实例健康</span>
-              <span style={{ marginLeft: 12, color: totalAdb === instances.length ? "var(--green)" : "var(--amber)", fontWeight: 600 }}>
-                {totalAdb}/{instances.length}
-              </span>
-              <span style={{ marginLeft: 4 }}>ADB 正常</span>
-            </span>
-          )}
-        </p>
-      )}
 
       {error && (
         <div style={{
