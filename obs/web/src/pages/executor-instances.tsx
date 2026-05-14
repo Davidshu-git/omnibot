@@ -1236,7 +1236,7 @@ function ScreenshotCard({
           cursor: tapMode && (nativeStreamMode || streamMode || isImageLoaded)
             ? isDragging ? "grabbing" : "crosshair"
             : undefined,
-          touchAction: tapMode ? "none" : undefined,
+          touchAction: tapMode ? "pan-y" : undefined,
         }}
         onPointerMove={handleImgAreaPointerMove}
         onMouseLeave={clearDragState}
