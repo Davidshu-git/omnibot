@@ -1462,6 +1462,7 @@ export default function ExecutorInstancesPage() {
   const [error, setError] = useState("");
   const [viewMode, setViewMode] = useState<"list" | "grid">("grid");
   const [tapMode, setTapMode] = useState(true);
+  const [focusMode, setFocusMode] = useState(false);
   const [broadcastScope, setBroadcastScope] = useState<BroadcastScope>("all");
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
 
@@ -1642,6 +1643,7 @@ export default function ExecutorInstancesPage() {
       )}
 
       {/* Page header — 视图切换和刷新固定在此行，不随模式变化 */}
+      {!focusMode && (
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: "0.75rem", flexWrap: "wrap" }}>
         <Link href="/" style={{ color: "var(--text-muted)", fontSize: 13 }}>← 返回总览</Link>
         <span style={{ color: "var(--border-hi)" }}>|</span>
@@ -1691,6 +1693,7 @@ export default function ExecutorInstancesPage() {
           </button>
         </div>
       </div>
+      )}
 
       {/* 截图巡检子工具栏 — 仅 grid 模式下展示 */}
       {viewMode === "grid" && (() => {
@@ -1711,6 +1714,7 @@ export default function ExecutorInstancesPage() {
             borderRadius: "var(--r-sm)",
             background: "linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.012))",
             boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+            ...(focusMode ? { position: "sticky", top: 0, zIndex: 100 } : {}),
           }}>
             <ToolbarSection label="操作">
               <div style={{
@@ -1722,6 +1726,15 @@ export default function ExecutorInstancesPage() {
                 background: "rgba(0,0,0,0.16)",
                 border: "1px solid var(--border)",
               }}>
+              <ToolbarButton
+                active={focusMode}
+                tone="blue"
+                title={focusMode ? "退出专注模式" : "隐藏页面头部，全屏显示"}
+                onClick={() => setFocusMode((v) => !v)}
+              >
+                专注模式
+              </ToolbarButton>
+              <ToolbarDivider />
               <ToolbarButton
                 active={tapMode}
                 tone="green"
