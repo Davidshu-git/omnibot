@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/api";
 import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
@@ -627,6 +627,26 @@ const NATIVE_STREAM_BITRATE: Record<NativeStreamQuality, number> = {
   high: 1_500_000,
 };
 
+// 自动点击：按固定节奏对当前 broadcast 范围发 tap。
+// 间隔下限 500ms 与 input-ws.ts COOLDOWN_MULTI_MS 对齐，低于此值会被冷却拦截。
+// 坐标范围贴 executor W,H = 1600,900 设备契约。
+//
+// 反检测（在 executor 端 _INPUT_JITTER 时间抖动之上再补一层）：
+//   COORD_JITTER_PX：每次 tap 给坐标加 ±N 像素，破坏"恒定坐标"统计指纹。
+//     N=5：在按钮点击场景里 ±5px 仍稳稳落在目标范围内，但足以让坐标方差非零。
+//   INTERVAL_JITTER_PCT：下一次 tap 间隔按 base × (1 ± P%) 随机，破坏精确周期。
+//     P=10%：1000ms 周期 → 900–1100ms 区间。仍受 AUTO_TAP_MIN_INTERVAL_MS 下限约束。
+type AutoTapForm = { x: number; y: number; intervalMs: number; durationS: number };
+type AutoTapSession = AutoTapForm & { ports: string[]; startedAt: number };
+
+const AUTO_TAP_STORAGE_KEY = "executor-instances:auto-tap-form";
+const AUTO_TAP_MIN_INTERVAL_MS = 500;
+const AUTO_TAP_MAX_INTERVAL_MS = 60_000;
+const AUTO_TAP_MAX_DURATION_S = 3600;
+const AUTO_TAP_COORD_JITTER_PX = 5;
+const AUTO_TAP_INTERVAL_JITTER_PCT = 0.10;
+const AUTO_TAP_DEFAULT_FORM: AutoTapForm = { x: 800, y: 450, intervalMs: 1000, durationS: 60 };
+
 const TONE_STYLE = {
   blue: {
     color: "var(--blue)",
@@ -717,6 +737,65 @@ function ToolbarButton({
 
 function ToolbarDivider() {
   return <span style={{ width: 1, alignSelf: "stretch", minHeight: 26, background: "var(--border)" }} />;
+}
+
+function AutoTapNumberInput({
+  label,
+  value,
+  onChange,
+  min,
+  max,
+  disabled,
+  width = 54,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+  min: number;
+  max: number;
+  disabled?: boolean;
+  width?: number;
+}) {
+  return (
+    <label
+      title={`${label}: ${min}–${max}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 3,
+        color: "var(--text-dim)",
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: "0.04em",
+      }}
+    >
+      {label}
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        disabled={disabled}
+        onChange={(e) => {
+          const v = parseInt(e.target.value, 10);
+          if (!isNaN(v)) onChange(v);
+        }}
+        style={{
+          width,
+          height: 24,
+          padding: "0 4px",
+          fontSize: 11,
+          background: disabled ? "rgba(0,0,0,0.08)" : "rgba(0,0,0,0.24)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r-sm)",
+          color: disabled ? "var(--text-dim)" : "var(--text)",
+          fontFamily: "var(--font-mono)",
+          textAlign: "right",
+          outline: "none",
+        }}
+      />
+    </label>
+  );
 }
 
 // Estimated average screenshot JPEG payload per fetch (bytes).
@@ -1474,6 +1553,72 @@ export default function ExecutorInstancesPage() {
   const [nativeStreamQuality, setNativeStreamQuality] = useState<NativeStreamQuality>("low");
   const [gridColumns, setGridColumns] = useState<1 | 2 | 3 | 4>(3);
 
+  // 自动点击：form 是实时可编辑的表单，session 是按"开始"瞬间拍下的快照，
+  // 跑起来之后改 form 不会影响进行中的会话——避免每次按键就重启倒计时。
+  const [autoTapForm, setAutoTapForm] = useState<AutoTapForm>(() => {
+    if (typeof window === "undefined") return AUTO_TAP_DEFAULT_FORM;
+    try {
+      const raw = window.localStorage.getItem(AUTO_TAP_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<AutoTapForm>;
+        return { ...AUTO_TAP_DEFAULT_FORM, ...parsed };
+      }
+    } catch {}
+    return AUTO_TAP_DEFAULT_FORM;
+  });
+  const [autoTapSession, setAutoTapSession] = useState<AutoTapSession | null>(null);
+  const [autoTapTick, setAutoTapTick] = useState(0);
+  // Refresh trigger driving the countdown text; updated every 1s while running.
+  const [autoTapClock, setAutoTapClock] = useState(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(AUTO_TAP_STORAGE_KEY, JSON.stringify(autoTapForm));
+    } catch {}
+  }, [autoTapForm]);
+
+  useEffect(() => {
+    if (!autoTapSession) return;
+    const { ports, x, y, intervalMs, durationS, startedAt } = autoTapSession;
+    setAutoTapTick(0);
+    setAutoTapClock(Date.now());
+
+    let stopped = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+
+    const fire = () => {
+      if (stopped) return;
+      const now = Date.now();
+      if (now - startedAt >= durationS * 1000) {
+        setAutoTapSession(null);
+        return;
+      }
+      // 坐标抖动：±AUTO_TAP_COORD_JITTER_PX，clamp 到设备分辨率内。
+      const r = AUTO_TAP_COORD_JITTER_PX;
+      const jx = Math.max(0, Math.min(1599, x + Math.round((Math.random() - 0.5) * 2 * r)));
+      const jy = Math.max(0, Math.min(899, y + Math.round((Math.random() - 0.5) * 2 * r)));
+      sendInput({ type: "tap", ports, px: jx, py: jy });
+      setAutoTapTick((n) => n + 1);
+      setAutoTapClock(now);
+      // 间隔抖动：base × (1 ± AUTO_TAP_INTERVAL_JITTER_PCT)，下限受冷却 floor 约束。
+      const drift = (Math.random() - 0.5) * 2 * AUTO_TAP_INTERVAL_JITTER_PCT;
+      const nextDelay = Math.max(
+        AUTO_TAP_MIN_INTERVAL_MS,
+        Math.round(intervalMs * (1 + drift)),
+      );
+      timeoutId = setTimeout(fire, nextDelay);
+    };
+    fire();
+
+    const clockId = setInterval(() => setAutoTapClock(Date.now()), 1000);
+    return () => {
+      stopped = true;
+      if (timeoutId) clearTimeout(timeoutId);
+      clearInterval(clockId);
+    };
+  }, [autoTapSession]);
+
   // Modal state
   const [modalPort, setModalPort] = useState<string | null>(null);
   const [modalState, setModalState] = useState<ScreenshotState>("idle");
@@ -1640,6 +1785,50 @@ export default function ExecutorInstancesPage() {
 
   const allPorts = instances.map((i) => i.port);
   const leaderPorts = instances.filter((i) => i.role === "leader").map((i) => i.port);
+
+  // 自动点击目标 = 当前 broadcastScope 涵盖的 ports（"single" 无目标，按钮禁用）
+  const autoTapTargets = useMemo<string[]>(() => {
+    if (broadcastScope === "leaders") return leaderPorts;
+    if (broadcastScope === "all") return allPorts;
+    if (broadcastScope === "custom") return Array.from(selectedPorts);
+    return [];
+  }, [broadcastScope, allPorts, leaderPorts, selectedPorts]);
+
+  const autoTapFormValid =
+    autoTapForm.intervalMs >= AUTO_TAP_MIN_INTERVAL_MS &&
+    autoTapForm.intervalMs <= AUTO_TAP_MAX_INTERVAL_MS &&
+    autoTapForm.durationS >= 1 &&
+    autoTapForm.durationS <= AUTO_TAP_MAX_DURATION_S &&
+    autoTapForm.x >= 0 && autoTapForm.x <= 1599 &&
+    autoTapForm.y >= 0 && autoTapForm.y <= 899;
+
+  const startAutoTap = useCallback(() => {
+    if (autoTapTargets.length === 0) return;
+    const x = Math.max(0, Math.min(1599, Math.round(autoTapForm.x)));
+    const y = Math.max(0, Math.min(899, Math.round(autoTapForm.y)));
+    const intervalMs = Math.max(
+      AUTO_TAP_MIN_INTERVAL_MS,
+      Math.min(AUTO_TAP_MAX_INTERVAL_MS, Math.round(autoTapForm.intervalMs)),
+    );
+    const durationS = Math.max(
+      1,
+      Math.min(AUTO_TAP_MAX_DURATION_S, Math.round(autoTapForm.durationS)),
+    );
+    setAutoTapSession({
+      ports: [...autoTapTargets],
+      x, y, intervalMs, durationS,
+      startedAt: Date.now(),
+    });
+  }, [autoTapTargets, autoTapForm]);
+
+  const stopAutoTap = useCallback(() => setAutoTapSession(null), []);
+
+  const autoTapRemainingS = autoTapSession
+    ? Math.max(
+        0,
+        Math.ceil((autoTapSession.startedAt + autoTapSession.durationS * 1000 - autoTapClock) / 1000),
+      )
+    : 0;
 
   return (
     <div>
@@ -1824,6 +2013,80 @@ export default function ExecutorInstancesPage() {
                     {c}
                   </ToolbarButton>
                 ))}
+              </div>
+            </ToolbarSection>
+
+            <ToolbarDivider />
+
+            <ToolbarSection label="自动点击">
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 6,
+                padding: 2,
+                borderRadius: "var(--r-sm)",
+                background: "rgba(0,0,0,0.16)",
+                border: "1px solid var(--border)",
+              }}>
+                <AutoTapNumberInput
+                  label="X"
+                  value={autoTapForm.x}
+                  min={0}
+                  max={1599}
+                  disabled={!!autoTapSession}
+                  onChange={(v) => setAutoTapForm((f) => ({ ...f, x: v }))}
+                />
+                <AutoTapNumberInput
+                  label="Y"
+                  value={autoTapForm.y}
+                  min={0}
+                  max={899}
+                  disabled={!!autoTapSession}
+                  onChange={(v) => setAutoTapForm((f) => ({ ...f, y: v }))}
+                />
+                <AutoTapNumberInput
+                  label="ms"
+                  value={autoTapForm.intervalMs}
+                  min={AUTO_TAP_MIN_INTERVAL_MS}
+                  max={AUTO_TAP_MAX_INTERVAL_MS}
+                  disabled={!!autoTapSession}
+                  onChange={(v) => setAutoTapForm((f) => ({ ...f, intervalMs: v }))}
+                  width={64}
+                />
+                <AutoTapNumberInput
+                  label="s"
+                  value={autoTapForm.durationS}
+                  min={1}
+                  max={AUTO_TAP_MAX_DURATION_S}
+                  disabled={!!autoTapSession}
+                  onChange={(v) => setAutoTapForm((f) => ({ ...f, durationS: v }))}
+                />
+                {autoTapSession ? (
+                  <ToolbarButton
+                    active
+                    tone="amber"
+                    onClick={stopAutoTap}
+                    title={`已对 ${autoTapSession.ports.length} 个实例点击 ${autoTapTick} 次，剩余 ${autoTapRemainingS}s — 点击停止`}
+                  >
+                    停止 · {autoTapTick} · 余 {autoTapRemainingS}s
+                  </ToolbarButton>
+                ) : (
+                  <ToolbarButton
+                    active={false}
+                    tone="green"
+                    onClick={startAutoTap}
+                    disabled={autoTapTargets.length === 0 || !autoTapFormValid}
+                    title={
+                      autoTapTargets.length === 0
+                        ? "先在广播范围里选定目标（全部 / 队长 / 自选）"
+                        : !autoTapFormValid
+                        ? `间隔 ${AUTO_TAP_MIN_INTERVAL_MS}–${AUTO_TAP_MAX_INTERVAL_MS}ms · 持续 1–${AUTO_TAP_MAX_DURATION_S}s · 坐标 0–1599 × 0–899`
+                        : `对 ${autoTapTargets.length} 个实例每 ${autoTapForm.intervalMs}ms 点 (${autoTapForm.x}, ${autoTapForm.y})，持续 ${autoTapForm.durationS}s\n防封抖动：坐标 ±${AUTO_TAP_COORD_JITTER_PX}px · 间隔 ±${Math.round(AUTO_TAP_INTERVAL_JITTER_PCT * 100)}%`
+                    }
+                  >
+                    开始 ({autoTapTargets.length})
+                  </ToolbarButton>
+                )}
               </div>
             </ToolbarSection>
 
