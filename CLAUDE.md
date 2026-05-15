@@ -393,6 +393,42 @@ FastAPI 路由聚合查询 → Next.js 展示
 
 更稳健的长期方案（尚未做）：executor `/instances` 接口返回每个实例的真实分辨率，前端从 `inst` 数据读取，消除硬编码。
 
+### ⚠️ 输入冷却契约（前端 sendInput ↔ executor 性能隐式耦合）
+
+`obs/web/src/lib/input-ws.ts` 是所有 tap/swipe 的唯一出口，内置三层冷却：
+
+| 常量 | 默认值 | 含义 |
+|------|--------|------|
+| `COOLDOWN_SINGLE_MS` | 300ms | 同一 ports key（单端口 or 同设备组）的最小间隔 |
+| `COOLDOWN_MULTI_MS` | 500ms | 多端口 broadcast/leaders 的最小间隔（executor batch 端额外有 80–150ms × N 抖动 sleep） |
+| `COOLDOWN_GLOBAL_MS` | 80ms | 跨设备组全局兜底，防多卡同时连点把 executor ADB 队列压垮 |
+
+`sendInput(action)` 返回 `boolean`：`true` = 已入队待发，`false` = 被冷却拦截。**所有调用方必须根据返回值决定是否更新 UI 状态 / 触发后续刷新**——直接忽略返回值会出现"UI 显示成功但实际没发"。
+
+### executor 多端口并发 + jitter 设计
+
+`ws_input` 协程的 tap/swipe 多端口分支用 `asyncio.gather` 并发触发，每个端口分配独立随机起始延迟 `[_INPUT_JITTER_LOW, _INPUT_JITTER_HIGH] = [0.05, 0.50]` 秒。
+
+**为什么不能去掉 jitter**：多开同步操作如果客户端时间戳完全一致，梦幻西游 anti-multibox 检测会标记。jitter 保留"时间错位"是反检测的硬性要求。
+
+**为什么不能保留 for await 串行**：N=7 端口串行 batch 耗时 ~1.4s，前端连点会在 executor 端堆积。改并发后 N=7 总耗时 ~0.7s，与前端 `COOLDOWN_MULTI_MS = 500ms` 对齐，连点不再堆积。
+
+HTTP `/batch_tap` / `/batch_swipe` / `/batch_back` 端点仍是同步 `for ... time.sleep` 串行（LLM agent 用，频率低，可接受），未改造。
+
+### 三方联动清单
+
+冷却 / 并发 / jitter 参数共三处，**修改任一时另两处需联动评估**：
+
+| 参数 | 位置 | 影响 |
+|------|------|------|
+| `COOLDOWN_SINGLE_MS` / `COOLDOWN_MULTI_MS` / `COOLDOWN_GLOBAL_MS` | `obs/web/src/lib/input-ws.ts` | 前端连点节奏 |
+| `_INPUT_JITTER_LOW` / `_INPUT_JITTER_HIGH` | `mhxy_bot/executor/main.py` | executor batch 总耗时、反检测密度 |
+| `_exec_adb_tap` / `_exec_adb_swipe` 的 `timeout=15` | `mhxy_bot/executor/main.py` | 单条 tap 最坏耗时 |
+
+调小 jitter 上限会让 executor 更快但反检测密度变高；调大冷却会让前端更克制但牺牲响应感。两端要对齐：**前端 `COOLDOWN_MULTI_MS` ≥ executor N-port batch 期望耗时**，否则前端放行节奏快过 executor 消化速度，又会堆积。
+
+新增 tap/swipe 调用点：直接 `import { sendInput } from "@/lib/input-ws"` 调用，**不要在调用方再写本地 cooldown / lastActionRef**——冷却已下沉，组件层重复写一遍只会让两套窗口互相干扰。
+
 ### 关键设计
 
 - **摄取 cursor**：每个 DataSource 存储 `last_sync_cursor`（文件路径→mtime JSON），未变更文件跳过，无需全量扫描。强制全量重扫：`curl -X POST "http://localhost:8000/api/ingest/mhxy?force=true"`。

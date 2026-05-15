@@ -1289,6 +1289,29 @@ async def _exec_adb_swipe(
         return False
 
 
+# 多端口并发触发时给每个端口的独立随机起始延迟。
+# 反检测：多开 N 个号广播同一动作时，必须保证客户端命令时间戳不一致，
+# 否则游戏服务端 anti-multibox 可能识别为脚本。
+# 取 [50, 500]ms：上限 500ms 与前端 COOLDOWN_MULTI_MS 对齐，下限 50ms 防止"几乎同时"。
+_INPUT_JITTER_LOW = 0.05
+_INPUT_JITTER_HIGH = 0.50
+
+
+async def _delayed_tap(port: str, delay: float, px: int, py: int) -> bool:
+    if delay > 0:
+        await asyncio.sleep(delay)
+    return await _exec_adb_tap(ADB_PATH, _port_to_addr(port), px, py)
+
+
+async def _delayed_swipe(
+    port: str, delay: float,
+    x1: int, y1: int, x2: int, y2: int, duration_ms: int,
+) -> bool:
+    if delay > 0:
+        await asyncio.sleep(delay)
+    return await _exec_adb_swipe(ADB_PATH, _port_to_addr(port), x1, y1, x2, y2, duration_ms)
+
+
 @app.websocket("/ws/input")
 async def ws_input(websocket: WebSocket) -> None:
     """低延迟输入通道（tap/swipe）。
@@ -1323,14 +1346,15 @@ async def ws_input(websocket: WebSocket) -> None:
                 # tap: px(2B) + py(2B)
                 px = int.from_bytes(raw[offset:offset + 2], "little")
                 py = int.from_bytes(raw[offset + 2:offset + 4], "little")
-                # 顺序执行（和 REST 端点一致）
-                ok_count = 0
-                for port in ports:
-                    device = _port_to_addr(port)
-                    if await _exec_adb_tap(ADB_PATH, device, px, py):
-                        ok_count += 1
-                    if len(ports) > 1:
-                        await asyncio.sleep(random.uniform(0.08, 0.15))
+                if len(ports) > 1:
+                    # 多端口：并发触发，每端口独立随机起始延迟保留反检测时间错位
+                    delays = [random.uniform(_INPUT_JITTER_LOW, _INPUT_JITTER_HIGH) for _ in ports]
+                    results = await asyncio.gather(
+                        *[_delayed_tap(p, d, px, py) for p, d in zip(ports, delays)]
+                    )
+                    ok_count = sum(1 for r in results if r)
+                else:
+                    ok_count = 1 if await _exec_adb_tap(ADB_PATH, _port_to_addr(ports[0]), px, py) else 0
                 success = (ok_count > 0)
                 await websocket.send_bytes(bytes([0x00 if success else 0x01]))
 
@@ -1341,13 +1365,16 @@ async def ws_input(websocket: WebSocket) -> None:
                 x2 = int.from_bytes(raw[offset + 4:offset + 6], "little")
                 y2 = int.from_bytes(raw[offset + 6:offset + 8], "little")
                 duration_ms = int.from_bytes(raw[offset + 8:offset + 10], "little")
-                ok_count = 0
-                for port in ports:
-                    device = _port_to_addr(port)
-                    if await _exec_adb_swipe(ADB_PATH, device, x1, y1, x2, y2, duration_ms):
-                        ok_count += 1
-                    if len(ports) > 1:
-                        await asyncio.sleep(random.uniform(0.08, 0.15))
+                if len(ports) > 1:
+                    delays = [random.uniform(_INPUT_JITTER_LOW, _INPUT_JITTER_HIGH) for _ in ports]
+                    results = await asyncio.gather(
+                        *[_delayed_swipe(p, d, x1, y1, x2, y2, duration_ms) for p, d in zip(ports, delays)]
+                    )
+                    ok_count = sum(1 for r in results if r)
+                else:
+                    ok_count = 1 if await _exec_adb_swipe(
+                        ADB_PATH, _port_to_addr(ports[0]), x1, y1, x2, y2, duration_ms
+                    ) else 0
                 success = (ok_count > 0)
                 await websocket.send_bytes(bytes([0x00 if success else 0x01]))
 

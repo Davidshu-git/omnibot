@@ -33,7 +33,8 @@ function CheckIcon({ ok }: { ok: boolean | null }) {
 type BroadcastStatus =
   | null
   | { pending: true }
-  | { pending: false; ok: number; fail: number; px: number; py: number };
+  | { pending: false; ok: number; fail: number; px: number; py: number }
+  | { pending: false; throttled: true; px: number; py: number };
 
 const WS_SCRCPY_BASE = "http://192.168.100.149:8000";
 const EXECUTOR_WS_BASE = process.env.NEXT_PUBLIC_EXECUTOR_WS_BASE || "ws://192.168.100.149:8765";
@@ -83,8 +84,6 @@ function ScreenshotModal({
   const [clickRipple, setClickRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [deviceSize, setDeviceSize] = useState<{ w: number; h: number }>({ w: 720, h: 1280 });
   const imgRef = useRef<HTMLImageElement>(null);
-  const lastActionRef = useRef(0);
-  const TAP_COOLDOWN = 300;
 
   // ADB device ID: MuMu emulator port is odd (5557), ADB port is port-1 (5556)
   const adbDevice = `emulator-${parseInt(port) - 1}`;
@@ -123,11 +122,13 @@ function ScreenshotModal({
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
-    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
-    lastActionRef.current = Date.now();
+    const sent = sendInput({ type: "tap", ports: [port], px, py });
+    if (!sent) {
+      setTapStatus({ pending: false, throttled: true, px, py });
+      return;
+    }
     setTapStatus({ pending: false, ok: 1, fail: 0, px, py });
     setTimeout(() => onRefreshScreenshot(port), 200);
-    sendInput({ type: "tap", ports: [port], px, py });
   }, [port, onRefreshScreenshot]);
 
   const handleStreamMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
@@ -154,10 +155,12 @@ function ScreenshotModal({
     const pctX = (e.clientX - rect.left) / rect.width * 100;
     const pctY = (e.clientY - rect.top) / rect.height * 100;
     setClickRipple({ pctX, pctY, key: Date.now() });
-    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
-    lastActionRef.current = Date.now();
+    const sent = sendInput({ type: "tap", ports: [port], px, py });
+    if (!sent) {
+      setTapStatus({ pending: false, throttled: true, px, py });
+      return;
+    }
     setTapStatus({ pending: false, ok: 1, fail: 0, px, py });
-    sendInput({ type: "tap", ports: [port], px, py });
   }, [deviceSize, port]);
 
   const isImage = state !== "loading" && state !== "error" && state !== "idle";
@@ -310,6 +313,13 @@ function ScreenshotModal({
       <div style={{ marginTop: 10, fontSize: 12, fontFamily: "var(--font-mono)", height: 20, display: "flex", alignItems: "center", gap: 12 }}>
         {tapStatus ? (tapStatus.pending ? (
           <span style={{ color: "var(--text-dim)" }}>点击中…</span>
+        ) : "throttled" in tapStatus ? (
+          <span>
+            <span style={{ color: "var(--amber)" }}>⏱ 节流</span>
+            <span style={{ color: "var(--text-dim)", marginLeft: 12 }}>
+              @ ({tapStatus.px}, {tapStatus.py})
+            </span>
+          </span>
         ) : (
           <span>
             <span style={{ color: tapStatus.fail === 0 ? "var(--green)" : "var(--red)" }}>
@@ -801,9 +811,7 @@ function ScreenshotCard({
   showSelectionUI?: boolean;
   swipeEnabled?: boolean;
 }) {
-  const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe" } | null>(null);
-  const lastActionRef = useRef(0);
-  const TAP_COOLDOWN = 300;
+  const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe"; throttled?: boolean } | null>(null);
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
   const [hoverCoord, setHoverCoord] = useState<{ x: number; y: number } | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -916,23 +924,29 @@ function ScreenshotCard({
       pctY: (clientY - containerRect.top) / containerRect.height * 100,
       key: Date.now(),
     });
-    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
     const targets = currentTargets();
     if (targets.length === 0) return;
-    lastActionRef.current = Date.now();
+    const sent = sendInput({ type: "tap", ports: targets, px, py });
+    if (!sent) {
+      setTapStatus({ pending: false, kind: "tap", throttled: true });
+      setTimeout(() => setTapStatus(null), 800);
+      return;
+    }
     setTapStatus({ pending: false, ok: targets.length, fail: 0, kind: "tap" });
     setTimeout(() => setTapStatus(null), 1500);
-    sendInput({ type: "tap", ports: targets, px, py });
   }, [currentTargets]);
 
   const performSwipe = useCallback((x1: number, y1: number, x2: number, y2: number, durationMs = 300) => {
-    if (Date.now() - lastActionRef.current < TAP_COOLDOWN) return;
     const targets = currentTargets();
     if (targets.length === 0) return;
-    lastActionRef.current = Date.now();
+    const sent = sendInput({ type: "swipe", ports: targets, x1, y1, x2, y2, durationMs });
+    if (!sent) {
+      setTapStatus({ pending: false, kind: "swipe", throttled: true });
+      setTimeout(() => setTapStatus(null), 800);
+      return;
+    }
     setTapStatus({ pending: false, ok: targets.length, fail: 0, kind: "swipe" });
     setTimeout(() => setTapStatus(null), 1500);
-    sendInput({ type: "swipe", ports: targets, x1, y1, x2, y2, durationMs });
   }, [currentTargets]);
 
   const pointFromClient = useCallback((elem: HTMLDivElement, clientX: number, clientY: number) => {
@@ -1335,13 +1349,19 @@ function ScreenshotCard({
             fontFamily: "var(--font-mono)", fontSize: 10,
             padding: "2px 6px", borderRadius: 3,
             pointerEvents: "none",
-            color: tapStatus.pending ? "var(--text-dim)" : tapStatus.fail === 0 ? "var(--green)" : "var(--amber)",
+            color: tapStatus.pending
+              ? "var(--text-dim)"
+              : tapStatus.throttled
+                ? "var(--amber)"
+                : tapStatus.fail === 0 ? "var(--green)" : "var(--amber)",
           }}>
             {tapStatus.pending
               ? (broadcastScope === "leaders" ? `${tapStatus.kind === "swipe" ? "滑动队长" : "队长"} ${leaderPorts.length}…`
                 : broadcastScope === "all" ? `${tapStatus.kind === "swipe" ? "滑动广播" : "广播"} ${allPorts.length}…`
                 : tapStatus.kind === "swipe" ? "滑动…" : "…")
-              : `${tapStatus.kind === "swipe" ? "滑" : "点"} ✓${tapStatus.ok}${tapStatus.fail ? ` ✗${tapStatus.fail}` : ""}`}
+              : tapStatus.throttled
+                ? `⏱ ${tapStatus.kind === "swipe" ? "滑动" : "点击"}节流`
+                : `${tapStatus.kind === "swipe" ? "滑" : "点"} ✓${tapStatus.ok}${tapStatus.fail ? ` ✗${tapStatus.fail}` : ""}`}
           </div>
         )}
       </div>
