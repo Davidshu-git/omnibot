@@ -13,6 +13,7 @@
 | Windows Executor 运维 | [ops/windows_executor.md](ops/windows_executor.md) | MHXY executor 重启、adb 路径、SSH 上 Windows、ws-scrcpy 排障 |
 | Windows Executor 部署脚本 | [ops/deploy_executor.sh](ops/deploy_executor.sh) | 从 NAS 推送 executor 代码到 Windows 主机 |
 | ws-scrcpy Web 启动脚本 | [ops/setup_ws_scrcpy_web.ps1](ops/setup_ws_scrcpy_web.ps1) / [ops/ws_scrcpy_web_run.bat](ops/ws_scrcpy_web_run.bat) | Windows 侧 ws-scrcpy 服务的安装与启动 |
+| obs TLS 网关 | [ops/obs_tls_gateway.md](ops/obs_tls_gateway.md) | Caddy https 网关部署/重启、根 CA 各设备安装、OBS_TLS_HOST 配置、WebCodecs/证书排障 |
 
 > 新增任何"远程主机 / 物理设备 / 部署流程"相关的操作步骤时，请落到 `ops/` 下对应手册并在本表登记，不要散落在源码注释或临时聊天里。
 

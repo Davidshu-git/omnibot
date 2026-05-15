@@ -4,6 +4,7 @@ import { api, type AvailableModelInfo, type MhxyExecutorStatus, type MhxyInstanc
 import { SkeletonCard } from "@/components/Skeleton";
 import { fmt, fmtCost, fmtTime } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
+import { sseOrigin } from "@/lib/gateway";
 
 const SYNC_FN_MAP: Record<string, () => Promise<{ events_inserted: number }>> = {
   mhxy: api.ingestMhxy,
@@ -68,10 +69,8 @@ export default function OverviewPage() {
     let executorPollTimer: ReturnType<typeof setInterval> | null = null;
     const runtimePollTimer = setInterval(loadRuntime, 30000);
 
-    const apiOrigin = typeof window !== "undefined"
-      ? `${window.location.protocol}//${window.location.hostname}:8000`
-      : "http://localhost:8000";
-    const es = new EventSource(`${apiOrigin}/api/stream`);
+    // SSE origin 经 gateway.ts 派生（网关同源 / 直连 :8000，见 sessions.tsx 同处注释）
+    const es = new EventSource(`${sseOrigin()}/api/stream`);
 
     es.onopen = () => {
       if (executorPollTimer) {

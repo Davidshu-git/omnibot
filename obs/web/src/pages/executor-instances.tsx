@@ -4,6 +4,7 @@ import { api, type MhxyExecutorInstances, type MhxyInstanceDetail } from "@/lib/
 import { isWebCodecsSupported, StreamPlayer, type StreamPlayerStatus } from "@/lib/h264-stream";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { sendInput } from "@/lib/input-ws";
+import { execWsBase, execHttpBase, scrcpyBase } from "@/lib/gateway";
 
 const ROLE_LABEL: Record<string, string> = {
   leader: "队长",
@@ -36,9 +37,8 @@ type BroadcastStatus =
   | { pending: false; ok: number; fail: number; px: number; py: number }
   | { pending: false; throttled: true; px: number; py: number };
 
-const WS_SCRCPY_BASE = "http://192.168.100.149:8000";
-const EXECUTOR_WS_BASE = process.env.NEXT_PUBLIC_EXECUTOR_WS_BASE || "ws://192.168.100.149:8765";
-const EXECUTOR_HTTP_BASE = EXECUTOR_WS_BASE.replace(/^ws(s)?:\/\//, "http$1://");
+// 基址经 gateway.ts 派生（https 走 TLS 网关，http 维持直连）。
+// 必须在组件运行时调用——依赖 window.location，不能提到模块顶层常量。
 
 // ws-scrcpy embeds a sidebar toolbar on the RIGHT: width = 3.715rem at browser-default 16px ≈ 59px.
 // The .device-view uses justify-content:flex-end, so the (video + toolbar) group is flush-right.
@@ -87,7 +87,7 @@ function ScreenshotModal({
 
   // ADB device ID: MuMu emulator port is odd (5557), ADB port is port-1 (5556)
   const adbDevice = `emulator-${parseInt(port) - 1}`;
-  const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
+  const streamUrl = `${scrcpyBase()}/embed.html?device=${adbDevice}`;
 
   // Extract device resolution from screenshot for accurate coordinate mapping
   useEffect(() => {
@@ -925,8 +925,8 @@ function ScreenshotCard({
 
   const isImageLoaded = screenshot !== "idle" && screenshot !== "loading" && screenshot !== "error";
   const adbDevice = `emulator-${parseInt(inst.port) - 1}`;
-  const streamUrl = `${WS_SCRCPY_BASE}/embed.html?device=${adbDevice}`;
-  const nativeStreamUrl = `${EXECUTOR_WS_BASE}/ws/stream/${inst.port}?quality=${nativeStreamQuality}`;
+  const streamUrl = `${scrcpyBase()}/embed.html?device=${adbDevice}`;
+  const nativeStreamUrl = `${execWsBase()}/ws/stream/${inst.port}?quality=${nativeStreamQuality}`;
 
   // Refine device resolution from the latest screenshot when one arrives.
   useEffect(() => {
@@ -1632,7 +1632,7 @@ export default function ExecutorInstancesPage() {
 
   useEffect(() => {
     const fetchStats = () => {
-      fetch(`${EXECUTOR_HTTP_BASE}/stream/stats`)
+      fetch(`${execHttpBase()}/stream/stats`)
         .then((r) => r.ok ? r.json() : null)
         .then((d) => d && setActualBitrate(d))
         .catch(() => {});

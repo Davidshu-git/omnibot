@@ -1,13 +1,14 @@
 /**
- * WebSocket 输入通道 — 直连 executor /ws/input，使用二进制协议发 tap/swipe。
+ * WebSocket 输入通道 — executor /ws/input，使用二进制协议发 tap/swipe。
  * 跳过 obs-api HTTP 代理，延迟比 HTTP REST 低 ~15-30ms。
+ * 基址经 gateway.ts 派生：https 走 wss 网关，http 维持直连。
  */
+
+import { execWsBase } from "@/lib/gateway";
 
 export type InputAction =
   | { type: "tap"; ports: string[]; px: number; py: number }
   | { type: "swipe"; ports: string[]; x1: number; y1: number; x2: number; y2: number; durationMs: number };
-
-const EXECUTOR_WS_URL = `ws://192.168.100.149:8765/ws/input`;
 
 // 冷却参数：executor 单次 ADB tap 50-200ms，多端口 batch 每条之间还有 80-150ms 抖动 sleep。
 // COOLDOWN_SINGLE_MS：同一设备组（单端口 or 同一 ports 列表）的最小间隔
@@ -77,7 +78,7 @@ function processQueue() {
 function connect() {
   if (ws && ws.readyState <= WebSocket.OPEN) return;
 
-  ws = new WebSocket(EXECUTOR_WS_URL);
+  ws = new WebSocket(`${execWsBase()}/ws/input`);
   ws.binaryType = "arraybuffer";
 
   ws.onopen = () => processQueue();

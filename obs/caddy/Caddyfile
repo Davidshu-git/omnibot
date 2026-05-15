@@ -1,0 +1,45 @@
+# obs TLS 网关 —— 解决 WebCodecs 要求 Secure Context 的问题。
+#
+# 背景：WebCodecs（VideoDecoder）规范标记为 [SecureContext]，Chrome/Blink 严格执行，
+# 明文 http 局域网入口下不挂载 window.VideoDecoder → 截图巡检 H264 推流不可用。
+# 本网关给 obs/web 提供统一 https 入口，所有子连接经此终结 TLS，内部继续走明文。
+#
+# OBS_TLS_HOST：证书 SAN 必须与浏览器地址栏完全一致。默认 NAS IP，可用 env 覆盖。
+# 注意：tls internal 的根 CA 存于 caddy_data 卷，重启不重新生成；首次启动后需把根 CA
+# 导出并安装到每台看板设备（步骤见 ops/obs_tls_gateway.md）。
+{
+	# 纯内网自签，不走 ACME；不抢占 80 端口做 http→https 跳转
+	auto_https disable_redirects
+}
+
+# ── :8443 应用主入口 ─────────────────────────────────────────────
+https://{$OBS_TLS_HOST:192.168.1.100}:8443 {
+	tls internal
+
+	# API 直连 api:8000，绕过 Next dev 代理 —— 顺带修掉 SSE 被 buffer 的老问题
+	handle /api/* {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	# executor 输入 + 推流 WS（/ws/input、/ws/stream/{port}）
+	# strip 掉 /exec-ws 前缀后，后端看到的仍是原始 /ws/* 路径
+	handle /exec-ws/* {
+		uri strip_prefix /exec-ws
+		reverse_proxy 192.168.100.149:8765
+	}
+
+	# 其余全部交给 Next 应用（含 HMR websocket）
+	handle {
+		reverse_proxy web:3000
+	}
+}
+
+# ── :8444 ws-scrcpy 直通 ────────────────────────────────────────
+# 独立端口、根路径直通，规避第三方应用的绝对资源路径 / 内部 ws 在子路径下错位。
+# ws-scrcpy 的 embed.html 与其内部 ws 都从 window.location 派生，根路径下天然正确。
+https://{$OBS_TLS_HOST:192.168.1.100}:8444 {
+	tls internal
+	reverse_proxy 192.168.100.149:8000
+}

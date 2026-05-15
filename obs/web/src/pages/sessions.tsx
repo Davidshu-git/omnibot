@@ -9,6 +9,7 @@ import type { SessionSummary, NormalizedEvent } from "@/types/events";
 import CopyableId from "@/components/CopyableId";
 import { SkeletonSessionItem } from "@/components/Skeleton";
 import { useIsMobile } from "@/lib/useIsMobile";
+import { sseOrigin } from "@/lib/gateway";
 
 marked.use({ breaks: true, gfm: true });
 
@@ -885,11 +886,9 @@ export default function SessionsPage() {
     if (!router.isReady) return;
     let pollTimer: ReturnType<typeof setInterval> | null = null;
 
-    // Connect directly to the API to avoid Next.js dev-server proxy buffering SSE streams
-    const apiOrigin = typeof window !== "undefined"
-      ? `${window.location.protocol}//${window.location.hostname}:8000`
-      : "http://localhost:8000";
-    const es = new EventSource(`${apiOrigin}/api/stream`);
+    // SSE origin 经 gateway.ts 派生：网关模式同源（Caddy 不 buffer SSE），
+    // 直连模式仍直连 :8000 绕过 Next dev 代理的 SSE buffering。
+    const es = new EventSource(`${sseOrigin()}/api/stream`);
 
     es.onopen = () => {
       if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }

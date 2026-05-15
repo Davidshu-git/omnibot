@@ -64,7 +64,27 @@ services:
     depends_on:
       - api
 
+  # TLS 网关：给 obs/web 提供统一 https 入口，解决 WebCodecs 要求 Secure Context。
+  # 老入口 web:3100 / api:8000 保持不动，本服务为并行新增，零回归。
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+      - "8444:8444"
+    environment:
+      OBS_TLS_HOST: ${OBS_TLS_HOST:-192.168.1.100}
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - api
+
 volumes:
   postgres_data:
     external: true
     name: agent-observability_postgres_data
+  caddy_data:
+  caddy_config:

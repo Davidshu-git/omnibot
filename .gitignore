@@ -11,6 +11,10 @@ jobs/
 logs/
 docs/
 
+# obs TLS 网关：根 CA 为运行时生成的部署产物，随 caddy_data 卷重建会变，不入库。
+# 需要时用 ops/obs_tls_gateway.md 的命令从容器现取。
+obs/*.crt
+
 # obs/web
 obs/web/node_modules/
 obs/web/.next/
