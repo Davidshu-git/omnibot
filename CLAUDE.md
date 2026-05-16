@@ -494,8 +494,11 @@ docker compose -f obs/docker-compose.yml logs web --tail=80
 # 4) 类型检查（容器内跑，本地没有 typescript）
 docker compose -f obs/docker-compose.yml exec web npx tsc --noEmit
 
-# 5) 生产构建验证（可选，编译产物问题往往只在 build 时暴露）
-docker compose -f obs/docker-compose.yml exec web npm run build
+# 5) 生产构建验证（可选）
+#    不要在正在服务的 obs-web-1 dev 容器里直接跑 npm run build；
+#    这会污染 Next dev 的 .next 状态，可能导致 /、/sessions、/_next/static/chunks/* 全站 404。
+#    如确需在该容器里跑 build，跑完必须重启 web：
+#    docker compose -f obs/docker-compose.yml restart web
 ```
 
 仅以下情况才需要重启 web 容器：
@@ -504,5 +507,7 @@ docker compose -f obs/docker-compose.yml exec web npm run build
 - 改了 `docker-compose.yml` 的 web 服务定义
 
 其他所有改动（`*.tsx` / `*.ts` / `*.css`）都靠 Next.js HMR + bind mount 自动生效，**不要** `docker compose restart web`——重启会丢 HMR 状态，反而拖慢迭代。
+
+例外：如果误在 `obs-web-1` dev 容器里执行过 `npm run build`，且页面出现全站 404，必须 `docker compose -f obs/docker-compose.yml restart web` 恢复 Next dev 状态。
 
 api 改动同理：源文件 bind mount，但 FastAPI 没有 HMR，改完用 `docker compose -f obs/docker-compose.yml restart api`。

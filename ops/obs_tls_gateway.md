@@ -97,6 +97,7 @@ docker compose -f obs/docker-compose.yml exec caddy \
 | `NET::ERR_CERT_AUTHORITY_INVALID` | 该设备没装根 CA，按上节安装 |
 | `NET::ERR_CERT_COMMON_NAME_INVALID` / 连不上 | 地址栏 host ≠ `OBS_TLS_HOST`，改 env 对齐或用正确地址访问 |
 | 页面能开但推流仍"不支持 WebCodecs" | 确认地址栏是 **https**；确认 Chrome 版本 ≥ 94 |
+| obs 页面整体 404，`/`、`/sessions`、`/_next/static/chunks/*` 都返回 404 | 常见原因是在正在服务的 `obs-web-1` dev 容器内执行了 `npm run build`，污染 Next dev 的 `.next` 状态。恢复：`docker compose -f obs/docker-compose.yml restart web`。以后不要在常驻 dev 容器里直接跑生产 build；如确需跑，跑完立即重启 web。 |
 | 推流/点击无反应 | caddy 容器需能跨网段够到 `192.168.100.149`；验证：<br>`docker compose -f obs/docker-compose.yml exec caddy wget -qO- http://192.168.100.149:8765/health` |
 | 命令行 `curl` 测网关报 000/SSL，但浏览器正常 | 已知：本机 curl 的 ClientHello 触发 Caddy internal alert，openssl 与浏览器不受影响。验证用：<br>`printf 'GET / HTTP/1.1\r\nHost: <HOST>\r\nConnection: close\r\n\r\n' \| openssl s_client -connect 127.0.0.1:8443 -servername <HOST> -quiet` |
 | 改了 Caddyfile 不生效 | 文件 `:ro` 挂载，必须 `restart caddy`，不会热加载 |
