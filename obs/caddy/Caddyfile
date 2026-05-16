@@ -4,16 +4,22 @@
 # 明文 http 局域网入口下不挂载 window.VideoDecoder → 截图巡检 H264 推流不可用。
 # 本网关给 obs/web 提供统一 https 入口，所有子连接经此终结 TLS，内部继续走明文。
 #
-# OBS_TLS_HOST：证书 SAN 必须与浏览器地址栏完全一致。默认 NAS IP，可用 env 覆盖。
+# OBS_TLS_HOST：证书 SAN 必须与浏览器地址栏完全一致。
+# 实际值由 obs/.env 注入（当前部署 192.168.100.177）；下方 {$OBS_TLS_HOST:xxx}
+# 冒号后是 env 缺失时的兜底，已对齐本部署 IP，避免误导。
 # 注意：tls internal 的根 CA 存于 caddy_data 卷，重启不重新生成；首次启动后需把根 CA
 # 导出并安装到每台看板设备（步骤见 ops/obs_tls_gateway.md）。
 {
 	# 纯内网自签，不走 ACME；不抢占 80 端口做 http→https 跳转
 	auto_https disable_redirects
+	# 用 IP 访问时浏览器不发 SNI（RFC 禁止 SNI 填字面 IP）。无此项 Caddy
+	# 按 SNI 选证书会匹配失败 → 握手 internal error → 浏览器 ERR_SSL_PROTOCOL_ERROR。
+	# default_sni 让无 SNI 的 ClientHello 默认按此 host 选证书。
+	default_sni {$OBS_TLS_HOST:192.168.100.177}
 }
 
 # ── :8443 应用主入口 ─────────────────────────────────────────────
-https://{$OBS_TLS_HOST:192.168.1.100}:8443 {
+https://{$OBS_TLS_HOST:192.168.100.177}:8443 {
 	tls internal
 
 	# API 直连 api:8000，绕过 Next dev 代理 —— 顺带修掉 SSE 被 buffer 的老问题
@@ -39,7 +45,7 @@ https://{$OBS_TLS_HOST:192.168.1.100}:8443 {
 # ── :8444 ws-scrcpy 直通 ────────────────────────────────────────
 # 独立端口、根路径直通，规避第三方应用的绝对资源路径 / 内部 ws 在子路径下错位。
 # ws-scrcpy 的 embed.html 与其内部 ws 都从 window.location 派生，根路径下天然正确。
-https://{$OBS_TLS_HOST:192.168.1.100}:8444 {
+https://{$OBS_TLS_HOST:192.168.100.177}:8444 {
 	tls internal
 	reverse_proxy 192.168.100.149:8000
 }
