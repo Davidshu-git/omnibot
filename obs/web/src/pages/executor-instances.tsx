@@ -628,24 +628,23 @@ const NATIVE_STREAM_BITRATE: Record<NativeStreamQuality, number> = {
 };
 
 // 自动点击：按固定节奏对当前 broadcast 范围发 tap。
-// 间隔下限 500ms 与 input-ws.ts COOLDOWN_MULTI_MS 对齐，低于此值会被冷却拦截。
+// 间隔下限 1s（内部 1000ms）与 input-ws.ts COOLDOWN_MULTI_MS=500ms 保持安全余量。
 // 坐标范围贴 executor W,H = 1600,900 设备契约。
 //
 // 反检测（在 executor 端 _INPUT_JITTER 时间抖动之上再补一层）：
 //   COORD_JITTER_PX：每次 tap 给坐标加 ±N 像素，破坏"恒定坐标"统计指纹。
-//     N=5：在按钮点击场景里 ±5px 仍稳稳落在目标范围内，但足以让坐标方差非零。
 //   INTERVAL_JITTER_PCT：下一次 tap 间隔按 base × (1 ± P%) 随机，破坏精确周期。
-//     P=10%：1000ms 周期 → 900–1100ms 区间。仍受 AUTO_TAP_MIN_INTERVAL_MS 下限约束。
-type AutoTapForm = { x: number; y: number; intervalMs: number; durationS: number };
-type AutoTapSession = AutoTapForm & { ports: string[]; startedAt: number };
+type AutoTapForm = { x: number; y: number; intervalS: number; rounds: number };
+type AutoTapSession = AutoTapForm & { ports: string[] };
 
 const AUTO_TAP_STORAGE_KEY = "executor-instances:auto-tap-form";
-const AUTO_TAP_MIN_INTERVAL_MS = 500;
-const AUTO_TAP_MAX_INTERVAL_MS = 60_000;
-const AUTO_TAP_MAX_DURATION_S = 3600;
+const AUTO_TAP_MIN_INTERVAL_S = 1;
+const AUTO_TAP_MAX_INTERVAL_S = 60;
+const AUTO_TAP_MAX_ROUNDS = 9999;
+const AUTO_TAP_MIN_INTERVAL_MS = AUTO_TAP_MIN_INTERVAL_S * 1000;
 const AUTO_TAP_COORD_JITTER_PX = 5;
 const AUTO_TAP_INTERVAL_JITTER_PCT = 0.10;
-const AUTO_TAP_DEFAULT_FORM: AutoTapForm = { x: 800, y: 450, intervalMs: 1000, durationS: 60 };
+const AUTO_TAP_DEFAULT_FORM: AutoTapForm = { x: 800, y: 450, intervalS: 1, rounds: 10 };
 
 const TONE_STYLE = {
   blue: {
@@ -756,6 +755,10 @@ function AutoTapNumberInput({
   disabled?: boolean;
   width?: number;
 }) {
+  const [raw, setRaw] = useState(String(value));
+
+  useEffect(() => { setRaw(String(value)); }, [value]);
+
   return (
     <label
       title={`${label}: ${min}–${max}`}
@@ -772,14 +775,16 @@ function AutoTapNumberInput({
       {label}
       <input
         type="number"
-        value={value}
+        value={raw}
         min={min}
         max={max}
         disabled={disabled}
         onChange={(e) => {
+          setRaw(e.target.value);
           const v = parseInt(e.target.value, 10);
           if (!isNaN(v)) onChange(v);
         }}
+        onBlur={() => setRaw(String(value))}
         style={{
           width,
           height: 24,
@@ -792,6 +797,8 @@ function AutoTapNumberInput({
           fontFamily: "var(--font-mono)",
           textAlign: "right",
           outline: "none",
+          MozAppearance: "textfield",
+          appearance: "textfield",
         }}
       />
     </label>
@@ -875,6 +882,8 @@ function ScreenshotCard({
   isSelected = false,
   onToggleSelect,
   showSelectionUI = false,
+  pickMode = false,
+  onPickCoord,
 }: {
   inst: MhxyInstanceDetail;
   screenshot: ScreenshotState;
@@ -889,6 +898,8 @@ function ScreenshotCard({
   onToggleSelect?: () => void;
   showSelectionUI?: boolean;
   swipeEnabled?: boolean;
+  pickMode?: boolean;
+  onPickCoord?: (x: number, y: number) => void;
 }) {
   const [tapStatus, setTapStatus] = useState<{ pending: boolean; ok?: number; fail?: number; kind?: "tap" | "swipe"; throttled?: boolean } | null>(null);
   const [ripple, setRipple] = useState<{ pctX: number; pctY: number; key: number } | null>(null);
@@ -1029,7 +1040,7 @@ function ScreenshotCard({
   }, [currentTargets]);
 
   const pointFromClient = useCallback((elem: HTMLDivElement, clientX: number, clientY: number) => {
-    if (!tapMode) return;
+    if (!tapMode && !pickMode) return;
     const elemRect = elem.getBoundingClientRect();
     if (nativeStreamMode) {
       if (!canvasRef.current || canvasRef.current.width === 0 || canvasRef.current.height === 0) return;
@@ -1083,7 +1094,7 @@ function ScreenshotCard({
       pctX: (clientX - elemRect.left) / elemRect.width * 100,
       pctY: (clientY - elemRect.top) / elemRect.height * 100,
     };
-  }, [tapMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded]);
+  }, [tapMode, pickMode, nativeStreamMode, streamMode, deviceSize, isImageLoaded]);
 
   const updateSwipePreview = useCallback((fromX: number, fromY: number, toX: number, toY: number) => {
     if (swipeRafRef.current !== null) {
@@ -1135,6 +1146,18 @@ function ScreenshotCard({
 
 
   const handleImgAreaPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (pickMode) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const rx = e.clientX - rect.left;
+      const ry = e.clientY - rect.top;
+      if (rx < 0 || rx > rect.width || ry < 0 || ry > rect.height) return;
+      e.stopPropagation();
+      onPickCoord?.(
+        Math.round(rx / rect.width * deviceSize.w),
+        Math.round(ry / rect.height * deviceSize.h),
+      );
+      return;
+    }
     if (!tapMode) return;
     const point = pointFromClient(e.currentTarget, e.clientX, e.clientY);
     if (!point) return;
@@ -1152,7 +1175,7 @@ function ScreenshotCard({
     };
     setIsDragging(true);
     updateSwipePreview(point.localX, point.localY, point.localX, point.localY);
-  }, [tapMode, pointFromClient, updateSwipePreview]);
+  }, [tapMode, pickMode, onPickCoord, deviceSize, pointFromClient, updateSwipePreview]);
 
   const handleImgAreaPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     if (!tapMode) return;
@@ -1275,17 +1298,20 @@ function ScreenshotCard({
           aspectRatio: "16/9",
           display: "flex", alignItems: "center", justifyContent: "center",
           position: "relative",
-          cursor: tapMode && (nativeStreamMode || streamMode || isImageLoaded)
+          cursor: pickMode
+            ? "crosshair"
+            : tapMode && (nativeStreamMode || streamMode || isImageLoaded)
             ? isDragging ? "grabbing" : "crosshair"
             : undefined,
           touchAction: tapMode ? "pan-y" : undefined,
+          outline: pickMode ? "2px solid var(--amber)" : undefined,
         }}
         onPointerMove={handleImgAreaPointerMove}
         onMouseLeave={clearDragState}
         onPointerDown={handleImgAreaPointerDown}
         onPointerUp={handleImgAreaPointerUp}
         onPointerCancel={clearDragState}
-        onClick={(e) => { if (tapMode) e.stopPropagation(); }}
+        onClick={(e) => { if (tapMode || pickMode) e.stopPropagation(); }}
       >
         {nativeStreamMode ? (
           <>
@@ -1464,6 +1490,8 @@ function GroupBlockGrid({
   customSelectionActive,
   gridColumns,
   swipeEnabled,
+  pickMode,
+  onPickCoord,
 }: {
   groupId: number;
   instances: MhxyInstanceDetail[];
@@ -1480,6 +1508,8 @@ function GroupBlockGrid({
   customSelectionActive: boolean;
   gridColumns: 1 | 2 | 3 | 4;
   swipeEnabled: boolean;
+  pickMode?: boolean;
+  onPickCoord?: (x: number, y: number) => void;
 }) {
   const leader = instances.find((i) => i.role === "leader");
   const members = instances.filter((i) => i.role !== "leader");
@@ -1521,6 +1551,8 @@ function GroupBlockGrid({
             onToggleSelect={() => togglePortSelection(inst.port)}
             showSelectionUI={broadcastScope === "custom" && !customSelectionActive}
             swipeEnabled={swipeEnabled}
+            pickMode={pickMode}
+            onPickCoord={onPickCoord}
           />
         ))}
       </div>
@@ -1568,8 +1600,27 @@ export default function ExecutorInstancesPage() {
   });
   const [autoTapSession, setAutoTapSession] = useState<AutoTapSession | null>(null);
   const [autoTapTick, setAutoTapTick] = useState(0);
-  // Refresh trigger driving the countdown text; updated every 1s while running.
-  const [autoTapClock, setAutoTapClock] = useState(0);
+  const [autoTapOpen, setAutoTapOpen] = useState(false);
+  const [autoTapPickMode, setAutoTapPickMode] = useState(false);
+  const autoTapAnchorRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!autoTapOpen) return;
+    const handle = (e: MouseEvent) => {
+      if (autoTapAnchorRef.current && !autoTapAnchorRef.current.contains(e.target as Node)) {
+        setAutoTapOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [autoTapOpen]);
+
+  useEffect(() => {
+    if (!autoTapPickMode) return;
+    const handle = (e: KeyboardEvent) => { if (e.key === "Escape") setAutoTapPickMode(false); };
+    document.addEventListener("keydown", handle);
+    return () => document.removeEventListener("keydown", handle);
+  }, [autoTapPickMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1580,17 +1631,17 @@ export default function ExecutorInstancesPage() {
 
   useEffect(() => {
     if (!autoTapSession) return;
-    const { ports, x, y, intervalMs, durationS, startedAt } = autoTapSession;
+    const { ports, x, y, intervalS, rounds } = autoTapSession;
+    const intervalMs = Math.round(intervalS * 1000);
     setAutoTapTick(0);
-    setAutoTapClock(Date.now());
 
     let stopped = false;
+    let fired = 0;
     let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     const fire = () => {
       if (stopped) return;
-      const now = Date.now();
-      if (now - startedAt >= durationS * 1000) {
+      if (fired >= rounds) {
         setAutoTapSession(null);
         return;
       }
@@ -1599,8 +1650,8 @@ export default function ExecutorInstancesPage() {
       const jx = Math.max(0, Math.min(1599, x + Math.round((Math.random() - 0.5) * 2 * r)));
       const jy = Math.max(0, Math.min(899, y + Math.round((Math.random() - 0.5) * 2 * r)));
       sendInput({ type: "tap", ports, px: jx, py: jy });
-      setAutoTapTick((n) => n + 1);
-      setAutoTapClock(now);
+      fired += 1;
+      setAutoTapTick(fired);
       // 间隔抖动：base × (1 ± AUTO_TAP_INTERVAL_JITTER_PCT)，下限受冷却 floor 约束。
       const drift = (Math.random() - 0.5) * 2 * AUTO_TAP_INTERVAL_JITTER_PCT;
       const nextDelay = Math.max(
@@ -1611,11 +1662,9 @@ export default function ExecutorInstancesPage() {
     };
     fire();
 
-    const clockId = setInterval(() => setAutoTapClock(Date.now()), 1000);
     return () => {
       stopped = true;
       if (timeoutId) clearTimeout(timeoutId);
-      clearInterval(clockId);
     };
   }, [autoTapSession]);
 
@@ -1795,10 +1844,10 @@ export default function ExecutorInstancesPage() {
   }, [broadcastScope, allPorts, leaderPorts, selectedPorts]);
 
   const autoTapFormValid =
-    autoTapForm.intervalMs >= AUTO_TAP_MIN_INTERVAL_MS &&
-    autoTapForm.intervalMs <= AUTO_TAP_MAX_INTERVAL_MS &&
-    autoTapForm.durationS >= 1 &&
-    autoTapForm.durationS <= AUTO_TAP_MAX_DURATION_S &&
+    autoTapForm.intervalS >= AUTO_TAP_MIN_INTERVAL_S &&
+    autoTapForm.intervalS <= AUTO_TAP_MAX_INTERVAL_S &&
+    autoTapForm.rounds >= 1 &&
+    autoTapForm.rounds <= AUTO_TAP_MAX_ROUNDS &&
     autoTapForm.x >= 0 && autoTapForm.x <= 1599 &&
     autoTapForm.y >= 0 && autoTapForm.y <= 899;
 
@@ -1806,32 +1855,43 @@ export default function ExecutorInstancesPage() {
     if (autoTapTargets.length === 0) return;
     const x = Math.max(0, Math.min(1599, Math.round(autoTapForm.x)));
     const y = Math.max(0, Math.min(899, Math.round(autoTapForm.y)));
-    const intervalMs = Math.max(
-      AUTO_TAP_MIN_INTERVAL_MS,
-      Math.min(AUTO_TAP_MAX_INTERVAL_MS, Math.round(autoTapForm.intervalMs)),
-    );
-    const durationS = Math.max(
-      1,
-      Math.min(AUTO_TAP_MAX_DURATION_S, Math.round(autoTapForm.durationS)),
-    );
-    setAutoTapSession({
-      ports: [...autoTapTargets],
-      x, y, intervalMs, durationS,
-      startedAt: Date.now(),
-    });
+    const intervalS = Math.max(AUTO_TAP_MIN_INTERVAL_S, Math.min(AUTO_TAP_MAX_INTERVAL_S, Math.round(autoTapForm.intervalS)));
+    const rounds = Math.max(1, Math.min(AUTO_TAP_MAX_ROUNDS, Math.round(autoTapForm.rounds)));
+    setAutoTapSession({ ports: [...autoTapTargets], x, y, intervalS, rounds });
   }, [autoTapTargets, autoTapForm]);
 
   const stopAutoTap = useCallback(() => setAutoTapSession(null), []);
 
-  const autoTapRemainingS = autoTapSession
-    ? Math.max(
-        0,
-        Math.ceil((autoTapSession.startedAt + autoTapSession.durationS * 1000 - autoTapClock) / 1000),
-      )
-    : 0;
+  const autoTapRemainingRounds = autoTapSession ? Math.max(0, autoTapSession.rounds - autoTapTick) : 0;
 
   return (
     <div>
+      {/* Coord pick mode banner */}
+      {autoTapPickMode && (
+        <div
+          style={{
+            position: "fixed", top: 0, left: 0, right: 0, zIndex: 200,
+            background: "rgba(251,191,36,0.12)",
+            borderBottom: "1px solid rgba(251,191,36,0.4)",
+            padding: "8px 16px",
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+          }}
+        >
+          <span style={{ color: "var(--amber)", fontSize: 12, fontWeight: 600 }}>
+            点击任意截图拾取坐标
+          </span>
+          <button
+            onClick={() => setAutoTapPickMode(false)}
+            style={{
+              background: "none", border: "none", color: "var(--amber)",
+              fontSize: 11, cursor: "pointer", padding: "2px 6px",
+            }}
+          >
+            取消 (Esc)
+          </button>
+        </div>
+      )}
+
       {/* Modal overlay */}
       {modalPort && (
         <ScreenshotModal
@@ -2019,73 +2079,93 @@ export default function ExecutorInstancesPage() {
             <ToolbarDivider />
 
             <ToolbarSection label="自动点击">
-              <div style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 6,
-                padding: 2,
-                borderRadius: "var(--r-sm)",
-                background: "rgba(0,0,0,0.16)",
-                border: "1px solid var(--border)",
-              }}>
-                <AutoTapNumberInput
-                  label="X"
-                  value={autoTapForm.x}
-                  min={0}
-                  max={1599}
-                  disabled={!!autoTapSession}
-                  onChange={(v) => setAutoTapForm((f) => ({ ...f, x: v }))}
-                />
-                <AutoTapNumberInput
-                  label="Y"
-                  value={autoTapForm.y}
-                  min={0}
-                  max={899}
-                  disabled={!!autoTapSession}
-                  onChange={(v) => setAutoTapForm((f) => ({ ...f, y: v }))}
-                />
-                <AutoTapNumberInput
-                  label="ms"
-                  value={autoTapForm.intervalMs}
-                  min={AUTO_TAP_MIN_INTERVAL_MS}
-                  max={AUTO_TAP_MAX_INTERVAL_MS}
-                  disabled={!!autoTapSession}
-                  onChange={(v) => setAutoTapForm((f) => ({ ...f, intervalMs: v }))}
-                  width={64}
-                />
-                <AutoTapNumberInput
-                  label="s"
-                  value={autoTapForm.durationS}
-                  min={1}
-                  max={AUTO_TAP_MAX_DURATION_S}
-                  disabled={!!autoTapSession}
-                  onChange={(v) => setAutoTapForm((f) => ({ ...f, durationS: v }))}
-                />
+              <div ref={autoTapAnchorRef} style={{ position: "relative", display: "inline-flex" }}>
                 {autoTapSession ? (
                   <ToolbarButton
                     active
                     tone="amber"
                     onClick={stopAutoTap}
-                    title={`已对 ${autoTapSession.ports.length} 个实例点击 ${autoTapTick} 次，剩余 ${autoTapRemainingS}s — 点击停止`}
+                    title={`已对 ${autoTapSession.ports.length} 个实例点击 ${autoTapTick} 次，剩余 ${autoTapRemainingRounds} 轮 — 点击停止`}
                   >
-                    停止 · {autoTapTick} · 余 {autoTapRemainingS}s
+                    ◼ {autoTapTick}/{autoTapSession.rounds}
                   </ToolbarButton>
                 ) : (
                   <ToolbarButton
-                    active={false}
-                    tone="green"
-                    onClick={startAutoTap}
-                    disabled={autoTapTargets.length === 0 || !autoTapFormValid}
-                    title={
-                      autoTapTargets.length === 0
-                        ? "先在广播范围里选定目标（全部 / 队长 / 自选）"
-                        : !autoTapFormValid
-                        ? `间隔 ${AUTO_TAP_MIN_INTERVAL_MS}–${AUTO_TAP_MAX_INTERVAL_MS}ms · 持续 1–${AUTO_TAP_MAX_DURATION_S}s · 坐标 0–1599 × 0–899`
-                        : `对 ${autoTapTargets.length} 个实例每 ${autoTapForm.intervalMs}ms 点 (${autoTapForm.x}, ${autoTapForm.y})，持续 ${autoTapForm.durationS}s\n防封抖动：坐标 ±${AUTO_TAP_COORD_JITTER_PX}px · 间隔 ±${Math.round(AUTO_TAP_INTERVAL_JITTER_PCT * 100)}%`
-                    }
+                    active={autoTapOpen}
+                    tone="blue"
+                    onClick={() => setAutoTapOpen((v) => !v)}
+                    title="配置并启动定时点击"
                   >
-                    开始 ({autoTapTargets.length})
+                    定时点
                   </ToolbarButton>
+                )}
+                {autoTapOpen && !autoTapSession && (
+                  <div style={{
+                    position: "absolute",
+                    top: "calc(100% + 6px)",
+                    left: 0,
+                    zIndex: 120,
+                    padding: "10px 12px",
+                    borderRadius: "var(--r-sm)",
+                    background: "var(--surface)",
+                    border: "1px solid var(--border-hi)",
+                    boxShadow: "0 4px 20px rgba(0,0,0,0.5)",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 8,
+                    minWidth: 220,
+                  }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6, alignItems: "end" }}>
+                      <AutoTapNumberInput label="X" value={autoTapForm.x} min={0} max={1599} onChange={(v) => setAutoTapForm((f) => ({ ...f, x: v }))} />
+                      <AutoTapNumberInput label="Y" value={autoTapForm.y} min={0} max={899} onChange={(v) => setAutoTapForm((f) => ({ ...f, y: v }))} />
+                      <button
+                        onClick={() => { setAutoTapOpen(false); setAutoTapPickMode(true); }}
+                        title="点击任意截图拾取坐标"
+                        style={{
+                          height: 24,
+                          padding: "0 7px",
+                          borderRadius: "var(--r-sm)",
+                          border: "1px solid rgba(251,191,36,0.35)",
+                          background: "rgba(251,191,36,0.10)",
+                          color: "var(--amber)",
+                          fontSize: 10,
+                          fontWeight: 600,
+                          cursor: "pointer",
+                          whiteSpace: "nowrap",
+                        }}
+                      >
+                        拾取
+                      </button>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                      <AutoTapNumberInput label="间隔 s" value={autoTapForm.intervalS} min={AUTO_TAP_MIN_INTERVAL_S} max={AUTO_TAP_MAX_INTERVAL_S} onChange={(v) => setAutoTapForm((f) => ({ ...f, intervalS: v }))} width={72} />
+                      <AutoTapNumberInput label="轮数" value={autoTapForm.rounds} min={1} max={AUTO_TAP_MAX_ROUNDS} onChange={(v) => setAutoTapForm((f) => ({ ...f, rounds: v }))} width={72} />
+                    </div>
+                    <button
+                      disabled={autoTapTargets.length === 0 || !autoTapFormValid}
+                      onClick={() => { startAutoTap(); setAutoTapOpen(false); }}
+                      title={
+                        autoTapTargets.length === 0
+                          ? "先在广播范围里选定目标（全部 / 队长 / 自选）"
+                          : !autoTapFormValid
+                          ? `间隔 ${AUTO_TAP_MIN_INTERVAL_S}–${AUTO_TAP_MAX_INTERVAL_S}s · 轮数 1–${AUTO_TAP_MAX_ROUNDS} · 坐标 0–1599 × 0–899`
+                          : `对 ${autoTapTargets.length} 个实例每 ${autoTapForm.intervalS}s 点 (${autoTapForm.x}, ${autoTapForm.y})，共 ${autoTapForm.rounds} 轮`
+                      }
+                      style={{
+                        height: 28,
+                        borderRadius: "var(--r-sm)",
+                        border: `1px solid ${autoTapTargets.length === 0 || !autoTapFormValid ? "transparent" : "rgba(52,211,153,0.4)"}`,
+                        background: autoTapTargets.length === 0 || !autoTapFormValid ? "rgba(0,0,0,0.08)" : "rgba(52,211,153,0.14)",
+                        color: autoTapTargets.length === 0 || !autoTapFormValid ? "var(--text-dim)" : "var(--green)",
+                        fontSize: 11,
+                        fontWeight: 600,
+                        cursor: autoTapTargets.length === 0 || !autoTapFormValid ? "not-allowed" : "pointer",
+                        opacity: autoTapTargets.length === 0 || !autoTapFormValid ? 0.45 : 1,
+                      }}
+                    >
+                      开始 · {autoTapTargets.length} 个实例
+                    </button>
+                  </div>
                 )}
               </div>
             </ToolbarSection>
@@ -2190,6 +2270,8 @@ export default function ExecutorInstancesPage() {
                 customSelectionActive={customSelectionActive}
                 gridColumns={gridColumns}
                 swipeEnabled={swipeEnabled}
+                pickMode={autoTapPickMode}
+                onPickCoord={(x, y) => { setAutoTapForm((f) => ({ ...f, x, y })); setAutoTapPickMode(false); setTimeout(() => setAutoTapOpen(true), 0); }}
               />
             ))}
 
@@ -2226,6 +2308,8 @@ export default function ExecutorInstancesPage() {
                       onToggleSelect={() => togglePortSelection(inst.port)}
                       showSelectionUI={broadcastScope === "custom" && !customSelectionActive}
                       swipeEnabled={swipeEnabled}
+                      pickMode={autoTapPickMode}
+                      onPickCoord={(x, y) => { setAutoTapForm((f) => ({ ...f, x, y })); setAutoTapPickMode(false); setTimeout(() => setAutoTapOpen(true), 0); }}
                     />
                   ))}
                 </div>
