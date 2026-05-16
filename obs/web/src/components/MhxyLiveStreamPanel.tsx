@@ -33,7 +33,7 @@ function instanceLabel(inst: MhxyInstanceDetail): string {
   return `${inst.port} · ${inst.school || "未知"} · ${role}${group}`;
 }
 
-export default function MhxyLiveStreamPanel() {
+export default function MhxyLiveStreamPanel({ width }: { width?: number }) {
   const [instances, setInstances] = useState<MhxyInstanceDetail[]>([]);
   const [selectedPort, setSelectedPort] = useState("");
   const [quality, setQuality] = useState<NativeStreamQuality>("low");
@@ -106,8 +106,9 @@ export default function MhxyLiveStreamPanel() {
 
   return (
     <aside style={{
-      width: "min(34vw, 460px)",
-      minWidth: 340,
+      width: width ?? 380,
+      minWidth: 280,
+      maxWidth: 800,
       flexShrink: 0,
       borderLeft: "1px solid var(--border)",
       paddingLeft: "1rem",

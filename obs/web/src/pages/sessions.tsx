@@ -633,14 +633,12 @@ function EventRow({ event: e, anchorId, roundsByTrace, traceComplete, isMobile }
         transition: `background var(--dur) var(--ease)`,
       }}
     >
-      <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-        {fmtTime(e.timestamp)}
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flexShrink: 0, paddingTop: 2, gap: 1, minWidth: 0, maxWidth: "100%" }}>
+        <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)", lineHeight: 1.2 }}>{fmtTime(e.timestamp)}</span>
+        {!isMobile && (
+          <span style={{ color, fontSize: 9, fontFamily: "var(--font-mono)", lineHeight: 1.2, opacity: 0.8 }}>{e.event_type}</span>
+        )}
       </div>
-      {!isMobile && (
-        <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-          {e.event_type}
-        </div>
-      )}
       <div style={{ flex: 1, minWidth: 0 }}>
         <EventDetail event={e} />
         {e.trace_id && (
@@ -693,14 +691,12 @@ function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete, isMobil
           borderLeft: `2px dashed ${color}`,
         }}
       >
-        <div style={{ color: "var(--text-dim)", fontSize: 10, width: 62, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-          {fmtTime(firstE.timestamp)}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-start", flexShrink: 0, paddingTop: 2, gap: 1, minWidth: 0, maxWidth: "100%" }}>
+          <span style={{ color: "var(--text-dim)", fontSize: 10, fontFamily: "var(--font-mono)", lineHeight: 1.2 }}>{fmtTime(firstE.timestamp)}</span>
+          {!isMobile && (
+            <span style={{ color, fontSize: 9, fontFamily: "var(--font-mono)", lineHeight: 1.2, opacity: 0.8 }}>task_event</span>
+          )}
         </div>
-        {!isMobile && (
-          <div style={{ color, fontSize: 10, width: 88, flexShrink: 0, paddingTop: 2, fontFamily: "var(--font-mono)" }}>
-            task_event
-          </div>
-        )}
         <div style={{ flex: 1, minWidth: 0, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", fontSize: 12 }}>
           <button onClick={() => setExpanded(true)} style={{
             background: "none", border: `1px solid ${color}`, color,
@@ -728,8 +724,7 @@ function TaskEventGroup({ events, anchors, roundsByTrace, traceComplete, isMobil
         display: "flex", gap: "0.75rem", marginBottom: "0.2rem",
         paddingLeft: "0.75rem",
       }}>
-        <div style={{ width: 62, flexShrink: 0 }} />
-        {!isMobile && <div style={{ width: 88, flexShrink: 0 }} />}
+        <div style={{ width: 70, flexShrink: 0 }} />
         <button onClick={() => setExpanded(false)} style={{
           background: "none", border: "1px solid var(--border)", color: "var(--text-dim)",
           cursor: "pointer", fontSize: 11, padding: "1px 8px", borderRadius: 3,
@@ -977,6 +972,25 @@ export default function SessionsPage() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [err, setErr] = useState("");
+  const [livePanelWidth, setLivePanelWidth] = useState(380);
+  const resizingRef = useRef(false);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!resizingRef.current) return;
+      const w = Math.max(280, Math.min(800, window.innerWidth - e.clientX));
+      setLivePanelWidth(w);
+    };
+    const onUp = () => { resizingRef.current = false; document.body.style.cursor = ""; };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+  }, []);
+
+  function startResize() {
+    resizingRef.current = true;
+    document.body.style.cursor = "col-resize";
+  }
 
   // Stable ref so SSE/polling closures always see the current selectedId
   const selectedIdRef = useRef(selectedId);
@@ -1258,7 +1272,24 @@ export default function SessionsPage() {
               <p style={{ color: "var(--text-dim)" }}>该会话暂无事件</p>
             )}
           </div>
-          {showMhxyLiveStream && <MhxyLiveStreamPanel />}
+          {showMhxyLiveStream && (
+            <>
+              <div
+                onMouseDown={(e) => { e.preventDefault(); startResize(); }}
+                style={{
+                  width: 4,
+                  cursor: "col-resize",
+                  flexShrink: 0,
+                  borderRadius: 2,
+                  background: "var(--border)",
+                  transition: "background 0.15s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--blue)"; }}
+                onMouseLeave={(e) => { if (!resizingRef.current) e.currentTarget.style.background = "var(--border)"; }}
+              />
+              <MhxyLiveStreamPanel width={livePanelWidth} />
+            </>
+          )}
         </div>
         )}
       </div>
