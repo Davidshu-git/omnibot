@@ -189,6 +189,7 @@ STREAM_BITRATE_BPS = int(os.getenv("EXECUTOR_STREAM_BITRATE_BPS", "1500000"))
 STREAM_SIZE = os.getenv("EXECUTOR_STREAM_SIZE", "")
 STREAM_RESTART_DELAY_SEC = float(os.getenv("EXECUTOR_STREAM_RESTART_DELAY_SEC", "0.3"))
 STREAM_SEND_TIMEOUT_SEC = float(os.getenv("EXECUTOR_STREAM_SEND_TIMEOUT_SEC", "2.0"))
+STREAM_INIT_CACHE_MAX_BYTES = int(os.getenv("EXECUTOR_STREAM_INIT_CACHE_MAX_BYTES", "1048576"))
 STREAM_QUALITY_PRESETS = {
     "low": {
         "bitrate_bps": int(os.getenv("EXECUTOR_STREAM_LOW_BITRATE_BPS", "200000")),
@@ -872,6 +873,66 @@ def _stream_quality_config(quality: str) -> tuple[str, int, str]:
     return normalized, int(cfg["bitrate_bps"]), str(cfg["size"])
 
 
+def _annexb_start_code_len(data: bytes, index: int) -> int:
+    """返回 H.264 Annex-B start code 长度。
+
+    Args:
+        data: 待检查字节串。
+        index: 检查起点。
+
+    Returns:
+        3 或 4 表示 start code 长度；0 表示当前位置不是 start code。
+    """
+    if index + 3 <= len(data) and data[index:index + 3] == b"\x00\x00\x01":
+        return 3
+    if index + 4 <= len(data) and data[index:index + 4] == b"\x00\x00\x00\x01":
+        return 4
+    return 0
+
+
+def _split_complete_annexb_nals(buffer: bytes) -> tuple[list[bytes], bytes]:
+    """从 buffer 中切出完整 Annex-B NAL，保留最后一个未闭合 NAL。
+
+    Args:
+        buffer: 上轮残留加本轮新增的 H.264 Annex-B 字节。
+
+    Returns:
+        (完整 NAL 列表, 残留字节)。列表中的每个 NAL 保留 start code。
+    """
+    starts: list[int] = []
+    i = 0
+    while i < len(buffer) - 2:
+        prefix_len = _annexb_start_code_len(buffer, i)
+        if prefix_len:
+            starts.append(i)
+            i += prefix_len
+        else:
+            i += 1
+
+    if len(starts) < 2:
+        if starts:
+            return [], buffer[starts[0]:]
+        return [], buffer[-STREAM_INIT_CACHE_MAX_BYTES:]
+
+    nals = [buffer[starts[idx]:starts[idx + 1]] for idx in range(len(starts) - 1)]
+    return nals, buffer[starts[-1]:]
+
+
+def _annexb_nal_type(nal: bytes) -> int | None:
+    """读取 Annex-B NAL type。
+
+    Args:
+        nal: 保留 start code 的 NAL 字节。
+
+    Returns:
+        H.264 nal_unit_type；无法解析时返回 None。
+    """
+    prefix_len = _annexb_start_code_len(nal, 0)
+    if not prefix_len or prefix_len >= len(nal):
+        return None
+    return nal[prefix_len] & 0x1F
+
+
 class FanoutStream:
     """单端口 screenrecord 推流进程，支持多个 WebSocket 订阅者共享。
 
@@ -890,9 +951,13 @@ class FanoutStream:
         self._lock = asyncio.Lock()
         self._bytes_sent = 0
         self._stats_last_ts = time.monotonic()
+        self._nal_buffer = b""
+        self._cached_sps: bytes | None = None
+        self._cached_pps: bytes | None = None
+        self._cached_idr: bytes | None = None
 
     async def add_subscriber(self, ws: WebSocket) -> None:
-        """添加订阅者；首个订阅者到达时启动 adb screenrecord。
+        """添加订阅者；首个订阅者到达时启动 adb screenrecord，并补发初始化帧。
 
         Args:
             ws: 已 accept 的 WebSocket 连接。
@@ -900,11 +965,23 @@ class FanoutStream:
         Returns:
             None.
         """
+        init_segment: bytes | None = None
         async with self._lock:
-            self.subscribers.add(ws)
             self._stopping = False
             if self._proc is None:
+                self.subscribers.add(ws)
                 await self._spawn()
+            else:
+                init_segment = self._init_segment()
+                if not init_segment:
+                    self.subscribers.add(ws)
+        # 已运行的流若缓存完整，先给新订阅者补 SPS/PPS/IDR，再加入实时广播集合。
+        # 否则 delta 帧可能抢在初始化帧前发出，WebCodecs 会继续卡在等待关键帧。
+        if init_segment:
+            await _safe_send_bytes(ws, init_segment, self)
+            async with self._lock:
+                if self._proc is not None and not self._stopping:
+                    self.subscribers.add(ws)
 
     async def remove_subscriber(self, ws: WebSocket) -> None:
         """移除订阅者；订阅者归零时终止 adb screenrecord。
@@ -982,6 +1059,7 @@ class FanoutStream:
                 chunk = await loop.run_in_executor(None, self._proc.stdout.read, 4096)
                 if not chunk:
                     break
+                self._update_init_cache(chunk)
                 await self._broadcast_bytes(chunk)
                 self._bytes_sent += len(chunk)
                 now = time.monotonic()
@@ -1010,6 +1088,44 @@ class FanoutStream:
             log.exception("stream reader_loop error port=%s", self.port)
         finally:
             await self._handle_reader_exit()
+
+    def _update_init_cache(self, chunk: bytes) -> None:
+        """缓存最近 SPS/PPS/IDR NAL，供半路加入的新订阅者初始化解码器。
+
+        Args:
+            chunk: screenrecord stdout 读出的 Annex-B 字节块。
+
+        Returns:
+            None.
+        """
+        self._nal_buffer += chunk
+        nals, self._nal_buffer = _split_complete_annexb_nals(self._nal_buffer)
+        for nal in nals:
+            nal_type = _annexb_nal_type(nal)
+            if nal_type == 7:
+                self._cached_sps = nal
+            elif nal_type == 8:
+                self._cached_pps = nal
+            elif nal_type == 5:
+                self._cached_idr = nal
+                log.info(
+                    "stream init cache ready port=%s quality=%s sps=%s pps=%s idr_bytes=%d",
+                    self.port,
+                    self.quality,
+                    self._cached_sps is not None,
+                    self._cached_pps is not None,
+                    len(nal),
+                )
+
+    def _init_segment(self) -> bytes | None:
+        """返回可补发给新订阅者的初始化片段。
+
+        Returns:
+            SPS + PPS + 最近 IDR NAL；缓存未完整时返回 None。
+        """
+        if not self._cached_sps or not self._cached_pps or not self._cached_idr:
+            return None
+        return self._cached_sps + self._cached_pps + self._cached_idr
 
     async def _broadcast_bytes(self, chunk: bytes) -> None:
         """广播二进制帧；顺序 await 保证 H.264 字节序不被并发 send 打乱。
@@ -1110,6 +1226,10 @@ class FanoutStream:
             task.cancel()
         self._proc = None
         self._reader_task = None
+        self._nal_buffer = b""
+        self._cached_sps = None
+        self._cached_pps = None
+        self._cached_idr = None
         emit_event({
             "type": "stream_session",
             "action": "terminate",
