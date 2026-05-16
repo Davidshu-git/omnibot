@@ -7,6 +7,7 @@ import DOMPurify from "isomorphic-dompurify";
 import { api } from "@/lib/api";
 import type { SessionSummary, NormalizedEvent } from "@/types/events";
 import CopyableId from "@/components/CopyableId";
+import MhxyLiveStreamPanel from "@/components/MhxyLiveStreamPanel";
 import { SkeletonSessionItem } from "@/components/Skeleton";
 import { useIsMobile } from "@/lib/useIsMobile";
 import { sseOrigin } from "@/lib/gateway";
@@ -1094,6 +1095,9 @@ export default function SessionsPage() {
 
   const selectedSession = sessions.find((s) => s.id === selectedId);
   const selectedProject = selectedSession ? (selectedSession.agent_id ?? selectedSession.project_id) : "";
+  const showMhxyLiveStream = !isMobile
+    && !!selectedSession
+    && selectedSession.project_id === "mhxy";
   const latestSameProjectSession = selectedProject
     ? sessions.find((s) => (s.agent_id ?? s.project_id) === selectedProject)
     : undefined;
@@ -1191,67 +1195,70 @@ export default function SessionsPage() {
 
         {/* right: timeline */}
         {(!isMobile || selectedId) && (
-        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
-          {isMobile && selectedId && (
-            <button
-              onClick={backToSessionList}
-              style={{
-                background: "none",
-                border: "none",
-                color: "var(--blue)",
-                fontSize: 12,
-                marginBottom: "0.5rem",
-                padding: 0,
-                cursor: "pointer",
-                alignSelf: "flex-start",
-              }}
-            >
-              ← 返回会话列表
-            </button>
-          )}
-          {selectedSession && (
-            <div style={{
-              display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
-              marginBottom: "0.75rem", paddingBottom: "0.75rem",
-              borderBottom: "1px solid var(--border)",
-            }}>
-              <AgentBadge label={selectedSession.agent_id ?? selectedSession.project_id} />
-              <CopyableId id={selectedSession.id} truncate={36} />
-              <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: "auto" }}>
-                {fmtDate(selectedSession.started_at)}
-              </span>
-            </div>
-          )}
-          {!selectedId && (
-            <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <p style={{ color: "var(--text-dim)" }}>← 选择左侧会话查看时间线</p>
-            </div>
-          )}
-          {loadingEvents && <p style={{ color: "var(--text-dim)" }}>加载中…</p>}
-          {!loadingEvents && selectedId && events.length > 0 && (
-            <>
-              <div style={{ flex: 1, minHeight: 0 }}>
-                <Timeline events={events} roundsByTrace={roundsByTrace} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", minHeight: 0, gap: "1rem" }}>
+          <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+            {isMobile && selectedId && (
+              <button
+                onClick={backToSessionList}
+                style={{
+                  background: "none",
+                  border: "none",
+                  color: "var(--blue)",
+                  fontSize: 12,
+                  marginBottom: "0.5rem",
+                  padding: 0,
+                  cursor: "pointer",
+                  alignSelf: "flex-start",
+                }}
+              >
+                ← 返回会话列表
+              </button>
+            )}
+            {selectedSession && (
+              <div style={{
+                display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap",
+                marginBottom: "0.75rem", paddingBottom: "0.75rem",
+                borderBottom: "1px solid var(--border)",
+              }}>
+                <AgentBadge label={selectedSession.agent_id ?? selectedSession.project_id} />
+                <CopyableId id={selectedSession.id} truncate={36} />
+                <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: "auto" }}>
+                  {fmtDate(selectedSession.started_at)}
+                </span>
               </div>
-              {selectedSession && (
-                <BotChatComposer
-                  session={selectedSession}
-                  isLatestSession={isLatestSelectedSession}
-                  onSent={(id) => {
-                    fetchSessions();
-                    if (id === selectedId) {
-                      refreshTimelineSilent(id);
-                    } else {
-                      selectSessionById(id);
-                    }
-                  }}
-                />
-              )}
-            </>
-          )}
-          {!loadingEvents && selectedId && events.length === 0 && (
-            <p style={{ color: "var(--text-dim)" }}>该会话暂无事件</p>
-          )}
+            )}
+            {!selectedId && (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <p style={{ color: "var(--text-dim)" }}>← 选择左侧会话查看时间线</p>
+              </div>
+            )}
+            {loadingEvents && <p style={{ color: "var(--text-dim)" }}>加载中…</p>}
+            {!loadingEvents && selectedId && events.length > 0 && (
+              <>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <Timeline events={events} roundsByTrace={roundsByTrace} />
+                </div>
+                {selectedSession && (
+                  <BotChatComposer
+                    session={selectedSession}
+                    isLatestSession={isLatestSelectedSession}
+                    onSent={(id) => {
+                      fetchSessions();
+                      if (id === selectedId) {
+                        refreshTimelineSilent(id);
+                      } else {
+                        selectSessionById(id);
+                      }
+                    }}
+                  />
+                )}
+              </>
+            )}
+            {!loadingEvents && selectedId && events.length === 0 && (
+              <p style={{ color: "var(--text-dim)" }}>该会话暂无事件</p>
+            )}
+          </div>
+          {showMhxyLiveStream && <MhxyLiveStreamPanel />}
         </div>
         )}
       </div>
