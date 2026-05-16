@@ -26,13 +26,23 @@ async function post<T>(path: string): Promise<T> {
   return res.json();
 }
 
-async function postJson<T>(path: string, body: unknown): Promise<T> {
+async function postJson<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const data = await res.json();
+      detail = typeof data.detail === "string" ? data.detail : detail;
+    } catch {
+      // keep HTTP status fallback
+    }
+    throw new Error(`${res.status} ${detail}`);
+  }
   return res.json();
 }
 
@@ -158,6 +168,12 @@ export interface MhxyExecutorInstances {
   app_health_checked_at: string | null;
 }
 
+export interface BotChatResult {
+  reply: string;
+  obs_session_id: string;
+  trace_id: string;
+}
+
 export const api = {
   projects: () => get<Project[]>("/api/projects"),
   overview: () => get<ProjectOverview[]>("/api/stats/overview"),
@@ -196,6 +212,8 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
     duration_ms = 300,
   ) =>
     postJson<{ results: Record<string, boolean> }>("/api/external/mhxy-executor/batch-swipe", { ports, x1, y1, x2, y2, duration_ms }),
+  sendBotChat: (project: string, userId: number, text: string, signal?: AbortSignal) =>
+    postJson<BotChatResult>(`/api/external/${project}/chat`, { user_id: userId, text }, signal),
   think: (params: { project_id?: string; session_id?: string; limit?: number }) =>
     get<NormalizedEvent[]>("/api/think", params),
 

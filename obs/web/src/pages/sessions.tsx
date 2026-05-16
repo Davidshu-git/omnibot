@@ -57,6 +57,7 @@ const AGENT_DISPLAY: Record<string, string> = {
 };
 
 const AGENT_PALETTE = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)"];
+const CHAT_PROJECTS = new Set(["stock-bot", "ehs-bot", "mhxy-bot"]);
 const _colorCache: Record<string, string> = {};
 let _colorIdx = 0;
 function agentColor(key: string): string {
@@ -85,6 +86,32 @@ function fmtMsValue(v: unknown): string | null {
   if (typeof v !== "number") return null;
   if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 1 : 2)}s`;
   return `${Math.round(v)}ms`;
+}
+function todayYmdInShanghai(): string {
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const y = parts.find((p) => p.type === "year")?.value ?? "";
+  const m = parts.find((p) => p.type === "month")?.value ?? "";
+  const d = parts.find((p) => p.type === "day")?.value ?? "";
+  return `${y}${m}${d}`;
+}
+function parseBotSessionId(sessionId: string): { userId: number; ymd: string } | null {
+  const m = /^tg_session_(.+)_(\d+)_(\d{8})$/.exec(sessionId);
+  if (!m) return null;
+  return { userId: Number(m[2]), ymd: m[3] };
+}
+function chatErrorMessage(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  if (msg.startsWith("401")) return "共享密钥校验失败，请检查 OBS_BOT_CHAT_TOKEN。";
+  if (msg.startsWith("403")) return "该 user_id 不在 bot 白名单内。";
+  if (msg.startsWith("404")) return "当前项目没有可用的 bot 对话入口。";
+  if (msg.startsWith("502")) return "obs-api 无法连接 bot 对话服务，请检查容器端口和 URL。";
+  if (msg.startsWith("504")) return "模型推理超时，请稍后重试。";
+  return msg;
 }
 const chipStyle = (tone: "ok" | "warn" | "error" | "muted"): CSSProperties => ({
   display: "inline-block",
@@ -834,6 +861,106 @@ function AgentBadge({ label }: { label: string }) {
   );
 }
 
+function BotChatComposer({
+  session,
+  isLatestSession,
+  onSent,
+}: {
+  session: SessionSummary;
+  isLatestSession: boolean;
+  onSent: (sessionId: string) => void;
+}) {
+  const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState("");
+  const info = parseBotSessionId(session.id);
+  const project = session.agent_id ?? session.project_id;
+  const isTodaySession = !!info && info.ymd === todayYmdInShanghai();
+  const canShow = isLatestSession && !!info && CHAT_PROJECTS.has(project);
+
+  if (!canShow || !info) return null;
+
+  const submit = async () => {
+    const value = text.trim();
+    if (!value || sending) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 120_000);
+    setSending(true);
+    setNotice("模型推理中，最长约 90 秒...");
+    try {
+      const result = await api.sendBotChat(project, info.userId, value, controller.signal);
+      setText("");
+      setNotice(`已写入 trace:${result.trace_id.slice(-16)}`);
+      onSent(result.obs_session_id);
+    } catch (e) {
+      setNotice(chatErrorMessage(e));
+    } finally {
+      window.clearTimeout(timer);
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{
+      borderTop: "1px solid var(--border)",
+      paddingTop: "0.75rem",
+      marginTop: "0.75rem",
+      display: "grid",
+      gap: 8,
+    }}>
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+            e.preventDefault();
+            void submit();
+          }
+        }}
+        disabled={sending}
+        placeholder={`给 ${AGENT_DISPLAY[project] ?? project} 发送消息`}
+        rows={3}
+        style={{
+          width: "100%",
+          resize: "vertical",
+          minHeight: 76,
+          maxHeight: 160,
+          boxSizing: "border-box",
+          background: "rgba(255,255,255,.03)",
+          color: "var(--text)",
+          border: "1px solid var(--border)",
+          borderRadius: "var(--r)",
+          padding: "10px 12px",
+          fontSize: 13,
+          lineHeight: 1.5,
+          outline: "none",
+          opacity: sending ? 0.7 : 1,
+        }}
+      />
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <button
+          onClick={() => void submit()}
+          disabled={sending || !text.trim()}
+          style={{
+            border: "1px solid var(--border-hi)",
+            background: sending || !text.trim() ? "rgba(255,255,255,.04)" : "var(--panel-hi)",
+            color: sending || !text.trim() ? "var(--text-dim)" : "var(--text)",
+            borderRadius: 4,
+            padding: "6px 12px",
+            fontSize: 12,
+            cursor: sending || !text.trim() ? "not-allowed" : "pointer",
+          }}
+        >
+          {sending ? "发送中..." : "发送"}
+        </button>
+        <span style={{ color: notice.startsWith("已写入") ? "var(--green)" : "var(--text-dim)", fontSize: 11 }}>
+          {notice || `${isTodaySession ? "当前会话" : "将写入今天的新会话"} · user:${info.userId} · Ctrl/⌘ + Enter`}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // ── main page ─────────────────────────────────────────────────────────────────
 
 export default function SessionsPage() {
@@ -944,6 +1071,14 @@ export default function SessionsPage() {
     );
   }
 
+  const selectSessionById = useCallback((id: string) => {
+    router.push(
+      { pathname: "/sessions", query: { ...(projectId ? { project_id: projectId } : {}), session_id: id } },
+      undefined,
+      { shallow: true }
+    );
+  }, [router, projectId]);
+
   function backToSessionList() {
     router.push(
       { pathname: "/sessions", query: projectId ? { project_id: projectId } : {} },
@@ -958,6 +1093,11 @@ export default function SessionsPage() {
     : sessions.filter((s) => (s.agent_id ?? s.project_id) === agentFilter);
 
   const selectedSession = sessions.find((s) => s.id === selectedId);
+  const selectedProject = selectedSession ? (selectedSession.agent_id ?? selectedSession.project_id) : "";
+  const latestSameProjectSession = selectedProject
+    ? sessions.find((s) => (s.agent_id ?? s.project_id) === selectedProject)
+    : undefined;
+  const isLatestSelectedSession = !!selectedSession && latestSameProjectSession?.id === selectedSession.id;
 
   return (
     <div style={{ height: "calc(100vh - 3.5rem)", display: "flex", flexDirection: "column" }}>
@@ -1088,7 +1228,27 @@ export default function SessionsPage() {
             </div>
           )}
           {loadingEvents && <p style={{ color: "var(--text-dim)" }}>加载中…</p>}
-          {!loadingEvents && selectedId && events.length > 0 && <Timeline events={events} roundsByTrace={roundsByTrace} />}
+          {!loadingEvents && selectedId && events.length > 0 && (
+            <>
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <Timeline events={events} roundsByTrace={roundsByTrace} />
+              </div>
+              {selectedSession && (
+                <BotChatComposer
+                  session={selectedSession}
+                  isLatestSession={isLatestSelectedSession}
+                  onSent={(id) => {
+                    fetchSessions();
+                    if (id === selectedId) {
+                      refreshTimelineSilent(id);
+                    } else {
+                      selectSessionById(id);
+                    }
+                  }}
+                />
+              )}
+            </>
+          )}
           {!loadingEvents && selectedId && events.length === 0 && (
             <p style={{ color: "var(--text-dim)" }}>该会话暂无事件</p>
           )}

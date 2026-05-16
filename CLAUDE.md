@@ -14,6 +14,7 @@
 | Windows Executor 部署脚本 | [ops/deploy_executor.sh](ops/deploy_executor.sh) | 从 NAS 推送 executor 代码到 Windows 主机 |
 | ws-scrcpy Web 启动脚本 | [ops/setup_ws_scrcpy_web.ps1](ops/setup_ws_scrcpy_web.ps1) / [ops/ws_scrcpy_web_run.bat](ops/ws_scrcpy_web_run.bat) | Windows 侧 ws-scrcpy 服务的安装与启动 |
 | obs TLS 网关 | [ops/obs_tls_gateway.md](ops/obs_tls_gateway.md) | Caddy https 网关部署/重启、根 CA 各设备安装、OBS_TLS_HOST 配置、WebCodecs/证书排障 |
+| obs ↔ bot 对话通道 | [ops/obs_bot_chat.md](ops/obs_bot_chat.md) | obs 时间线直接对话 bot、8810/8811/8812 端口、OBS_BOT_CHAT_TOKEN 排障 |
 
 > 新增任何"远程主机 / 物理设备 / 部署流程"相关的操作步骤时，请落到 `ops/` 下对应手册并在本表登记，不要散落在源码注释或临时聊天里。
 
@@ -139,6 +140,9 @@ SMTP_PORT=465
 SENDER_EMAIL=
 SENDER_PASSWORD=
 RECEIVER_EMAIL=
+
+# 可选（obs 时间线直接对话 bot）
+OBS_BOT_CHAT_TOKEN=       # 根 .env 与 obs/.env 必须一致，禁止入镜像/入 git
 ```
 
 - `.env` 通过 Docker volume 挂载进容器，**不得打入镜像**（`.dockerignore` 已排除）。

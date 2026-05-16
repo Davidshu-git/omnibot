@@ -24,7 +24,7 @@ import subprocess
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from core.observability import (
     OmniObserver,
@@ -554,6 +554,8 @@ class TelegramBotBase:
         self.agent_id = agent_id
         self.memory_dir = memory_dir
         self.obs_provider = obs_provider
+        self._obs_chat_runner: Any = None
+        self._obs_chat_site: Any = None
         # 暂存待确认的重复上传（user_id → 上传元信息），内存级，重启失效
         self._pending_uploads: dict[int, dict] = {}
 
@@ -805,20 +807,7 @@ class TelegramBotBase:
         typing_task = asyncio.create_task(keep_typing_action(chat_id, context))
         status_msg: Optional[Message] = None
 
-        # memory_session_id: used by LangChain STM — must stay stable across bot upgrades
-        memory_session_id = f"tg_session_{user_id}"
-        # obs_session_id: includes agent_slug + date so each day gets its own DB session
-        agent_slug = self.agent_id.replace("-", "_") if self.agent_id else "bot"
-        today = date.today().strftime("%Y%m%d")
-        obs_session_id = f"tg_session_{agent_slug}_{user_id}_{today}"
-        trace_id = f"{obs_session_id}:t{int(time.time() * 1000)}"
-        obs: Optional[OmniObserver] = None
-        if self.obs_dir is not None and self.agent_id:
-            obs = OmniObserver(obs_session_id, self.agent_id, self.obs_dir)
-            obs.log_message("user", user_msg, trace_id=trace_id)
-
         try:
-            self.set_observability_context(obs)
             status_msg = await message.reply_text(
                 f"<blockquote><b>🤖 {self.get_bot_name()} 引擎已唤醒</b></blockquote>\n"
                 f"<i>⏳ 正在建立神经连接...</i>",
@@ -830,35 +819,8 @@ class TelegramBotBase:
                 tool_status_map=self.get_tool_status_map(),
                 bot_name=self.get_bot_name(),
             )
-            callbacks = [tg_callback]
-            if obs is not None:
-                callbacks.append(OmnibotObsCallbackHandler(obs, trace_id, provider=self.obs_provider))
-
-            obs_token = push_current_observer(obs)
-            try:
-                response = await self.agent.ainvoke(
-                    {
-                        "input": user_msg,
-                        "user_profile": self.get_user_profile_fn(),
-                        "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
-                    },
-                    config={
-                        "configurable": {"session_id": memory_session_id},
-                        "callbacks": callbacks,
-                    },
-                )
-            finally:
-                reset_current_observer(obs_token)
-
-            reply_text = response['output']
-
-            # Extract <think>…</think> BEFORE translate_to_telegram_html strips it
-            if obs is not None:
-                for think_content in extract_think_blocks(reply_text):
-                    obs.log_thought(think_content, trace_id=trace_id, provider=self.obs_provider)
-
-            if obs is not None:
-                obs.log_message("assistant", strip_think_blocks(reply_text), trace_id=trace_id)
+            result = await self.run_agent_turn(user_msg, user_id, extra_callbacks=[tg_callback])
+            reply_text = result["reply"]
 
             await status_msg.delete()
 
@@ -965,12 +927,136 @@ class TelegramBotBase:
                     pass
             await message.reply_text(f"⚠️ 系统熔断：{str(e)}")
         finally:
-            self.set_observability_context(None)
             typing_task.cancel()
             try:
                 await typing_task
             except (asyncio.CancelledError, Exception):
                 pass
+
+    async def run_agent_turn(
+        self,
+        user_msg: str,
+        user_id: int,
+        *,
+        extra_callbacks: Optional[list[AsyncCallbackHandler]] = None,
+    ) -> dict[str, str]:
+        """执行一轮与 Telegram I/O 无关的 Agent 调用。
+
+        Args:
+            user_msg: 用户输入文本。
+            user_id: Telegram 用户 ID，用于复用同一份 STM/LTM。
+            extra_callbacks: 调用方附加的 LangChain callback，例如 Telegram 状态回调。
+
+        Returns:
+            包含 reply、obs_session_id、trace_id 的结果字典。
+
+        Raises:
+            Exception: Agent 调用失败时向上抛出，由入口层决定如何展示。
+        """
+        # memory_session_id: used by LangChain STM — must stay stable across bot upgrades
+        memory_session_id = f"tg_session_{user_id}"
+        # obs_session_id: includes agent_slug + date so each day gets its own DB session
+        agent_slug = self.agent_id.replace("-", "_") if self.agent_id else "bot"
+        today = date.today().strftime("%Y%m%d")
+        obs_session_id = f"tg_session_{agent_slug}_{user_id}_{today}"
+        trace_id = f"{obs_session_id}:t{int(time.time() * 1000)}"
+
+        obs: Optional[OmniObserver] = None
+        if self.obs_dir is not None and self.agent_id:
+            obs = OmniObserver(obs_session_id, self.agent_id, self.obs_dir)
+            obs.log_message("user", user_msg, trace_id=trace_id)
+
+        callbacks: list[AsyncCallbackHandler] = list(extra_callbacks or [])
+        if obs is not None:
+            callbacks.append(OmnibotObsCallbackHandler(obs, trace_id, provider=self.obs_provider))
+
+        self.set_observability_context(obs)
+        obs_token = push_current_observer(obs)
+        try:
+            response = await self.agent.ainvoke(
+                {
+                    "input": user_msg,
+                    "user_profile": self.get_user_profile_fn(),
+                    "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
+                },
+                config={
+                    "configurable": {"session_id": memory_session_id},
+                    "callbacks": callbacks,
+                },
+            )
+            reply_text = response["output"]
+
+            if obs is not None:
+                for think_content in extract_think_blocks(reply_text):
+                    obs.log_thought(think_content, trace_id=trace_id, provider=self.obs_provider)
+                obs.log_message("assistant", strip_think_blocks(reply_text), trace_id=trace_id)
+
+            return {
+                "reply": reply_text,
+                "obs_session_id": obs_session_id,
+                "trace_id": trace_id,
+            }
+        finally:
+            reset_current_observer(obs_token)
+            self.set_observability_context(None)
+
+    async def _start_obs_chat_http_server(self) -> None:
+        """启动 obs 反向对话入口，与 Telegram polling 共用事件循环。"""
+        token = os.getenv("OBS_BOT_CHAT_TOKEN", "")
+        if not token:
+            logger.info("OBS_BOT_CHAT_TOKEN 未配置，跳过 obs bot chat HTTP 服务")
+            return
+
+        try:
+            from aiohttp import web
+        except ImportError:
+            logger.error("aiohttp 未安装，无法启动 obs bot chat HTTP 服务")
+            return
+
+        port = int(os.getenv("OBS_CHAT_HTTP_PORT", "8810"))
+
+        async def healthz(_: web.Request) -> web.Response:
+            return web.json_response({"status": "ok", "bot": self.agent_id or self.get_bot_name()})
+
+        async def chat(request: web.Request) -> web.Response:
+            if request.headers.get("X-OBS-Token") != token:
+                return web.json_response({"detail": "invalid token"}, status=401)
+            try:
+                body = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response({"detail": "invalid json body"}, status=422)
+
+            raw_user_id = body.get("user_id")
+            text = body.get("text")
+            if not isinstance(raw_user_id, int) or isinstance(raw_user_id, bool):
+                return web.json_response({"detail": "user_id must be an integer"}, status=422)
+            if not isinstance(text, str) or not text.strip():
+                return web.json_response({"detail": "text must be a non-empty string"}, status=422)
+            if not self._is_authorized(raw_user_id):
+                return web.json_response({"detail": "user is not authorized"}, status=403)
+
+            try:
+                result = await asyncio.wait_for(
+                    self.run_agent_turn(text.strip(), raw_user_id),
+                    timeout=95,
+                )
+            except asyncio.TimeoutError:
+                logger.warning("[obs_chat] agent timeout user_id=%s", raw_user_id)
+                return web.json_response({"detail": "agent timeout"}, status=504)
+            except Exception as exc:
+                logger.exception("[obs_chat] agent failed user_id=%s", raw_user_id)
+                return web.json_response({"detail": str(exc) or "agent failed"}, status=500)
+            return web.json_response(result)
+
+        app = web.Application()
+        app.router.add_get("/healthz", healthz)
+        app.router.add_post("/chat", chat)
+
+        self._obs_chat_runner = web.AppRunner(app)
+        await self._obs_chat_runner.setup()
+        self._obs_chat_site = web.TCPSite(self._obs_chat_runner, "0.0.0.0", port)
+        await self._obs_chat_site.start()
+        logger.info("✅ obs bot chat HTTP 服务已启动：0.0.0.0:%s", port)
 
     # ------------------------------------------------------------------
     # Telegram 事件处理器
@@ -980,6 +1066,7 @@ class TelegramBotBase:
         """Bot 启动钩子：注入左下角全局菜单、额外处理器与定时任务。"""
         await application.bot.set_my_commands(self.get_bot_commands())
         logger.info("✅ Bot Commands 注入成功")
+        await self._start_obs_chat_http_server()
         await self.setup_extra_handlers(application)
         await self.setup_job_queue(application)
 

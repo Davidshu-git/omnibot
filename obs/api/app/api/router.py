@@ -24,6 +24,8 @@ from app.config import settings
 
 router = APIRouter(prefix="/api")
 
+BOT_CHAT_PROJECTS = {"stock-bot", "ehs-bot", "mhxy-bot"}
+
 
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
@@ -395,6 +397,63 @@ async def mhxy_executor_batch_swipe(body: dict):
         raise HTTPException(status_code=502, detail=f"Executor HTTP error: {exc.response.status_code}")
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Cannot reach executor: {exc}")
+
+
+@router.post("/external/{project}/chat")
+async def proxy_bot_chat(project: str, body: dict):
+    """Proxy obs timeline text input to the live bot process."""
+    import httpx as _httpx
+
+    urls = {
+        "stock-bot": settings.stock_bot_chat_url,
+        "ehs-bot": settings.ehs_bot_chat_url,
+        "mhxy-bot": settings.mhxy_bot_chat_url,
+    }
+    ingest_fns = {
+        "stock-bot": run_stock_bot_ingest,
+        "ehs-bot": run_ehs_bot_ingest,
+        "mhxy-bot": run_mhxy_ingest,
+    }
+
+    if project not in BOT_CHAT_PROJECTS:
+        raise HTTPException(status_code=404, detail="Unknown bot project")
+    if not settings.obs_bot_chat_token:
+        raise HTTPException(status_code=503, detail="OBS_BOT_CHAT_TOKEN is not configured")
+
+    user_id = body.get("user_id")
+    text = body.get("text")
+    if not isinstance(user_id, int) or isinstance(user_id, bool):
+        raise HTTPException(status_code=422, detail="user_id must be an integer")
+    if not isinstance(text, str) or not text.strip():
+        raise HTTPException(status_code=422, detail="text must be a non-empty string")
+
+    bot_url = urls[project].rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=110) as client:
+            r = await client.post(
+                f"{bot_url}/chat",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+                json={"user_id": user_id, "text": text.strip()},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    data = r.json()
+    try:
+        await ingest_fns[project](force=False)
+        _broadcast_ingest()
+    except Exception:
+        # Chat already succeeded; do not fail the user-visible turn because ingestion can be retried.
+        pass
+    return data
 
 
 @router.get("/external/mhxy-executor/status")

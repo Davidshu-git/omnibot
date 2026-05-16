@@ -35,6 +35,10 @@ services:
       RUNTIME_DIR_MHXY: /runtime/mhxy
       RUNTIME_DIR_STOCK_BOT: /runtime/stock-bot
       RUNTIME_DIR_EHS_BOT: /runtime/ehs-bot
+      OBS_BOT_CHAT_TOKEN: ${OBS_BOT_CHAT_TOKEN:-}
+      STOCK_BOT_CHAT_URL: ${STOCK_BOT_CHAT_URL:-http://192.168.1.100:8810}
+      EHS_BOT_CHAT_URL: ${EHS_BOT_CHAT_URL:-http://192.168.1.100:8811}
+      MHXY_BOT_CHAT_URL: ${MHXY_BOT_CHAT_URL:-http://192.168.1.100:8812}
     volumes:
       - ./api:/app
       - ${MHXY_HOST_LOG_DIR:-/volume1/server/.openclaw/workspace/projects/omnibot/data/mhxy/observability/sessions}:/logs/mhxy/sessions:ro

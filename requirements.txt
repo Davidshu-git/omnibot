@@ -41,6 +41,7 @@ pydantic~=2.12.0                   # 数据校验与 SecretStr 类型支持
 
 # 7. 🌐 网络请求基础库 (HTTP Client)
 requests~=2.32.0                   # HTTP 请求底层支持 (ddgs 依赖/异常捕获)
+aiohttp~=3.11.0                    # obs 时间线反向对话入口（bot 内嵌 HTTP 服务）
 groq                               # Groq Whisper ASR（语音转文字，原生支持 OGG OPUS）
 
 # 7.1 🎮 梦幻西游游戏运行时 (OCR / Vision / ADB)
