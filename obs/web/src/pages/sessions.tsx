@@ -972,7 +972,8 @@ export default function SessionsPage() {
   const [loadingEvents, setLoadingEvents] = useState(false);
   const [agentFilter, setAgentFilter] = useState<string>("all");
   const [err, setErr] = useState("");
-  const [livePanelWidth, setLivePanelWidth] = useState(380);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [livePanelWidth, setLivePanelWidth] = useState(280);
   const resizingRef = useRef(false);
 
   useEffect(() => {
@@ -1126,6 +1127,18 @@ export default function SessionsPage() {
         <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", margin: 0 }}>会话时间线</h1>
         {projectId && <AgentBadge label={projectId} />}
         {err && <span style={{ color: "var(--red)", fontSize: 12 }}>{err}</span>}
+        {!isMobile && (
+          <button
+            onClick={() => setSidebarOpen((v) => !v)}
+            title={sidebarOpen ? "隐藏会话列表" : "显示会话列表"}
+            style={{
+              marginLeft: "auto", background: "rgba(255,255,255,.03)", border: "1px solid var(--border)",
+              color: "var(--text-muted)", fontSize: 12, padding: "2px 8px", borderRadius: 4, cursor: "pointer",
+            }}
+          >
+            {sidebarOpen ? "◀ 隐藏列表" : "▶ 显示列表"}
+          </button>
+        )}
       </div>
 
       <div style={{
@@ -1136,7 +1149,7 @@ export default function SessionsPage() {
         flexDirection: isMobile ? "column" : "row",
       }}>
         {/* left: session list */}
-        {(!isMobile || !selectedId) && (
+        {(!isMobile || !selectedId) && sidebarOpen && (
         <div style={{
           width: isMobile ? "100%" : 240,
           flexShrink: 0,
