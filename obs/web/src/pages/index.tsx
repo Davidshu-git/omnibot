@@ -18,6 +18,13 @@ const PROJECT_ICONS: Record<string, string> = {
   "ehs-bot": "🛡️",
 };
 
+// overview project_id → obs↔bot chat 通道的 project key（仅 mhxy 不一致）
+const CHAT_PROJECT: Record<string, string> = {
+  mhxy: "mhxy-bot",
+  "stock-bot": "stock-bot",
+  "ehs-bot": "ehs-bot",
+};
+
 export default function OverviewPage() {
   const [rows, setRows] = useState<ProjectOverview[]>([]);
   const [loading, setLoading] = useState(true);
@@ -203,7 +210,7 @@ export default function OverviewPage() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
         {loading
           ? [0, 1, 2].map((i) => <SkeletonCard key={i} />)
-          : rows.map((p) => <ProjectCard key={p.project_id} p={p} rt={runtimeMap.get(p.project_id)} syncingKey={syncingKey} syncMsg={syncMsgs[p.project_id]} onSync={handleSync} />)
+          : rows.map((p) => <ProjectCard key={p.project_id} p={p} rt={runtimeMap.get(p.project_id)} syncingKey={syncingKey} syncMsg={syncMsgs[p.project_id]} onSync={handleSync} onSwitched={loadRuntime} />)
         }
       </div>
     </div>
@@ -379,13 +386,14 @@ function ExecutorStatusCard({
 }
 
 function ProjectCard({
-  p, rt, syncingKey, syncMsg, onSync,
+  p, rt, syncingKey, syncMsg, onSync, onSwitched,
 }: {
   p: ProjectOverview;
   rt?: ProjectRuntimeModels;
   syncingKey: string | null;
   syncMsg?: string;
   onSync: (id: string) => void;
+  onSwitched: () => void;
 }) {
   const icon = PROJECT_ICONS[p.project_id] ?? "◉";
   const canSync = !!SYNC_FN_MAP[p.project_id];
@@ -509,10 +517,10 @@ function ProjectCard({
       {rt && (rt.available_text_models?.length > 0 || rt.available_vl_models?.length > 0) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: "0.5rem" }}>
           {rt.available_text_models?.length > 0 && (
-            <ModelChipsRow label="主控模型" icon="🧠" models={rt.available_text_models} activeKey={rt.text_model?.model_key ?? null} />
+            <ModelChipsRow label="主控模型" icon="🧠" models={rt.available_text_models} activeKey={rt.text_model?.model_key ?? null} projectId={p.project_id} kind="text" onSwitched={onSwitched} />
           )}
           {rt.available_vl_models?.length > 0 && (
-            <ModelChipsRow label="视觉模型" icon="👁" models={rt.available_vl_models} activeKey={rt.vl_model?.model_key ?? null} />
+            <ModelChipsRow label="视觉模型" icon="👁" models={rt.available_vl_models} activeKey={rt.vl_model?.model_key ?? null} projectId={p.project_id} kind="vl" onSwitched={onSwitched} />
           )}
         </div>
       )}
@@ -561,36 +569,77 @@ function ProjectCard({
   );
 }
 
-function ModelChipsRow({ label, icon, models, activeKey }: {
+function ModelChipsRow({ label, icon, models, activeKey, projectId, kind, onSwitched }: {
   label: string;
   icon: string;
   models: AvailableModelInfo[];
   activeKey: string | null;
+  projectId: string;
+  kind: "text" | "vl";
+  onSwitched: () => void;
 }) {
+  const [pending, setPending] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  const chatProject = CHAT_PROJECT[projectId];
+
+  async function handleClick(key: string) {
+    if (!chatProject || key === activeKey || pending !== null) return;
+    setPending(key);
+    setFailed(false);
+    try {
+      await api.switchModel(chatProject, kind, key);
+      // model_switched SSE 也会触发刷新，这里再主动拉一次保证发起端即时生效
+      onSwitched();
+    } catch {
+      setFailed(true);
+    } finally {
+      setPending(null);
+    }
+  }
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
       <span style={{ fontSize: 11, lineHeight: 1, flexShrink: 0 }}>{icon}</span>
       <span style={{ color: "var(--text-dim)", fontSize: 10, lineHeight: "18px", flexShrink: 0 }}>{label}</span>
       {models.map((m) => {
         const active = m.key === activeKey;
+        const isPending = pending === m.key;
+        const busy = pending !== null;
+        const disabled = !chatProject || active || busy;
         return (
-          <span key={m.key} style={{
-            display: "inline-flex", alignItems: "center", gap: 3,
-            padding: "2px 7px", borderRadius: 4,
-            fontSize: 10, lineHeight: "16px",
-            fontWeight: active ? 700 : 400,
-            color: active ? "var(--blue)" : "var(--text-dim)",
-            background: active ? "rgba(96,165,250,.1)" : "transparent",
-            border: `1px solid ${active ? "rgba(96,165,250,.35)" : "var(--border)"}`,
-            transition: "all 0.2s",
-          }}>
+          <button
+            key={m.key}
+            onClick={() => handleClick(m.key)}
+            disabled={disabled}
+            title={
+              !chatProject ? "该 bot 不支持热切换"
+                : active ? "当前生效"
+                : `切换到 ${m.display_name}`
+            }
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 3,
+              padding: "2px 7px", borderRadius: 4,
+              fontSize: 10, lineHeight: "16px",
+              fontWeight: active ? 700 : 400,
+              fontFamily: "inherit",
+              color: active ? "var(--blue)" : "var(--text-dim)",
+              background: active ? "rgba(96,165,250,.1)" : "transparent",
+              border: `1px solid ${active ? "rgba(96,165,250,.35)" : "var(--border)"}`,
+              cursor: !chatProject || active ? "default" : busy ? "wait" : "pointer",
+              opacity: isPending ? 0.55 : (!chatProject || (busy && !active) ? 0.6 : 1),
+              transition: "all 0.2s",
+            }}
+          >
             {active && (
               <span style={{ width: 4, height: 4, borderRadius: "50%", background: "var(--blue)", flexShrink: 0 }} />
             )}
-            {m.display_name}
-          </span>
+            {isPending ? "切换中…" : m.display_name}
+          </button>
         );
       })}
+      {failed && (
+        <span style={{ color: "var(--red)", fontSize: 10, lineHeight: "18px" }}>切换失败</span>
+      )}
     </div>
   );
 }

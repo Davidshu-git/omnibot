@@ -219,6 +219,12 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
 
   runtimeModels: () => get<ProjectRuntimeModels[]>("/api/projects/runtime-models"),
 
+  switchModel: (project: string, kind: "text" | "vl", modelKey: string) =>
+    postJson<{ kind: string; model_key: string; display_name: string }>(
+      `/api/external/${project}/switch-model`,
+      { kind, model_key: modelKey },
+    ),
+
   ingestMhxy: () => post<{ status: string; events_inserted: number }>("/api/ingest/mhxy"),
   ingestMhxyExecutor: () => post<{ status: string; events_inserted: number }>("/api/ingest/mhxy-executor"),
   ingestStockBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/stock-bot"),

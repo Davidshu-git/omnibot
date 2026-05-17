@@ -174,9 +174,9 @@ _RUNTIME_MODEL_FIELDS = ("model_key", "model", "display_name", "provider", "upda
 # 各 project 全量可用模型（与 core/model_registry.py 保持同步）
 _AVAILABLE_TEXT_MODELS: dict[str, list[dict]] = {
     "mhxy": [
+        {"key": "minimax",  "display_name": "MiniMax M2.7",      "provider": "minimax"},
         {"key": "qwen",     "display_name": "Qwen 3.5 Plus",     "provider": "dashscope"},
         {"key": "qwen36",   "display_name": "Qwen 3.6 Plus",     "provider": "dashscope"},
-        {"key": "minimax",  "display_name": "MiniMax M2.7",      "provider": "minimax"},
         {"key": "deepseek", "display_name": "DeepSeek V4 Flash", "provider": "deepseek"},
     ],
     "stock-bot": [
@@ -474,6 +474,60 @@ async def proxy_bot_chat(project: str, body: dict):
     # background task pick the turn up and SSE-refresh the timeline anyway.
     asyncio.create_task(_post_chat_ingest(project, ingest_fns[project]))
     return data
+
+
+@router.post("/external/{project}/switch-model")
+async def proxy_switch_model(project: str, body: dict):
+    """Proxy a model-switch request to the live bot process and SSE-refresh obs.
+
+    The runtime dirs are mounted read-only into this container, and writing
+    model_settings.json alone would not update the bot's in-memory registry
+    anyway. So the switch is delegated to the live bot via its embedded HTTP
+    server (same channel/token as the timeline chat proxy).
+    """
+    import httpx as _httpx
+
+    urls = {
+        "stock-bot": settings.stock_bot_chat_url,
+        "ehs-bot": settings.ehs_bot_chat_url,
+        "mhxy-bot": settings.mhxy_bot_chat_url,
+    }
+
+    if project not in BOT_CHAT_PROJECTS:
+        raise HTTPException(status_code=404, detail="Unknown bot project")
+    if not settings.obs_bot_chat_token:
+        raise HTTPException(status_code=503, detail="OBS_BOT_CHAT_TOKEN is not configured")
+
+    kind = body.get("kind", "text")
+    model_key = body.get("model_key")
+    if kind not in ("text", "vl"):
+        raise HTTPException(status_code=422, detail="kind must be 'text' or 'vl'")
+    if not isinstance(model_key, str) or not model_key.strip():
+        raise HTTPException(status_code=422, detail="model_key must be a non-empty string")
+
+    bot_url = urls[project].rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{bot_url}/switch-model",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+                json={"kind": kind, "model_key": model_key.strip()},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    # Tell every connected obs client to re-pull runtime-models. index.tsx
+    # already listens for this event but nothing emitted it until now.
+    _broadcast_event("model_switched")
+    return r.json()
 
 
 @router.get("/external/mhxy-executor/status")
