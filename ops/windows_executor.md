@@ -396,3 +396,42 @@ ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
 curl http://192.168.100.149:8765/health        # 基础健康 + adb 路径确认
 curl http://192.168.100.149:8765/list_devices  # ADB 可见实例列表
 ```
+
+---
+
+## 排障：obs 截图巡检无画面 / list_devices 为空
+
+**症状**：obs 截图巡检页面拉不出画面，但 executor `/health` 返回 OK。
+
+**根因**：Windows 上的 ADB server 守护进程失联（stale daemon）。MuMu 实例本身在正常运行（`MuMuVMMHeadless` 进程在、对应端口在监听），但 `adb devices` 返回空列表 → executor `/list_devices`、`/screenshot` 拿不到任何设备。这是会偶发复发的问题。
+
+**定位**：
+
+```bash
+# 1) 确认 MuMu 实例在跑（应看到多个 MuMuVMMHeadless）
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "Get-Process MuMuVMMHeadless | Measure-Object | Select Count"'
+
+# 2) 确认 adb 设备列表是否为空（症状确认）
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" devices"'
+```
+
+**修复**：重启 adb server，`start-server` 会自动重新发现所有 MuMu 实例（**不需要** `adb connect`，那些偶数 console 端口会拒绝 connect，属正常现象）：
+
+```bash
+ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "$a=\"C:\Program Files\Netease\MuMu\nx_main\adb.exe\"; & $a kill-server; Start-Sleep 2; & $a start-server; Start-Sleep 3; & $a devices"'
+```
+
+**验证**：
+
+```bash
+curl -s http://192.168.100.149:8765/list_devices                 # count 应等于 instances.json 实例数
+curl -s -X POST http://192.168.100.149:8765/screenshot \
+  -H "Content-Type: application/json" -d '{"port":"5557"}' | head -c 60   # 应返回 JPEG b64
+```
+
+`list_devices` 在 adb 重启后短暂可能少几个（注册时间差），等几秒重查即会齐。修复后 obs 巡检页面直接刷新即可，**无需重启任何容器**。
+
+> `/screenshot` 的 `port` 字段必须传**字符串**（`{"port":"5557"}`），传 int 会被 Pydantic 拒绝。
