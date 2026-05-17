@@ -97,6 +97,7 @@ services:
     environment:
       OBS_CHAT_HTTP_PORT: 8812
       OBS_BOT_CHAT_TOKEN: ${OBS_BOT_CHAT_TOKEN:-}
+      EXECUTOR_POWER_FILE: /app/data/mhxy/config/executor_power.json
     volumes:
       - ./core:/app/core
       - ./mhxy_bot:/app/mhxy_bot

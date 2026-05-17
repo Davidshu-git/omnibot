@@ -198,6 +198,11 @@ export const api = {
   tokensByModel: (project_id?: string) =>
     get<TokenByModel[]>("/api/stats/tokens/by-model", project_id ? { project_id } : undefined),
 mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/status"),
+  mhxyExecutorPower: (enabled: boolean) =>
+    postJson<{ enabled: boolean; updated_at: string; source: string }>(
+      "/api/external/mhxy-executor/power",
+      { enabled },
+    ),
   mhxyExecutorInstances: () => get<MhxyExecutorInstances>("/api/external/mhxy-executor/instances"),
   mhxyExecutorScreenshot: (port: string) =>
     get<{ port: string; image_b64: string }>("/api/external/mhxy-executor/screenshot", { port }),

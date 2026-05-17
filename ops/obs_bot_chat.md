@@ -27,6 +27,15 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 | `/healthz` | GET | — | 健康检查(无需 token) |
 | `/chat` | POST | `/api/external/{project}/chat` | 时间线直接对话 bot,复用同一 agent / 记忆 |
 | `/switch-model` | POST | `/api/external/{project}/switch-model` | obs 总览页点击芯片热切换主控/视觉模型 |
+| `/executor-power` | POST | `/api/external/mhxy-executor/power` | obs 实例页开关 Windows Executor(仅 mhxy) |
+
+`/executor-power` 契约:
+
+- 鉴权:同 `/switch-model`,请求头 `X-OBS-Token` == `OBS_BOT_CHAT_TOKEN`。
+- 请求体:`{"enabled": true | false}`(必须 bool,否则 422)。
+- 仅 mhxy bot 生效:bot 侧读 `EXECUTOR_POWER_FILE` env(`docker-compose.yml` 仅 mhxy-tg-bot 配置),未配置返回 404。bot 把开关原子写入 `data/mhxy/config/executor_power.json`(该目录 mhxy-tg-bot 与 watchdog 均 RW 挂载,obs-api 为只读故不能自行写)。
+- watchdog 用 `interruptible_wait()` 1s 粒度监听 `executor_power.json` mtime(无第三方 inotify 依赖),flag 变更 **≤1s 唤醒**(非 60s 轮询)。`read_power_enabled()`:`enabled:false` → `stop_executor()` 杀进程、写 status `disabled`、**跳过自动重启**;`enabled:true` 且上一轮为 `disabled`(重新开启瞬间) → **本轮立即重启**(不等 `FAIL_THRESHOLD` 累积)。实测:禁用反应 ≤1s;重新开启端到端恢复 ~13s(含 executor 冷启动)。文件缺失/损坏一律视为启用(向后兼容)。
+- obs 代理广播 `executor_status` SSE。前端 `executor-instances` 页用乐观态 + `powerPending` 过渡锁:点击后立即反馈、过渡期按钮禁用并轮询 watchdog 状态对账(90s 兜底超时),失败回滚——避免「看似没反应 → 反复点」。
 
 `/switch-model` 契约:
 
@@ -76,3 +85,5 @@ docker compose -f obs/docker-compose.yml up -d --build
 - obs 页面返回 504：bot agent 本轮推理超时，需查看对应 bot 容器日志。
 - `/switch-model` 返回 404：bot 进程仍是旧代码（未含该路由），需 `docker restart` 对应 bot 容器；或 `kind` 在该 bot 不支持（如对 stock/ehs 传 `vl`）。
 - `/switch-model` 返回 422：`model_key` 不在该 registry 的可选列表内，或 `kind` 非 `text`/`vl`。
+- `/executor-power` 返回 404：bot 进程仍是旧代码（未含该路由）需重建 mhxy-tg-bot；或 `EXECUTOR_POWER_FILE` env 未配置（仅 mhxy-tg-bot 应配置，改了 `docker-compose.yml` 需 `docker compose up -d mhxy-tg-bot` 重建而非 restart）。
+- 开关点了没反应：正常 ≤1s 唤醒 watchdog；若超时未对账（前端提示「未在 90s 内确认」），确认 `data/mhxy/config/executor_power.json` 已更新、`v2-omnimhxy-executor-watchdog` 在跑且为新代码（改 `watchdog.py` 后需 `docker restart` 该容器，无 HMR）。

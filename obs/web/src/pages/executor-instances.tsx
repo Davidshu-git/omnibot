@@ -1707,10 +1707,60 @@ export default function ExecutorInstancesPage() {
       .catch((e: unknown) => setError(String(e)));
   }, []);
 
+  // Executor 电源态：最终态以 watchdog 状态文件为准（status === "disabled" 即已停用）。
+  // 切换有真实生效延迟，期间用 powerPending 做乐观态 + 过渡锁，防误判反复点。
+  const [execDisabled, setExecDisabled] = useState(false);
+  const [powerPending, setPowerPending] = useState<"" | "enabling" | "disabling">("");
+  const powerPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const loadPower = useCallback(() => {
+    return api.mhxyExecutorStatus()
+      .then((s) => { setExecDisabled(s.status === "disabled"); return s.status as string; })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => () => {
+    if (powerPollRef.current) clearInterval(powerPollRef.current);
+  }, []);
+
+  const togglePower = useCallback(() => {
+    if (powerPending) return; // 过渡期禁止再次触发
+    const wantEnable = execDisabled; // 当前已停用 → 点击即「开启」
+    if (!wantEnable && !window.confirm("确认停用 Windows Executor？所有自动化与截图巡检将中断，watchdog 不会自动拉起，直到重新开启。")) {
+      return;
+    }
+    const prev = execDisabled;
+    setPowerPending(wantEnable ? "enabling" : "disabling");
+    setExecDisabled(!wantEnable); // 乐观更新，立即反馈
+    api.mhxyExecutorPower(wantEnable)
+      .then(() => {
+        // 轮询 watchdog 状态直到与目标一致；90s 兜底超时。
+        const targetDisabled = !wantEnable;
+        const startedAt = Date.now();
+        if (powerPollRef.current) clearInterval(powerPollRef.current);
+        powerPollRef.current = setInterval(async () => {
+          const st = await loadPower();
+          const reconciled = targetDisabled
+            ? st === "disabled"
+            : st !== undefined && st !== "disabled";
+          if (reconciled || Date.now() - startedAt > 90_000) {
+            if (powerPollRef.current) { clearInterval(powerPollRef.current); powerPollRef.current = null; }
+            if (!reconciled) setError("开关未在 90s 内确认，请手动刷新核对");
+            setPowerPending("");
+          }
+        }, 3000);
+      })
+      .catch((e: unknown) => {
+        setError(String(e));
+        setExecDisabled(prev); // 回滚乐观更新
+        setPowerPending("");
+      });
+  }, [execDisabled, powerPending, loadPower]);
+
   useEffect(() => {
     setLoading(true);
-    load().finally(() => setLoading(false));
-  }, [load]);
+    Promise.all([load(), loadPower()]).finally(() => setLoading(false));
+  }, [load, loadPower]);
 
   const instances = data?.instances ?? [];
 
@@ -1909,6 +1959,30 @@ export default function ExecutorInstancesPage() {
         <h1 style={{ fontSize: 18, fontWeight: 700, color: "var(--text)", margin: 0 }}>
           Windows Executor 实例详情
         </h1>
+        <button
+          onClick={togglePower}
+          disabled={!!powerPending}
+          title={powerPending ? "状态切换中，请稍候" : execDisabled ? "点击开启 Executor" : "点击停用 Executor"}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "4px 10px",
+            borderRadius: "var(--r-sm)",
+            border: `1px solid ${powerPending ? "var(--amber)" : execDisabled ? "var(--red)" : "var(--border-hi)"}`,
+            background: powerPending ? "rgba(251,191,36,0.1)" : execDisabled ? "rgba(248,113,113,0.1)" : "transparent",
+            color: powerPending ? "var(--amber)" : execDisabled ? "var(--red)" : "var(--text-muted)",
+            fontSize: 11, fontWeight: 600,
+            cursor: powerPending ? "wait" : "pointer",
+            opacity: powerPending ? 0.7 : 1,
+          }}
+        >
+          <span style={{
+            width: 7, height: 7, borderRadius: "50%", flexShrink: 0,
+            background: powerPending ? "var(--amber)" : execDisabled ? "var(--red)" : "var(--teal)",
+          }} />
+          {powerPending === "disabling" ? "停用中…"
+            : powerPending === "enabling" ? "启动中…"
+            : execDisabled ? "Executor 已停用" : "Executor 运行中"}
+        </button>
         <div style={{ marginLeft: "auto", display: "flex", gap: 6, alignItems: "center" }}>
           <button
             onClick={() => setViewMode("list")}

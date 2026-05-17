@@ -1108,10 +1108,56 @@ class TelegramBotBase:
                 "display_name": cur.display_name,
             })
 
+        async def executor_power(request: web.Request) -> web.Response:
+            if request.headers.get("X-OBS-Token") != token:
+                return web.json_response({"detail": "invalid token"}, status=401)
+
+            power_file = os.getenv("EXECUTOR_POWER_FILE", "")
+            if not power_file:
+                return web.json_response(
+                    {"detail": "executor power control not supported by this bot"},
+                    status=404,
+                )
+
+            try:
+                body = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response({"detail": "invalid json body"}, status=422)
+
+            enabled = body.get("enabled")
+            if not isinstance(enabled, bool):
+                return web.json_response(
+                    {"detail": "enabled must be a boolean"}, status=422
+                )
+
+            payload = {
+                "enabled": enabled,
+                "updated_at": datetime.utcnow().isoformat() + "Z",
+                "source": "obs",
+            }
+            try:
+                p = Path(power_file)
+                p.parent.mkdir(parents=True, exist_ok=True)
+                tmp = p.with_suffix(p.suffix + ".tmp")
+                tmp.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp.replace(p)
+            except OSError as exc:
+                logger.exception("[obs_chat] write executor_power failed")
+                return web.json_response(
+                    {"detail": f"write failed: {exc}"}, status=500
+                )
+
+            logger.info("[obs_chat] executor power set enabled=%s", enabled)
+            return web.json_response(payload)
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
         app.router.add_post("/switch-model", switch_model)
+        app.router.add_post("/executor-power", executor_power)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

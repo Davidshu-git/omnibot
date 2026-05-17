@@ -568,6 +568,45 @@ async def mhxy_executor_status():
     return data
 
 
+@router.post("/external/mhxy-executor/power")
+async def mhxy_executor_power(body: dict):
+    """Toggle the Windows executor on/off via the mhxy bot's embedded HTTP server.
+
+    obs-api mounts the mhxy data dir read-only, so it cannot write the power
+    flag itself. The mhxy bot container (which mounts the config dir RW) owns
+    the file; the watchdog reads it each cycle and stops / lets-restart the
+    executor accordingly. Same channel/token as /switch-model.
+    """
+    import httpx as _httpx
+
+    enabled = body.get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(status_code=422, detail="enabled must be a boolean")
+    if not settings.obs_bot_chat_token:
+        raise HTTPException(status_code=503, detail="OBS_BOT_CHAT_TOKEN is not configured")
+
+    bot_url = settings.mhxy_bot_chat_url.rstrip("/")
+    try:
+        async with _httpx.AsyncClient(timeout=15) as client:
+            r = await client.post(
+                f"{bot_url}/executor-power",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+                json={"enabled": enabled},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach mhxy bot service: {exc}")
+
+    if r.status_code >= 400:
+        try:
+            detail = r.json().get("detail") or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    _broadcast_event("executor_status")
+    return r.json()
+
+
 # ---------------------------------------------------------------------------
 # Sessions
 # ---------------------------------------------------------------------------

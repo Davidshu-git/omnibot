@@ -288,13 +288,15 @@ function ExecutorStatusCard({
 }) {
   const isMobile = useIsMobile();
   const state = error ? "unknown" : (status?.status ?? "unknown");
+  const disabled = state === "disabled";
   const healthy = state === "healthy";
   const unhealthy = state === "unhealthy";
-  const stale = state === "stale" || status?.stale;
-  const color = healthy ? "var(--green)" : unhealthy ? "var(--red)" : stale ? "var(--amber)" : "var(--text-muted)";
-  const bg = healthy ? "rgba(52,211,153,.10)" : unhealthy ? "rgba(248,113,113,.10)" : stale ? "rgba(251,191,36,.10)" : "rgba(139,154,176,.08)";
-  const border = healthy ? "rgba(52,211,153,.28)" : unhealthy ? "rgba(248,113,113,.28)" : stale ? "rgba(251,191,36,.28)" : "var(--border)";
-  const label = healthy ? "运行正常" : unhealthy ? "异常" : stale ? "状态过期" : "未知";
+  // 主动停用是确定态，优先于 stale（不应显示「状态过期」）。
+  const stale = !disabled && (state === "stale" || status?.stale);
+  const color = disabled ? "var(--text-muted)" : healthy ? "var(--green)" : unhealthy ? "var(--red)" : stale ? "var(--amber)" : "var(--text-muted)";
+  const bg = disabled ? "rgba(139,154,176,.10)" : healthy ? "rgba(52,211,153,.10)" : unhealthy ? "rgba(248,113,113,.10)" : stale ? "rgba(251,191,36,.10)" : "rgba(139,154,176,.08)";
+  const border = disabled ? "var(--border-hi)" : healthy ? "rgba(52,211,153,.28)" : unhealthy ? "rgba(248,113,113,.28)" : stale ? "rgba(251,191,36,.28)" : "var(--border)";
+  const label = disabled ? "已停用" : healthy ? "运行正常" : unhealthy ? "异常" : stale ? "状态过期" : "未知";
   const pid = status?.process?.pid ? String(status.process.pid) : "—";
   const mem = status?.process?.working_set_bytes ? `${Math.round(status.process.working_set_bytes / 1024 / 1024)} MB` : "—";
   const latency = status?.health?.latency_ms !== undefined ? `${status.health.latency_ms} ms` : "—";
@@ -332,7 +334,7 @@ function ExecutorStatusCard({
           }}>
             <Stat label="PID" value={pid} accent={healthy} />
             <Stat label="HTTP 延迟" value={latency} accent={healthy} />
-            <Stat label="连续失败" value={failures} accent={!healthy && !stale} />
+            <Stat label="连续失败" value={failures} accent={!healthy && !stale && !disabled} />
             <Stat label="内存" value={mem} />
           </div>
           {instances.length > 0 && (

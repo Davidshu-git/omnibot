@@ -51,6 +51,10 @@ WINDOWS_ADB_PATH = os.getenv(
     r"C:\Program Files\Netease\MuMu\nx_main\adb.exe",
 )
 WINDOWS_EXECUTOR_PORT = int(os.getenv("MHXY_WINDOWS_EXECUTOR_PORT", "8765"))
+POWER_FILE = Path(os.getenv(
+    "MHXY_EXECUTOR_POWER_FILE",
+    "/app/data/mhxy/config/executor_power.json",
+))
 EXECUTOR_EVENTS_REMOTE_DIR = os.getenv(
     "MHXY_EXECUTOR_EVENTS_REMOTE_DIR",
     r"C:/Users/sdw/mhxy_executor/events",
@@ -119,6 +123,42 @@ def append_event(event: dict[str, Any]) -> None:
     ensure_dirs()
     with EVENT_LOG.open("a", encoding="utf-8") as f:
         f.write(json.dumps(event, ensure_ascii=False) + "\n")
+
+
+def _power_file_mtime() -> float:
+    try:
+        return POWER_FILE.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def interruptible_wait(timeout: float, baseline_mtime: float) -> float:
+    """睡 timeout 秒，但 POWER_FILE 一旦变更立即提前返回，返回退出时 mtime 作下轮基线。
+
+    不引入第三方 inotify 库（项目规范：新增依赖需先询问），用 1s 粒度 mtime
+    轮询实现等价效果——obs 侧开关后 watchdog 反应从 ≤INTERVAL_SEC 降到 ≤1s。
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        time.sleep(1)
+        m = _power_file_mtime()
+        if m != baseline_mtime:
+            log.info("power file changed, waking watchdog early")
+            return m
+    return _power_file_mtime()
+
+
+def read_power_enabled() -> bool:
+    """读 obs 侧写的电源开关。文件缺失/损坏一律视为启用（向后兼容）。"""
+    try:
+        data = json.loads(POWER_FILE.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return True
+    except Exception as exc:
+        log.warning("read power file failed path=%s error=%s, assume enabled", POWER_FILE, exc)
+        return True
+    enabled = data.get("enabled")
+    return enabled if isinstance(enabled, bool) else True
 
 
 def _decode_remote_json(stdout: str) -> list[dict[str, Any]]:
@@ -337,6 +377,25 @@ def get_remote_process() -> dict[str, Any]:
         return {"ok": False, "error": repr(exc)}
 
 
+def stop_executor(reason: str) -> dict[str, Any]:
+    """仅杀进程，不重启——供电源开关「关闭」态使用。"""
+    started = time.monotonic()
+    result = ssh_run("taskkill /IM python.exe /F", timeout=10)
+    elapsed = time.monotonic() - started
+    payload = {
+        "ok": result.returncode == 0,
+        "reason": reason,
+        "at": utc_now(),
+        "latency_ms": round(elapsed * 1000),
+        "returncode": result.returncode,
+        "stdout": result.stdout[-1000:],
+        "stderr": result.stderr[-1000:],
+    }
+    append_event({"timestamp": utc_now(), "event": "stop", **payload})
+    notify(f"MHXY Windows executor 已按 obs 开关停用\n原因：{reason}")
+    return payload
+
+
 def restart_executor(reason: str) -> dict[str, Any]:
     # 第 1 步：裸 taskkill 杀进程（Stop-Process 在 SSH 会话下无效，实测确认）
     kill_cmd = "taskkill /IM python.exe /F"
@@ -385,7 +444,43 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
     ports = load_ports()  # 每轮重新读取，instances.json 变更后自动生效
     checked_at = utc_now()
     previous = read_status()
+
+    # 电源开关「关闭」：跳过健康检查与自动重启，确保进程已停。
+    # 仅在进程仍在跑时执行一次 stop（状态转换），后续轮次不再重复 kill/notify。
+    if not read_power_enabled():
+        process = get_remote_process()
+        stop: dict[str, Any] | None = None
+        if process.get("ok"):
+            stop = stop_executor("obs 电源开关已关闭")
+            process = get_remote_process()
+        status = {
+            "service": "mhxy_windows_executor",
+            "executor_url": EXECUTOR_URL,
+            "status": "disabled",
+            "checked_at": checked_at,
+            "consecutive_failures": 0,
+            "fail_threshold": FAIL_THRESHOLD,
+            "interval_sec": INTERVAL_SEC,
+            "health": {"ok": False, "detail": "executor disabled via obs power switch"},
+            "app_health": [],
+            "app_health_checked_at": previous.get("app_health_checked_at"),
+            "process": process,
+            "last_stop": stop or (previous.get("last_stop") if isinstance(previous, dict) else None),
+        }
+        write_status(status)
+        append_event({"timestamp": checked_at, "event": "check", "status": "disabled", "process": process})
+        return 0, status
+
     health_ok, health = http_get_health()
+
+    # 重新开启瞬间：上一轮是 disabled、本轮已 enabled，executor 仍是被 stop 的死状态。
+    # 不等 FAIL_THRESHOLD 累积，直接把失败计数置满，让下方逻辑本轮立即重启，
+    # 把恢复时延从 ~3-4 分钟压到 ≤60s + 启动时间。
+    just_reenabled = isinstance(previous, dict) and previous.get("status") == "disabled"
+    if just_reenabled and not health_ok:
+        log.info("executor re-enabled via obs power switch, forcing immediate restart")
+        consecutive_failures = FAIL_THRESHOLD
+
     previous_app_results = previous.get("app_health")
     app_results: list[dict[str, Any]] = previous_app_results if isinstance(previous_app_results, list) else []
     app_health_checked_at = previous.get("app_health_checked_at")
@@ -420,7 +515,11 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
     process = get_remote_process()
     restart: dict[str, Any] | None = None
     if consecutive_failures >= FAIL_THRESHOLD:
-        reason = f"health failed {consecutive_failures} consecutive checks"
+        reason = (
+            "re-enabled via obs power switch"
+            if just_reenabled and not health_ok
+            else f"health failed {consecutive_failures} consecutive checks"
+        )
         log.warning("restart triggered: %s", reason)
         restart = restart_executor(reason)
         consecutive_failures = 0
@@ -462,6 +561,7 @@ def main() -> None:
     consecutive_failures = 0
     sync_failures = 0
     iteration = 0
+    power_mtime = _power_file_mtime()
     while True:
         iteration += 1
         try:
@@ -493,7 +593,7 @@ def main() -> None:
             )
         except Exception:
             log.exception("watchdog loop failed")
-        time.sleep(INTERVAL_SEC)
+        power_mtime = interruptible_wait(INTERVAL_SEC, power_mtime)
 
 
 if __name__ == "__main__":
