@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -23,6 +24,8 @@ from app.db.models import Agent, DataSource, Event, Project, Session
 from app.config import settings
 
 router = APIRouter(prefix="/api")
+
+logger = logging.getLogger(__name__)
 
 BOT_CHAT_PROJECTS = {"stock-bot", "ehs-bot", "mhxy-bot"}
 
@@ -399,6 +402,23 @@ async def mhxy_executor_batch_swipe(body: dict):
         raise HTTPException(status_code=502, detail=f"Cannot reach executor: {exc}")
 
 
+async def _post_chat_ingest(project: str, ingest_fn) -> None:
+    """Best-effort ingest after an obs→bot chat turn, decoupled from the response.
+
+    Args:
+        project: Bot project key, used only for log context.
+        ingest_fn: One of the run_*_ingest coroutines; broadcasts internally
+            when it inserts events.
+
+    Returns:
+        None.
+    """
+    try:
+        await ingest_fn(force=False)
+    except Exception:
+        logger.exception("[obs_chat] post-chat ingest failed for project=%s", project)
+
+
 @router.post("/external/{project}/chat")
 async def proxy_bot_chat(project: str, body: dict):
     """Proxy obs timeline text input to the live bot process."""
@@ -447,12 +467,12 @@ async def proxy_bot_chat(project: str, body: dict):
         raise HTTPException(status_code=r.status_code, detail=detail)
 
     data = r.json()
-    try:
-        await ingest_fns[project](force=False)
-        _broadcast_ingest()
-    except Exception:
-        # Chat already succeeded; do not fail the user-visible turn because ingestion can be retried.
-        pass
+    # Fire-and-forget: the bot already persisted this turn to its JSONL. Awaiting
+    # the ingest here would hold the chat response behind the global _ingest_lock,
+    # which the high-frequency mhxy-executor ingest can monopolize — that is what
+    # makes the timeline chat hang past the client timeout. The watcher + this
+    # background task pick the turn up and SSE-refresh the timeline anyway.
+    asyncio.create_task(_post_chat_ingest(project, ingest_fns[project]))
     return data
 
 
@@ -984,7 +1004,7 @@ async def run_jsonl_ingest(
         )
         ds = ds_result.scalars().first()
 
-        cursor: dict[str, str] = {}
+        cursor: dict[str, Any] = {}
         if ds and ds.last_sync_cursor and not force:
             try:
                 cursor = _json.loads(ds.last_sync_cursor)
@@ -993,16 +1013,39 @@ async def run_jsonl_ingest(
 
         total = {"raw_inserted": 0, "raw_updated": 0, "events_inserted": 0, "events_skipped": 0}
         sources_scanned = sources_skipped = 0
-        new_cursor: dict[str, str] = {}
+        new_cursor: dict[str, dict[str, Any]] = {}
 
         sources = adapter.discover_sources()
         for source in sources:
-            mtime = str(os.path.getmtime(source.path))
-            new_cursor[source.path] = mtime
+            st = os.stat(source.path)
+            mtime = str(st.st_mtime)
+            size = st.st_size
+            new_cursor[source.path] = {"mtime": mtime, "size": size}
 
-            if not force and cursor.get(source.path) == mtime:
+            # Backward-compatible: pre-existing cursors stored a bare mtime
+            # string (no size). Treating "size unknown" as "changed" would force
+            # a full re-ingest of every historical file on every run until a
+            # size is recorded — and the run never completes to record one.
+            # So a legacy cursor with an unchanged mtime still skips, exactly
+            # like the old behavior; size only drives the tail-only resume.
+            prev = cursor.get(source.path)
+            if isinstance(prev, dict):
+                prev_mtime = prev.get("mtime")
+                prev_size = prev.get("size")
+            else:
+                prev_mtime, prev_size = prev, None
+
+            if not force and prev_mtime == mtime and prev_size in (None, size):
                 sources_skipped += 1
                 continue
+
+            # Append-only sources (e.g. the continuously-growing mhxy executor
+            # file) resume from the previous end-of-file so each ingest parses
+            # only the new tail instead of re-reading the whole file. Adapters
+            # that ignore start_offset just re-read from 0; content-addressed
+            # external_key + ON CONFLICT keeps both paths idempotent.
+            if not force and isinstance(prev_size, int) and size >= prev_size:
+                source.start_offset = prev_size
 
             sources_scanned += 1
             for session_ref in adapter.scan_sessions(source):

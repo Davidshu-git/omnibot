@@ -45,6 +45,8 @@ class MhxyExecutorJsonlAdapter:
         """Return all session buckets present in this executor file."""
         session_ids: set[str] = set()
         with open(source.path, encoding="utf-8") as f:
+            if source.start_offset:
+                f.seek(source.start_offset)
             for lineno, line in enumerate(f, start=1):
                 text = line.strip()
                 if not text:
@@ -67,6 +69,8 @@ class MhxyExecutorJsonlAdapter:
         path = session.source_ref.path
 
         with open(path, encoding="utf-8") as f:
+            if session.source_ref.start_offset:
+                f.seek(session.source_ref.start_offset)
             for lineno, line in enumerate(f, start=1):
                 text = line.strip()
                 if not text:

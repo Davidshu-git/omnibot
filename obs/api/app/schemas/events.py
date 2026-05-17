@@ -155,6 +155,11 @@ class SourceRef(BaseModel):
     """Pointer to a discoverable data source (e.g., a JSONL file)."""
     source_id: str
     path: str
+    # Byte offset to resume reading from. Set by the incremental ingest for
+    # append-only sources so a continuously-growing file is parsed tail-only
+    # instead of fully re-read on every change. Adapters that ignore it simply
+    # read from the start (idempotency keeps that safe).
+    start_offset: int = 0
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
