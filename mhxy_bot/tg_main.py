@@ -578,6 +578,9 @@ class GameBot(TelegramBotBase):
             f"🎮 任务状态：{running}"
         )
 
+    def get_model_registries(self) -> dict:
+        return {"text": registry, "vl": vl_registry}
+
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "get_instances": "📋 正在读取模拟器实例配置...",

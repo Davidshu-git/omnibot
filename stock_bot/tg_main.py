@@ -98,6 +98,9 @@ class StockBot(TelegramBotBase):
         cfg = registry.current()
         return f"🤖 当前模型：<b>{cfg.display_name}</b>"
 
+    def get_model_registries(self) -> dict:
+        return {"text": registry}
+
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "get_universal_stock_price": "📈 正在拉取全球实时盘面数据...",

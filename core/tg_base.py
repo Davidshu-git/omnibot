@@ -597,6 +597,17 @@ class TelegramBotBase:
         """模型状态文本（子类重写），/status 命令显示内容。"""
         return ""
 
+    def get_model_registries(self) -> dict[str, Any]:
+        """暴露可热切换的模型 registry，供 obs /switch-model 调用（子类重写）。
+
+        Returns:
+            dict，key 为切换类别（``"text"`` 主控模型 / ``"vl"`` 视觉模型），
+            value 为兼容 ``current() / current_key() / list_models() / switch()``
+            接口的 registry（``ModelRegistry`` 或 ``VlModelRegistry``）。
+            默认返回空 dict，表示该 bot 不支持 obs 侧模型切换。
+        """
+        return {}
+
     async def setup_extra_handlers(self, app: Application) -> None:
         """注册额外命令 / 消息处理器（子类重写）。"""
         pass
@@ -1048,9 +1059,59 @@ class TelegramBotBase:
                 return web.json_response({"detail": str(exc) or "agent failed"}, status=500)
             return web.json_response(result)
 
+        async def switch_model(request: web.Request) -> web.Response:
+            if request.headers.get("X-OBS-Token") != token:
+                return web.json_response({"detail": "invalid token"}, status=401)
+            try:
+                body = await request.json()
+            except json.JSONDecodeError:
+                return web.json_response({"detail": "invalid json body"}, status=422)
+
+            registries = self.get_model_registries()
+            if not registries:
+                return web.json_response(
+                    {"detail": "model switch not supported by this bot"}, status=404
+                )
+
+            kind = body.get("kind", "text")
+            model_key = body.get("model_key")
+            if kind not in registries:
+                return web.json_response(
+                    {"detail": f"unknown kind {kind!r}, available: {list(registries)}"},
+                    status=422,
+                )
+            if not isinstance(model_key, str) or not model_key.strip():
+                return web.json_response(
+                    {"detail": "model_key must be a non-empty string"}, status=422
+                )
+
+            reg = registries[kind]
+            try:
+                reg.switch(model_key.strip())
+            except ValueError as exc:
+                return web.json_response({"detail": str(exc)}, status=422)
+            except Exception as exc:
+                logger.exception(
+                    "[obs_chat] switch_model failed kind=%s key=%s", kind, model_key
+                )
+                return web.json_response(
+                    {"detail": str(exc) or "switch failed"}, status=500
+                )
+
+            cur = reg.current()
+            logger.info(
+                "[obs_chat] model switched kind=%s key=%s", kind, reg.current_key()
+            )
+            return web.json_response({
+                "kind": kind,
+                "model_key": reg.current_key(),
+                "display_name": cur.display_name,
+            })
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
+        app.router.add_post("/switch-model", switch_model)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

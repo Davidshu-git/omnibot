@@ -77,6 +77,9 @@ class EHSBot(TelegramBotBase):
         cfg = registry.current()
         return f"🤖 当前模型：<b>{cfg.display_name}</b>"
 
+    def get_model_registries(self) -> dict:
+        return {"text": registry}
+
     def get_tool_status_map(self) -> dict[str, str]:
         return {
             "trigger_job": "🚀 正在将简报任务投递至独立进程...",
