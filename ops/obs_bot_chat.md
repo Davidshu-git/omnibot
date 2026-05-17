@@ -18,6 +18,27 @@ curl http://127.0.0.1:8811/healthz
 curl http://127.0.0.1:8812/healthz
 ```
 
+## HTTP 接口一览
+
+bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以下路由,obs 侧通过 `obs/api/app/api/router.py` 的代理端点访问:
+
+| bot 路由 | 方法 | obs 代理端点 | 用途 |
+|----------|------|--------------|------|
+| `/healthz` | GET | — | 健康检查(无需 token) |
+| `/chat` | POST | `/api/external/{project}/chat` | 时间线直接对话 bot,复用同一 agent / 记忆 |
+| `/switch-model` | POST | `/api/external/{project}/switch-model` | obs 总览页点击芯片热切换主控/视觉模型 |
+
+`/switch-model` 契约:
+
+- 鉴权:请求头 `X-OBS-Token` == `OBS_BOT_CHAT_TOKEN`(与 `/chat` 同闸门,**不需要 user_id**,模型是 bot 全局状态)。
+- 请求体:`{"kind": "text" | "vl", "model_key": "<key>"}`。`kind` 缺省为 `text`;`vl` 仅 mhxy 支持。
+- bot 侧由 `TelegramBotBase.get_model_registries()` 钩子暴露 registry(mhxy 返回 `{text, vl}`,stock/ehs 仅 `{text}`),调用 `registry.switch()` 热生效,**无需重启 bot**。
+- 切换成功后 obs 代理广播 `model_switched` SSE,所有连接的 obs 客户端自动刷新 `/api/projects/runtime-models`。
+- `{project}` 用 obs↔bot chat 的 key(`stock-bot` / `ehs-bot` / `mhxy-bot`);前端 overview 的 `mhxy` 经 `CHAT_PROJECT` 映射为 `mhxy-bot`。
+
+> ⚠️ 改动 `core/tg_base.py` 或任一 `*_bot/tg_main.py` 后,新路由/钩子需 **重启对应 bot 容器**才生效(`./core`、`./*_bot` 为 bind mount,无需重建镜像):
+> `docker restart v2-omnistock-tg-bot v2-omniehs-tg-bot v2-omnimhxy-tg-bot`
+
 ## 环境变量
 
 根目录 `.env` 与 `obs/.env` 必须配置同一个共享密钥：
@@ -53,3 +74,5 @@ docker compose -f obs/docker-compose.yml up -d --build
 - obs 页面返回 403：session 中解析出的 `user_id` 不在对应 bot 白名单。
 - obs 页面返回 502：检查 `STOCK_BOT_CHAT_URL` / `EHS_BOT_CHAT_URL` / `MHXY_BOT_CHAT_URL` 是否指向宿主机可访问的内网地址与端口。
 - obs 页面返回 504：bot agent 本轮推理超时，需查看对应 bot 容器日志。
+- `/switch-model` 返回 404：bot 进程仍是旧代码（未含该路由），需 `docker restart` 对应 bot 容器；或 `kind` 在该 bot 不支持（如对 stock/ehs 传 `vl`）。
+- `/switch-model` 返回 422：`model_key` 不在该 registry 的可选列表内，或 `kind` 非 `text`/`vl`。
