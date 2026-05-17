@@ -27,10 +27,14 @@ function statusText(status: StreamPlayerStatus, detail: string): string {
   return `解码失败${detail ? `：${detail.slice(0, 80)}` : ""}`;
 }
 
-function instanceLabel(inst: MhxyInstanceDetail): string {
-  const role = ROLE_LABEL[inst.role] ?? inst.role;
-  const group = inst.group_id == null ? "" : ` · G${inst.group_id}`;
-  return `${inst.port} · ${inst.school || "未知"} · ${role}${group}`;
+function StatusDot({ label, ok }: { label: string; ok: boolean | null }) {
+  const color = ok === true ? "var(--green)" : ok === false ? "var(--red)" : "var(--text-dim)";
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, color: "var(--text-dim)" }}>
+      <span style={{ width: 6, height: 6, borderRadius: 999, background: color, flexShrink: 0 }} />
+      {label}
+    </span>
+  );
 }
 
 export default function MhxyLiveStreamPanel({ width }: { width?: number }) {
@@ -52,24 +56,31 @@ export default function MhxyLiveStreamPanel({ width }: { width?: number }) {
   );
   const streamUrl = selectedPort ? `${execWsBase()}/ws/stream/${selectedPort}?quality=${quality}` : "";
 
-  const fetchInstances = useCallback(() => {
-    setLoading(true);
-    setError("");
+  const fetchInstances = useCallback((silent = false) => {
+    if (!silent) {
+      setLoading(true);
+      setError("");
+    }
     api.mhxyExecutorInstances()
       .then((data) => {
         const list = [...data.instances].sort((a, b) => Number(a.port) - Number(b.port));
         setInstances(list);
         setSelectedPort((prev) => list.some((inst) => inst.port === prev) ? prev : list[0]?.port || "");
+        setError("");
       })
       .catch((e) => {
         setError(String(e));
       })
       .finally(() => {
-        setLoading(false);
+        if (!silent) setLoading(false);
       });
   }, []);
 
-  useEffect(() => fetchInstances(), [fetchInstances]);
+  useEffect(() => {
+    fetchInstances();
+    const id = setInterval(() => fetchInstances(true), 12000);
+    return () => clearInterval(id);
+  }, [fetchInstances]);
 
   useEffect(() => {
     if (!streamUrl || !canvasRef.current) return;
@@ -130,58 +141,6 @@ export default function MhxyLiveStreamPanel({ width }: { width?: number }) {
         </span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8 }}>
-        <select
-          value={selectedPort}
-          onChange={(e) => setSelectedPort(e.target.value)}
-          disabled={loading || instances.length === 0}
-          style={{
-            minWidth: 0,
-            background: "rgba(255,255,255,.03)",
-            color: "var(--text)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            padding: "6px 8px",
-            fontSize: 12,
-          }}
-        >
-          {instances.map((inst) => (
-            <option key={inst.port} value={inst.port}>{instanceLabel(inst)}</option>
-          ))}
-        </select>
-        <select
-          value={quality}
-          onChange={(e) => setQuality(e.target.value as NativeStreamQuality)}
-          style={{
-            background: "rgba(255,255,255,.03)",
-            color: "var(--text)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            padding: "6px 8px",
-            fontSize: 12,
-          }}
-        >
-          {(["low", "medium", "high"] as const).map((q) => (
-            <option key={q} value={q}>{QUALITY_LABEL[q]}</option>
-          ))}
-        </select>
-        <button
-          onClick={() => fetchInstances()}
-          disabled={loading}
-          title="刷新实例列表"
-          style={{
-            background: "rgba(255,255,255,.03)",
-            color: loading ? "var(--text-dim)" : "var(--text-muted)",
-            border: "1px solid var(--border)",
-            borderRadius: 4,
-            padding: "6px 8px",
-            fontSize: 12,
-            cursor: loading ? "not-allowed" : "pointer",
-          }}
-        >
-          刷新
-        </button>
-      </div>
 
       <div style={{
         background: "#0d0d0d",
@@ -228,6 +187,104 @@ export default function MhxyLiveStreamPanel({ width }: { width?: number }) {
             {resolution.w}x{resolution.h}
           </span>
         )}
+      </div>
+
+      <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ color: "var(--text-muted)", fontSize: 12, fontWeight: 600 }}>全部实例</span>
+          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
+            {instances.length === 0
+              ? "—"
+              : `${instances.filter((i) => i.healthy === true).length}/${instances.length} 健康`}
+          </span>
+          <div style={{
+            marginLeft: "auto",
+            display: "flex",
+            border: "1px solid var(--border)",
+            borderRadius: "var(--r-sm)",
+            overflow: "hidden",
+          }}>
+            {(["low", "medium", "high"] as const).map((q) => {
+              const active = quality === q;
+              return (
+                <button
+                  key={q}
+                  onClick={() => setQuality(q)}
+                  title={`画质：${QUALITY_LABEL[q]}`}
+                  style={{
+                    background: active ? "var(--blue-dim)" : "transparent",
+                    color: active ? "var(--blue)" : "var(--text-dim)",
+                    border: "none",
+                    padding: "1px 7px",
+                    fontSize: 10,
+                    lineHeight: 1.6,
+                    cursor: "pointer",
+                  }}
+                >
+                  {QUALITY_LABEL[q]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+          {loading && instances.length === 0 && (
+            <p style={{ color: "var(--text-dim)", fontSize: 11, margin: 0 }}>加载实例...</p>
+          )}
+          {!loading && instances.length === 0 && (
+            <p style={{ color: "var(--text-dim)", fontSize: 11, margin: 0 }}>暂无实例</p>
+          )}
+          {instances.map((inst) => {
+            const isSel = inst.port === selectedPort;
+            const roleLabel = ROLE_LABEL[inst.role] ?? inst.role;
+            return (
+              <div
+                key={inst.port}
+                onClick={() => setSelectedPort(inst.port)}
+                title={inst.error || undefined}
+                style={{
+                  cursor: "pointer",
+                  background: isSel ? "rgba(96,165,250,.08)" : "rgba(255,255,255,.02)",
+                  border: "1px solid var(--border)",
+                  borderLeftWidth: 3,
+                  borderLeftColor: isSel ? "var(--blue)" : "var(--border)",
+                  borderRadius: "var(--r-sm)",
+                  padding: "5px 8px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 3,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" }}>
+                  <span style={{
+                    fontFamily: "var(--font-mono)", fontSize: 12,
+                    color: isSel ? "var(--blue)" : "var(--text)",
+                  }}>
+                    {inst.port}
+                  </span>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                    {inst.school || "未知"} · {roleLabel}
+                    {inst.group_id == null ? "" : ` · G${inst.group_id}`}
+                  </span>
+                  {inst.latency_ms != null && (
+                    <span style={{
+                      marginLeft: "auto", fontSize: 10,
+                      fontFamily: "var(--font-mono)", color: "var(--text-dim)",
+                    }}>
+                      {inst.latency_ms}ms
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: 10 }}>
+                  <StatusDot label="健康" ok={inst.healthy} />
+                  <StatusDot label="adb" ok={inst.adb} />
+                  <StatusDot label="截图" ok={inst.screenshot} />
+                  <StatusDot label="ocr" ok={inst.ocr} />
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     </aside>
   );
