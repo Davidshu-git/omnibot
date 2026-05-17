@@ -624,7 +624,7 @@ const NATIVE_STREAM_QUALITY_LABEL: Record<NativeStreamQuality, string> = {
 const NATIVE_STREAM_BITRATE: Record<NativeStreamQuality, number> = {
   low: 200_000,
   medium: 400_000,
-  high: 1_500_000,
+  high: 800_000,
 };
 
 // 自动点击：按固定节奏对当前 broadcast 范围发 tap。
