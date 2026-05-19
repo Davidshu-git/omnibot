@@ -527,13 +527,16 @@ timeout 20 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@1
 
 **但重启不是唯一手段**：InputDispatcher 全程没坏（`DispatchEnabled:true`/`DispatchFrozen:false`、app `responsive:true`），它只是被灌爆。**只要从源头把手柄洪流停掉、并让当前已 latch 的持键真正释放，~2600 深的 InboundQueue 会自排空（断流后约 10–15s 归零），点击随即恢复，无需重启**。重启之所以"一定有效"只是因为它顺带复位了卡死的手柄设备而已。
 
-> ⚠️ 仅改 MuMu 同步/映射**设置**不一定能追溯释放已 latch 在运行中 guest InputReader 里的 key-down——那需要对应的 key-up 或设备复位。所以"是否已解决"**一律以下面三条实测判据为准，不看设置改没改，且 7 实例逐个查（7 个都会中招）**：
+> ⚠️ 仅改 MuMu 同步/映射**设置**不一定能追溯释放已 latch 在运行中 guest InputReader 里的 key-down——那需要对应的 key-up 或设备复位。所以"是否已解决"**一律以下面实测判据为准，不看设置改没改，且 7 实例逐个查（7 个都会中招）**：
 >
-> 1. `dumpsys input` → `Device 4 Xiaomi Joystick` 的 `KeyDowns` **归 0**
-> 2. 同输出 `InboundQueue: length` **回落到 0 / 个位数**
-> 3. HTTP `/tap` **<1s 正常返回**
+> 1. 同输出 `InboundQueue` **回到 `<empty>`**（故障期是 `length≈2600`）—— **决定性判据**
+> 2. HTTP `/tap` **<1s 正常返回**（故障期卡 15s 超时）
+> 3. 新 logcat 里 `Dropped event because it is stale.` **不再持续刷**（故障期 ~260/s；恢复后只剩断流瞬间的残留、之后归零）
+> 4. `dumpsys input` → `Xiaomi Joystick` 的 `KeyDowns` —— **可以不归 0**：仅改设置/断连接时此处常残留非 0（latch 未被追溯释放），但**只要 1/2/3 全过即视为已恢复**，残留持键不再灌流就无害；若该实例游戏内出现"某键卡住"怪象再单独重启它清 latch。
 >
-> 三条全过 = 真解决，不需重启；任一不过 = 该实例仍卡，补 key-up 或重启该实例。
+> 判据 1+2+3 全过 = 真解决，不需重启。
+
+> 📌 **实测背书（2026-05-19 16:18 CST）**：现场仅"关闭模拟器手柄连接"未重启任何实例——7 实例 `InboundQueue` 全部从 `length=2578` 自排空回 `<empty>`，`/tap` 全部恢复 0.33–0.48s，stale-drop 从 ~260/s 跌到关连接瞬间残留后归零。其中 `emulator-5556` 的 `Xiaomi Joystick` 仍残留 `KeyDowns: 4 keys currently down`（latch 未释放）但不影响使用。**证实"InputDispatcher 没坏、源头止流即自愈、无需重启"成立，且印证判据 4 的残留属正常现象。**
 
 重启时 7 实例一起重启大概率连带触发 stale daemon（adb 长连接同时断回），届时再按上一节 reset 一次 adb server 即可，属正常副作用。
 
