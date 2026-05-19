@@ -405,7 +405,7 @@ curl http://192.168.100.149:8765/list_devices  # ADB 可见实例列表
 
 **症状**：obs 截图巡检页面拉不出画面，但 executor `/health` 返回 OK。
 
-> ⚠️ **先鉴别走哪条路**：如果**画面正常、能截图，只是点不动**（obs 点击无效、Windows 手动点也无反应），那不是 stale daemon，**不要** reset adb server——直接跳到下一节《画面正常但点不动 / tap 无效（guest 假死）》。本节只处理 `adb devices` 为空 / `list_devices` count 掉的情况。
+> ⚠️ **先鉴别走哪条路**：如果**画面正常、能截图，只是点不动**（obs 点击无效、Windows 手动点也无反应），那不是 stale daemon，**不要** reset adb server——直接跳到下一节《画面正常但点不动 / tap 无效（输入事件洪流积压）》。本节只处理 `adb devices` 为空 / `list_devices` count 掉的情况。
 
 **根因**：Windows 上的 ADB server 守护进程失联（stale daemon）。MuMu 实例本身在正常运行（`MuMuVMMHeadless` 进程在、对应端口在监听），但 `adb devices` 返回空列表 → executor `/list_devices`、`/screenshot` 拿不到任何设备。常见诱因是**模拟器（MuMu）批量重启**：7 个 adb 长连接同时断裂又几乎同时回来，adb server 的发现逻辑进坏状态、设备表清空且不自愈。
 
@@ -444,72 +444,101 @@ curl -s -X POST http://192.168.100.149:8765/screenshot \
 
 ---
 
-## 排障：画面正常但点不动 / tap 无效（guest 假死，2026-05-19 实测）
+## 排障：画面正常但点不动 / tap 无效（输入事件洪流积压，2026-05-19 取证定性）
+
+> ⚠️ **本节根因已更正**：旧稿写"system_server / InputDispatcher 挂死、疑似 screenrecord 拖垮 guest"——2026-05-19 一次完整取证（logcat + dumpsys input + 7 实例横扫）**推翻了该猜测**。真实根因见下，旧的 screenrecord 诱因和"dumpsys 会一并卡住"均为误判，已删除。
 
 **症状**：obs 能看到画面、截图巡检有画面，但 obs 点击完全无效；**在 Windows 侧手动用鼠标点击 MuMu 窗口也无反应**。
 
 **这与上一节 stale daemon 是两类完全不同的根因，修复手段互斥，先鉴别：**
 
-| 维度 | stale daemon（上一节） | guest 假死（本节） |
+| 维度 | stale daemon（上一节） | 输入洪流积压（本节） |
 |---|---|---|
 | `adb devices` | 空列表 | 正常，7 个 `device` |
 | `/list_devices` count | 掉到 0 / 偏少 | 正常 = 实例数 |
 | obs 截图 / 画面 | 拉不出画面 | **画面正常** |
-| `adb shell input tap` 直连 | 秒回（设备没问题） | **卡 ~15s 不返回** |
+| `adb shell input tap` 直连 | 秒回（设备没问题） | **卡 ~15s 不返回**（注入事件排在 ~2600 深队列尾，等不到 finish） |
+| `dumpsys input` | 正常返回 | **正常返回（不卡！）**，`InboundQueue: length≈2600` |
 | 修复手段 | `adb kill-server && start-server` | **必须重启 MuMu 实例** |
 | reset adb server | 有效 | **完全无效** |
 | watchdog 自愈 | 覆盖（count==0 触发） | **不覆盖（count 仍正常）** |
 
-**根因**：MuMu 虚拟机里的 Android guest 自身卡死——具体是 system_server 的 InputDispatcher / InputManagerService 挂死，而 SurfaceFlinger 的 screencap 路径还活着。所以**画面看得见、点不动**。这不是 obs / `ws_input` / executor / adb 任何一层的代码问题。
+### 真实根因（2026-05-19 证据链闭环）
 
-**关键判据（一句话定位）**：在 Windows 侧**手动鼠标点击模拟器窗口也无反应**——这一步我方软件链路（obs → `ws_input` → executor → adb）完全没参与，仍然点不动，即可锁定故障在 guest，与系统代码无关。
+**不是 guest 死了，是 InputDispatcher 被一个跑飞的虚拟手柄灌爆、入站队列永久积压 10 秒。**
 
-**定位命令**：
+证据链：
+
+1. `dumpsys input`：`DispatchEnabled: true` / `DispatchFrozen: false`，**`InboundQueue: length≈2578`，每条 `age≈10048ms`**；`OutboundQueue: <empty>`、游戏窗口 `responsive=true`。→ InputDispatcher 与 system_server **完全健康**，app 侧 ~131ms 就排空，不是挂死也不是 ANR（`/data/anr/` 空）。
+2. logcat 14s 窗口被 `InputDispatcher: Dropped event because it is stale.` 刷屏 **3728 条（~260/s）**。AOSP 规则：`now - eventTime > STALE_EVENT_TIMEOUT(10s)` 即丢弃——与第 1 条 ~10s 积压完全吻合。
+3. 灌流源：`deviceId=4 = "Xiaomi Joystick"`（EventHub dev1 `/dev/input/event5`，MuMu 按键映射模拟手柄），`source=0x1000010(SOURCE_JOYSTICK)`，`action=MOVE`，`point0yPosition≈-0.95 恒定`，`KeyboardInputMapper: KeyDowns: 3 keys currently down`（固定 DownTime）。→ **3 个映射键被卡在"按住"、摇杆轴钉在近满偏，持续以 ~260/s 吐 MOVE+按键事件**。
+4. 我方 tap 走 `deviceId=-1 Virtual` 设备，**与 deviceId=4 不是同一设备**——洪流不是 obs/ws_input/executor/adb 产生的，我们的 tap 只是和手动鼠标一起被埋在 2600 深队列尾、超过 10s stale 窗口被丢。
+
+**机理一句话**：卡死的 Xiaomi Joystick 灌满 InboundQueue → 队列恒定 ~2600 深 → 任何事件（含真实点击）排到队头时已 >10s → 撞 stale 阈值全丢 → 画面照常渲染但一个点击都进不去游戏。
+
+**范围**：7 个实例 InboundQueue 全部积压 ~2550–2670，**同时中招**。叠加"幽灵持键"，强烈指向 **MuMu 多开"键鼠/手柄同步"把一次 key-down 锁住、没收到对应 key-up，再广播到全部 7 实例**（典型诱因：映射的移动键被按住时，宿主焦点切走 / SSH·RDP 会话切换吞掉 key-up）。坐实此诱因需下次现场抓 MuMu 多开器同步设置 + 宿主按键时序，本结论已足够指导修复。
+
+**关键判据（一句话定位）**：Windows 侧手动鼠标点击也无反应（我方软件链路未参与）→ 故障在 guest 输入层；再用下面命令看到 `InboundQueue: length` 数千 + logcat stale-drop 刷屏 → 锁定本节，与系统代码无关。
+
+### 定位命令
 
 ```bash
-# 1) 确认设备链路正常（排除 stale daemon）：count 应 = 实例数，adb devices 全 device
+# 1) 排除 stale daemon：count 应 = 实例数
 curl -s http://192.168.100.149:8765/list_devices
 
-# 2) HTTP /tap 实测：guest 假死时会卡满 ~15s（撞 executor _adb subprocess timeout=15）
+# 2) HTTP /tap 实测：本故障会卡满 ~15s（注入事件排队尾等不到 finish，撞 executor timeout=15）
 curl -s -m 16 -X POST http://192.168.100.149:8765/tap \
   -H "Content-Type: application/json" -d '{"port":"5557","px":800,"py":450}' \
   -w '\n[http_code=%{http_code} time_total=%{time_total}s]\n'
-# 正常：{"success":true,...} time_total<1s ；假死：http_code=000 time_total≈15s 超时
 
-# 3) 直连 adb 复现（绕过所有软件链路，最硬证据）：14s 兜底，不返回 DONE 即确认 guest 卡死
-timeout 16 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
-  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell input tap 800 450; Write-Output DONE_TAP"'
+# 3) 决定性判据：dumpsys input 的 InboundQueue 深度（本故障 ≈ 数千；正常为 0 / 个位数）
+#    7 实例横扫，serial = port-1
+timeout 90 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+ 'powershell -NoProfile -Command "$adb=\"C:\Program Files\Netease\MuMu\nx_main\adb.exe\"; foreach($s in @(\"emulator-5556\",\"emulator-5558\",\"emulator-5560\",\"emulator-5566\",\"emulator-5570\",\"emulator-5572\",\"emulator-5574\")){ $q = & $adb -s $s shell dumpsys input 2>$null | Select-String \"InboundQueue: length=\" | Select-Object -First 1; Write-Output ($s + \"  \" + $q) }"'
 ```
 
 > 端口映射：obs/executor 用奇数 adb 端口（5557…），`adb devices` 显示偶数 console serial（emulator-5556…），对应关系 `emulator-(port-1)`。
 
 ### ⚠️ 重启前必须先取证（否则根因永远停在猜测）
 
-重启 MuMu 实例会清空 guest 日志，**最佳取证时机一旦重启就永久丢失**。怀疑 guest 假死时，**先抓证据再重启**：
+重启 MuMu 实例会清空 guest 日志，**最佳取证时机一旦重启就永久丢失**。先抓证据再重启（已落盘样本见 `ops/forensics/`，命名 `*_5556_<ts>.txt`）：
 
 ```bash
-# logcat：guest 卡死时 logd 通常仍存活，-d dump 后退出一般能返回
-timeout 30 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
-  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 logcat -d -t 3000"' \
+# logcat：logd 仍存活，-d dump 后退出能返回（本故障下会被 stale-drop 刷屏，正是判据）
+timeout 35 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 logcat -d -t 4000"' \
   > anr_5556_logcat.txt 2>&1
 
-# ANR traces：先 ls 看有哪些文件再 cat（不同 Android 版本路径不同）
+# dumpsys input：⚠️ 本故障下它【不会卡】，正常返回——证据就在输出里：
+#   DispatchEnabled:true / DispatchFrozen:false、InboundQueue:length≈数千、
+#   Device 4 'Xiaomi Joystick' 的 KeyDowns: N keys currently down
+timeout 22 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell dumpsys input"' \
+  > dumpsys_input_5556.txt 2>&1
+
+# ANR traces：本故障下 /data/anr/ 通常为空（app 没卡，不会写 ANR），抓一下作排他
 timeout 20 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
   'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell ls -l /data/anr/"'
-
-# dumpsys input：走 binder 到 system_server，假死时此命令会一并卡住——
-#                 它卡住本身就是 input 子系统假死的强佐证（带 timeout 兜底，别裸跑）
-timeout 20 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
-  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell dumpsys input"'
 ```
 
 ### 修复
 
-**只有重启 MuMu 实例有效**（单个或全部，会重新拉起 guest Android）。reset adb server / 重启 executor / 重启容器 / watchdog 自愈对此**全部无效**。优先现场在 MuMu 多开器里对卡死实例点"重启"；不确定范围就 7 个一起重。
+**重启 MuMu 实例一定有效**（重建 Xiaomi Joystick 虚拟设备、清空 InboundQueue）。reset adb server / 重启 executor / 重启容器 / watchdog 自愈对此**全部无效**——洪流在 guest 输入层内部、由 MuMu 按键映射驱动，外层动不到。7 实例同时中招时可在 MuMu 多开器里 7 个一起"重启"。
 
-重启后按上一节《验证》流程确认；注意 7 实例一起重启大概率连带触发 stale daemon（adb 长连接同时断回），届时再按上一节 reset 一次 adb server 即可，属正常副作用。
+**但重启不是唯一手段**：InputDispatcher 全程没坏（`DispatchEnabled:true`/`DispatchFrozen:false`、app `responsive:true`），它只是被灌爆。**只要从源头把手柄洪流停掉、并让当前已 latch 的持键真正释放，~2600 深的 InboundQueue 会自排空（断流后约 10–15s 归零），点击随即恢复，无需重启**。重启之所以"一定有效"只是因为它顺带复位了卡死的手柄设备而已。
 
-### 已知盲区与疑似诱因（待取证确认）
+> ⚠️ 仅改 MuMu 同步/映射**设置**不一定能追溯释放已 latch 在运行中 guest InputReader 里的 key-down——那需要对应的 key-up 或设备复位。所以"是否已解决"**一律以下面三条实测判据为准，不看设置改没改，且 7 实例逐个查（7 个都会中招）**：
+>
+> 1. `dumpsys input` → `Device 4 Xiaomi Joystick` 的 `KeyDowns` **归 0**
+> 2. 同输出 `InboundQueue: length` **回落到 0 / 个位数**
+> 3. HTTP `/tap` **<1s 正常返回**
+>
+> 三条全过 = 真解决，不需重启；任一不过 = 该实例仍卡，补 key-up 或重启该实例。
 
-- **watchdog 当前不覆盖此故障**：它只探 `/list_devices` count，guest input 假死时 count 仍正常，不触发任何自愈，故障会一直挂着直到人工发现。是否给 watchdog 加低频 input 探针需单独评估（探针会真的产生点击，涉及反检测/安全坐标权衡）。
-- **疑似诱因（推断，非定论）**：每实例长期高频 `adb screenrecord` H264 推流（截图巡检卡片默认开 H264 流，executor 日志可见各端口约 20s 一轮 `stream init cache ready`）。长时间高密度 screenrecord 走 guest MediaCodec/SurfaceFlinger，是已知容易拖垮 Android guest 的操作，症状形态（screencap 活、input 死）吻合。坐实需攒 1–2 次上面的 logcat/ANR 现场，再决定是否调整默认关流策略 / 降低推流频率。
+重启时 7 实例一起重启大概率连带触发 stale daemon（adb 长连接同时断回），届时再按上一节 reset 一次 adb server 即可，属正常副作用。
+
+### 后续待办（基于本次定性）
+
+- **watchdog 可低成本覆盖本故障**：现有 watchdog 已每轮远程探 executor，可加一条**只读、零副作用**探针——`dumpsys input | grep 'InboundQueue: length='`，连续 N 轮某实例 length 超阈值（如 >500）即判定并 Telegram 告警 / 触发该实例重启。不产生任何点击，**不涉及反检测**（与旧稿"input 探针要真点击"的顾虑无关，那是基于错误根因的判断）。
+- **诱因根治方向**：排查 MuMu 多开器"键鼠/手柄同步"设置，确认是否可关闭手柄轴同步 / 改为仅触控同步，从源头消除"幽灵持键广播到 7 实例"。需一次现场配置取证后再定。
+- **取证样本**：本次 `ops/forensics/anr_5556_logcat_*.txt`、`dumpsys_input_5556_*.txt` 已留档，复发时对比即可秒判是否同因。
