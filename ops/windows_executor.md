@@ -405,6 +405,8 @@ curl http://192.168.100.149:8765/list_devices  # ADB 可见实例列表
 
 **症状**：obs 截图巡检页面拉不出画面，但 executor `/health` 返回 OK。
 
+> ⚠️ **先鉴别走哪条路**：如果**画面正常、能截图，只是点不动**（obs 点击无效、Windows 手动点也无反应），那不是 stale daemon，**不要** reset adb server——直接跳到下一节《画面正常但点不动 / tap 无效（guest 假死）》。本节只处理 `adb devices` 为空 / `list_devices` count 掉的情况。
+
 **根因**：Windows 上的 ADB server 守护进程失联（stale daemon）。MuMu 实例本身在正常运行（`MuMuVMMHeadless` 进程在、对应端口在监听），但 `adb devices` 返回空列表 → executor `/list_devices`、`/screenshot` 拿不到任何设备。常见诱因是**模拟器（MuMu）批量重启**：7 个 adb 长连接同时断裂又几乎同时回来，adb server 的发现逻辑进坏状态、设备表清空且不自愈。
 
 > **watchdog 已内置自愈（2026-05-19）**：watchdog 每轮探测 executor `/list_devices`，若 executor `/health` OK 但 count==0 连续 `ADB_FAIL_THRESHOLD`（默认 2）轮，自动远程执行 `adb kill-server && start-server` 重建设备表，并 Telegram 通知结果。`adb` 块（count / expected / zero_streak / last_reset）写入 `executor_status.json`，obs 可读。下面的手动步骤仅作自愈失败时的兜底排查。
@@ -439,3 +441,75 @@ curl -s -X POST http://192.168.100.149:8765/screenshot \
 `list_devices` 在 adb 重启后短暂可能少几个（注册时间差），等几秒重查即会齐。修复后 obs 巡检页面直接刷新即可，**无需重启任何容器**。
 
 > `/screenshot` 的 `port` 字段必须传**字符串**（`{"port":"5557"}`），传 int 会被 Pydantic 拒绝。
+
+---
+
+## 排障：画面正常但点不动 / tap 无效（guest 假死，2026-05-19 实测）
+
+**症状**：obs 能看到画面、截图巡检有画面，但 obs 点击完全无效；**在 Windows 侧手动用鼠标点击 MuMu 窗口也无反应**。
+
+**这与上一节 stale daemon 是两类完全不同的根因，修复手段互斥，先鉴别：**
+
+| 维度 | stale daemon（上一节） | guest 假死（本节） |
+|---|---|---|
+| `adb devices` | 空列表 | 正常，7 个 `device` |
+| `/list_devices` count | 掉到 0 / 偏少 | 正常 = 实例数 |
+| obs 截图 / 画面 | 拉不出画面 | **画面正常** |
+| `adb shell input tap` 直连 | 秒回（设备没问题） | **卡 ~15s 不返回** |
+| 修复手段 | `adb kill-server && start-server` | **必须重启 MuMu 实例** |
+| reset adb server | 有效 | **完全无效** |
+| watchdog 自愈 | 覆盖（count==0 触发） | **不覆盖（count 仍正常）** |
+
+**根因**：MuMu 虚拟机里的 Android guest 自身卡死——具体是 system_server 的 InputDispatcher / InputManagerService 挂死，而 SurfaceFlinger 的 screencap 路径还活着。所以**画面看得见、点不动**。这不是 obs / `ws_input` / executor / adb 任何一层的代码问题。
+
+**关键判据（一句话定位）**：在 Windows 侧**手动鼠标点击模拟器窗口也无反应**——这一步我方软件链路（obs → `ws_input` → executor → adb）完全没参与，仍然点不动，即可锁定故障在 guest，与系统代码无关。
+
+**定位命令**：
+
+```bash
+# 1) 确认设备链路正常（排除 stale daemon）：count 应 = 实例数，adb devices 全 device
+curl -s http://192.168.100.149:8765/list_devices
+
+# 2) HTTP /tap 实测：guest 假死时会卡满 ~15s（撞 executor _adb subprocess timeout=15）
+curl -s -m 16 -X POST http://192.168.100.149:8765/tap \
+  -H "Content-Type: application/json" -d '{"port":"5557","px":800,"py":450}' \
+  -w '\n[http_code=%{http_code} time_total=%{time_total}s]\n'
+# 正常：{"success":true,...} time_total<1s ；假死：http_code=000 time_total≈15s 超时
+
+# 3) 直连 adb 复现（绕过所有软件链路，最硬证据）：14s 兜底，不返回 DONE 即确认 guest 卡死
+timeout 16 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell input tap 800 450; Write-Output DONE_TAP"'
+```
+
+> 端口映射：obs/executor 用奇数 adb 端口（5557…），`adb devices` 显示偶数 console serial（emulator-5556…），对应关系 `emulator-(port-1)`。
+
+### ⚠️ 重启前必须先取证（否则根因永远停在猜测）
+
+重启 MuMu 实例会清空 guest 日志，**最佳取证时机一旦重启就永久丢失**。怀疑 guest 假死时，**先抓证据再重启**：
+
+```bash
+# logcat：guest 卡死时 logd 通常仍存活，-d dump 后退出一般能返回
+timeout 30 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 logcat -d -t 3000"' \
+  > anr_5556_logcat.txt 2>&1
+
+# ANR traces：先 ls 看有哪些文件再 cat（不同 Android 版本路径不同）
+timeout 20 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell ls -l /data/anr/"'
+
+# dumpsys input：走 binder 到 system_server，假死时此命令会一并卡住——
+#                 它卡住本身就是 input 子系统假死的强佐证（带 timeout 兜底，别裸跑）
+timeout 20 ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no sdw@192.168.100.149 \
+  'powershell -NoProfile -Command "& \"C:\Program Files\Netease\MuMu\nx_main\adb.exe\" -s emulator-5556 shell dumpsys input"'
+```
+
+### 修复
+
+**只有重启 MuMu 实例有效**（单个或全部，会重新拉起 guest Android）。reset adb server / 重启 executor / 重启容器 / watchdog 自愈对此**全部无效**。优先现场在 MuMu 多开器里对卡死实例点"重启"；不确定范围就 7 个一起重。
+
+重启后按上一节《验证》流程确认；注意 7 实例一起重启大概率连带触发 stale daemon（adb 长连接同时断回），届时再按上一节 reset 一次 adb server 即可，属正常副作用。
+
+### 已知盲区与疑似诱因（待取证确认）
+
+- **watchdog 当前不覆盖此故障**：它只探 `/list_devices` count，guest input 假死时 count 仍正常，不触发任何自愈，故障会一直挂着直到人工发现。是否给 watchdog 加低频 input 探针需单独评估（探针会真的产生点击，涉及反检测/安全坐标权衡）。
+- **疑似诱因（推断，非定论）**：每实例长期高频 `adb screenrecord` H264 推流（截图巡检卡片默认开 H264 流，executor 日志可见各端口约 20s 一轮 `stream init cache ready`）。长时间高密度 screenrecord 走 guest MediaCodec/SurfaceFlinger，是已知容易拖垮 Android guest 的操作，症状形态（screencap 活、input 死）吻合。坐实需攒 1–2 次上面的 logcat/ANR 现场，再决定是否调整默认关流策略 / 降低推流频率。
