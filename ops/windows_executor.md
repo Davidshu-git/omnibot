@@ -385,6 +385,8 @@ ssh -i /home/shudawei/.ssh/id_towin -o StrictHostKeyChecking=no \
 | `MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD` | `3` | 连续失败几次触发 `restart_executor()` |
 | `MHXY_EXECUTOR_WATCHDOG_RESTART_COOLDOWN_SEC` | `90` | **重启冷却期**：重启后 90s 内 health 失败不递增 fail count，防止 executor 启动慢（RapidOCR 加载 ~15s）触发二次 kill 循环 |
 | `MHXY_EXECUTOR_WATCHDOG_APP_HEALTH_EVERY` | `5` | 每隔多少轮做一次 `/app_health` 深度检查 |
+| `MHXY_EXECUTOR_WATCHDOG_ADB_FAIL_THRESHOLD` | `2` | executor 健康但 `/list_devices` count==0 连续几轮触发 adb server 自愈 |
+| `MHXY_EXECUTOR_WATCHDOG_ADB_RESET_COOLDOWN_SEC` | `120` | **adb 重置冷却期**：`start-server` 后实例注册有时间差，冷却窗口内不重复 kill-server，防 reset 风暴（与 executor 重启冷却独立） |
 
 修改后需 `docker compose restart` watchdog 容器使其生效。
 
@@ -403,7 +405,9 @@ curl http://192.168.100.149:8765/list_devices  # ADB 可见实例列表
 
 **症状**：obs 截图巡检页面拉不出画面，但 executor `/health` 返回 OK。
 
-**根因**：Windows 上的 ADB server 守护进程失联（stale daemon）。MuMu 实例本身在正常运行（`MuMuVMMHeadless` 进程在、对应端口在监听），但 `adb devices` 返回空列表 → executor `/list_devices`、`/screenshot` 拿不到任何设备。这是会偶发复发的问题。
+**根因**：Windows 上的 ADB server 守护进程失联（stale daemon）。MuMu 实例本身在正常运行（`MuMuVMMHeadless` 进程在、对应端口在监听），但 `adb devices` 返回空列表 → executor `/list_devices`、`/screenshot` 拿不到任何设备。常见诱因是**模拟器（MuMu）批量重启**：7 个 adb 长连接同时断裂又几乎同时回来，adb server 的发现逻辑进坏状态、设备表清空且不自愈。
+
+> **watchdog 已内置自愈（2026-05-19）**：watchdog 每轮探测 executor `/list_devices`，若 executor `/health` OK 但 count==0 连续 `ADB_FAIL_THRESHOLD`（默认 2）轮，自动远程执行 `adb kill-server && start-server` 重建设备表，并 Telegram 通知结果。`adb` 块（count / expected / zero_streak / last_reset）写入 `executor_status.json`，obs 可读。下面的手动步骤仅作自愈失败时的兜底排查。
 
 **定位**：
 
