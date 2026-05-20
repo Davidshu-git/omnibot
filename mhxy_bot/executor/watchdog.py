@@ -32,11 +32,15 @@ FAIL_THRESHOLD = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_FAIL_THRESHOLD", "3"))
 # 启动慢（RapidOCR 加载 ONNX ~15s）导致 watchdog 再次 taskkill 形成 kill 循环。
 RESTART_COOLDOWN_SEC = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_RESTART_COOLDOWN_SEC", "90"))
 APP_HEALTH_EVERY = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_APP_HEALTH_EVERY", "5"))
-# adb 守护进程自愈：executor 健康但 /list_devices count==0 连续 N 轮 → 判定 adb
-# server（:5037 那个 adb 自带的进程）设备表 stale，远程 kill-server/start-server。
-# 重启 executor 对此无效——adb daemon 不归 executor 管。
+# adb 守护进程自愈：executor 健康但 /list_devices count < 期望端口数 连续 N 轮 →
+# 判定 adb server（:5037 那个 adb 自带的进程）设备表 stale，远程 kill-server/start-server。
+# 包含两种典型场景：
+#   1) count==0：MuMu 批量重启后 adb 设备表全空（执行 executor /list_devices 仍 OK）。
+#   2) 0 < count < expected：部分 MuMu 实例重启时机错过 adb daemon 的 emulator
+#      console 扫描，adb devices 缺失部分实例（实测中常见，详见 ops/windows_executor.md）。
+# 重启 executor 对两种情况均无效——adb daemon 不归 executor 管。
 ADB_FAIL_THRESHOLD = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_ADB_FAIL_THRESHOLD", "2"))
-# adb 重置冷却：start-server 后实例注册有时间差，count 可能短暂仍为 0。
+# adb 重置冷却：start-server 后实例注册有时间差，count 可能短暂仍为 0/部分。
 # 冷却窗口内不重复 kill-server，避免 reset 风暴（与 executor 重启冷却独立）。
 ADB_RESET_COOLDOWN_SEC = int(os.getenv("MHXY_EXECUTOR_WATCHDOG_ADB_RESET_COOLDOWN_SEC", "120"))
 SYNC_EVENTS_EVERY = int(os.getenv("MHXY_EXECUTOR_EVENTS_SYNC_EVERY", "1"))
@@ -490,10 +494,10 @@ def restart_executor(reason: str) -> dict[str, Any]:
 def reset_adb_server(reason: str) -> dict[str, Any]:
     """重启 Windows 上 adb 自带的 :5037 守护进程，强制重建设备表。
 
-    模拟器（MuMu）批量重启后，adb server 进程不退出但内存 transport 表
-    stale，executor `/health` 仍 OK 而 `/list_devices` count==0。此时重启
-    executor 无效（adb daemon 不归 executor 管），唯一修复是
-    ``adb kill-server && start-server`` 让其全量重新发现实例。
+    模拟器（MuMu）批量或部分重启后，adb server 进程不退出但内存 transport
+    表残缺，executor `/health` 仍 OK 而 `/list_devices` count 低于期望（最差
+    情况为 0）。此时重启 executor 无效（adb daemon 不归 executor 管），唯一
+    修复是 ``adb kill-server && start-server`` 让其全量重新发现实例。
 
     复用 watchdog 已有的 SSH 通道，与 :func:`restart_executor` 一致，改动不
     扩散到 Windows 侧（无需新增 executor 端点）。
@@ -622,13 +626,18 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
         process = get_remote_process()
 
     # ── adb 守护进程自愈 ──────────────────────────────────────────────
-    # executor 健康但 /list_devices count==0 连续 ADB_FAIL_THRESHOLD 轮 →
-    # 判定 adb server（adb 自带的 :5037 进程）设备表 stale。重启 executor 对此
-    # 无效，需远程 kill/start adb server 让其全量重新发现 MuMu 实例。
+    # executor 健康但 /list_devices count < 期望端口数 连续 ADB_FAIL_THRESHOLD
+    # 轮 → 判定 adb server（adb 自带的 :5037 进程）设备表 stale（全部丢失 or
+    # 部分丢失）。重启 executor 对此无效，需远程 kill/start adb server 让其
+    # 全量重新发现 MuMu 实例。
+    expected_count = len(ports)
     prev_adb = previous.get("adb") if isinstance(previous, dict) else {}
     if not isinstance(prev_adb, dict):
         prev_adb = {}
-    adb_zero_streak = int(prev_adb.get("zero_streak", 0) or 0)
+    # 字段 zero_streak → stale_streak 的兼容读取（旧 status 文件首次升级时回退）
+    adb_stale_streak = int(
+        prev_adb.get("stale_streak", prev_adb.get("zero_streak", 0)) or 0
+    )
     adb_reset: dict[str, Any] | None = None
 
     if health_ok:
@@ -639,7 +648,8 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
 
     # 仅当 /list_devices 调用本身成功时 count 才可信，避免把瞬时 HTTP 抖动误判 stale
     if health_ok and devices_detail.get("ok") is True:
-        adb_zero_streak = adb_zero_streak + 1 if devices_count == 0 else 0
+        is_short = devices_count is not None and devices_count < expected_count
+        adb_stale_streak = adb_stale_streak + 1 if is_short else 0
 
     adb_in_cooldown = False
     last_adb_reset_at = (prev_adb.get("last_reset") or {}).get("at")
@@ -654,30 +664,55 @@ def run_once(iteration: int, consecutive_failures: int, ports: list[str]) -> tup
 
     if (
         health_ok
-        and adb_zero_streak >= ADB_FAIL_THRESHOLD
+        and adb_stale_streak >= ADB_FAIL_THRESHOLD
         and not adb_in_cooldown
         and restart is None  # 本轮没刚重启 executor，避免叠加扰动
     ):
-        reason = f"adb device table stale ({adb_zero_streak} checks count=0, executor healthy)"
+        reason = (
+            f"adb device table stale ({adb_stale_streak} checks, "
+            f"count={devices_count}/{expected_count}, executor healthy)"
+        )
         log.warning("adb self-heal triggered: %s", reason)
         adb_reset = reset_adb_server(reason)
-        adb_zero_streak = 0
+        adb_stale_streak = 0
         time.sleep(4)  # start-server 后实例注册有时间差
         devices_count, devices_detail = http_list_devices()
-        if devices_detail.get("ok") is True and devices_count:
-            notify(f"MHXY adb 守护进程已自愈\n原因：{reason}\n恢复设备数：{devices_count}")
+        recovered = (
+            devices_detail.get("ok") is True
+            and devices_count is not None
+            and devices_count >= expected_count
+        )
+        # adb 自愈后强制刷一次 app_health 深检，让 obs /instances 立即看到新状态，
+        # 否则得等到下一次自然深检（最长 APP_HEALTH_EVERY 轮 ≈5 分钟）才能反映恢复结果。
+        # APP_HEALTH_EVERY==0 时整体禁用深检，这里也不强制（尊重配置）。
+        if APP_HEALTH_EVERY > 0:
+            app_results = [http_app_health(port) for port in ports]
+            app_health_checked_at = utc_now()
+            health_ok = all(r.get("healthy") is True for r in app_results)
+        healthy_after = sum(1 for r in app_results if r.get("healthy") is True)
+        if recovered:
+            notify(
+                f"MHXY adb 守护进程已自愈\n原因：{reason}\n"
+                f"恢复设备数：{devices_count}/{expected_count}\n"
+                f"实例健康：{healthy_after}/{expected_count}"
+            )
         else:
             notify(
-                "MHXY adb 自愈后仍未恢复\n"
-                f"原因：{reason}\ncount={devices_count}\n"
-                "（可能 MuMu 实例未启动，需人工检查 Windows 主机）"
+                "MHXY adb 自愈后仍未完全恢复\n"
+                f"原因：{reason}\ncount={devices_count}/{expected_count}\n"
+                f"实例健康：{healthy_after}/{expected_count}\n"
+                "（可能仍有 MuMu 实例未启动或 emulator console 未就绪，需人工检查 Windows 主机）"
             )
 
     adb_block = {
         "count": devices_count,
-        "expected": len(ports),
-        "ok": devices_detail.get("ok") is True and bool(devices_count),
-        "zero_streak": adb_zero_streak,
+        "expected": expected_count,
+        "ok": (
+            devices_detail.get("ok") is True
+            and devices_count is not None
+            and devices_count >= expected_count
+        ),
+        "stale_streak": adb_stale_streak,
         "fail_threshold": ADB_FAIL_THRESHOLD,
         "in_cooldown": adb_in_cooldown,
         "detail": devices_detail,
@@ -747,7 +782,7 @@ def main() -> None:
                 status["process"].get("pid"),
                 status.get("adb", {}).get("count"),
                 status.get("adb", {}).get("expected"),
-                status.get("adb", {}).get("zero_streak"),
+                status.get("adb", {}).get("stale_streak"),
             )
         except Exception:
             log.exception("watchdog loop failed")
