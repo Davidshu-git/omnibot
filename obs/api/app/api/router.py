@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from sqlalchemy import func, select, distinct, String, case
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -238,6 +238,32 @@ async def projects_runtime_models():
             "available_vl_models": _AVAILABLE_VL_MODELS.get(project_id, []),
         })
     return out
+
+
+# ---------------------------------------------------------------------------
+# Agent-generated artifact files (read-only, served from runtime mounts)
+# ---------------------------------------------------------------------------
+
+@router.get("/files/stock/{filename}")
+async def stock_chart_file(filename: str):
+    """返回 stock bot 在 agent_workspace 下生成的图片（如 K 线走势图）。
+
+    obs-api 以只读方式挂载了 stock bot 的 data 目录（/runtime/stock-bot），
+    时间线 tool_result 的 meta.file_name 指向这里的文件，前端 <img> 按需拉取。
+
+    Args:
+        filename: 仅文件名（无路径分隔符），如 ``NVDA_30d_chart.png``。
+
+    Raises:
+        HTTPException: 路径越界（400）或文件不存在（404）。
+    """
+    base = (Path(os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot") / "agent_workspace").resolve()
+    target = (base / filename).resolve()
+    if not target.is_relative_to(base):
+        raise HTTPException(status_code=400, detail="invalid path")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="file not found")
+    return FileResponse(target, media_type="image/png")
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +725,7 @@ async def session_timeline(
         "events": [
             {
                 "event_id": e.event_id,
+                "project_id": e.project_id,
                 "event_type": e.event_type,
                 "timestamp": e.timestamp,
                 "trace_id": e.trace_id,

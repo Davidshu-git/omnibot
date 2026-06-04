@@ -230,6 +230,10 @@ pre, code, .mono { font-family: var(--font-mono); }
 .md-content th      { background: var(--border); font-weight: 600; }
 .md-content hr      { border: none; border-top: 1px solid var(--border-hi); margin: .6em 0; }
 .md-content a       { color: var(--blue); }
+.md-content img     {
+  max-width: 100%; height: auto; display: block; margin: .4em 0;
+  border: 1px solid var(--border); border-radius: var(--r-sm);
+}
 .md-content blockquote {
   border-left: 3px solid var(--border-hi);
   padding-left: .75em; color: var(--text-muted); margin-bottom: .5em;

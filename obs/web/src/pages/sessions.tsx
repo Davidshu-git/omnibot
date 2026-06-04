@@ -83,6 +83,18 @@ function fmtDate(s: string | null | undefined) {
 function parseMd(text: string): string {
   return DOMPurify.sanitize(marked.parse(text) as string);
 }
+// 把模型回复里指向 agent_workspace 的相对图片路径（如 ![走势图](./NVDA_30d_chart.png)）
+// 重写到 obs-api 的静态文件端点，使图片能直接在回复气泡内渲染。仅取 basename，
+// 端点 /api/files/stock/{filename} 只接受单段文件名。
+function rewriteStockImages(md: string): string {
+  return md.replace(
+    /!\[([^\]]*)\]\(\s*\.?\/?([^)\s]+\.(?:png|jpg|jpeg|gif|webp))\s*\)/gi,
+    (_m, alt: string, file: string) => {
+      const name = file.split("/").pop() ?? file;
+      return `![${alt}](/api/files/stock/${encodeURIComponent(name)})`;
+    },
+  );
+}
 function fmtMsValue(v: unknown): string | null {
   if (typeof v !== "number") return null;
   if (v >= 1000) return `${(v / 1000).toFixed(v >= 10000 ? 1 : 2)}s`;
@@ -174,7 +186,8 @@ function EventDetail({ event }: { event: NormalizedEvent }) {
       ? "rgba(251,191,36,.12)"
       : "rgba(52,211,153,.1)";
     const truncated = !expanded && content.length > 400;
-    const html = parseMd(truncated ? content.slice(0, 400) + "…" : content);
+    const sliced = truncated ? content.slice(0, 400) + "…" : content;
+    const html = parseMd(event.project_id === "stock-bot" ? rewriteStockImages(sliced) : sliced);
 
     return (
       <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
