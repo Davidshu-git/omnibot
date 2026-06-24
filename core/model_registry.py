@@ -287,6 +287,16 @@ def make_standard_registry(
             max_tokens=8192,
             llm_class=DeepSeekChatLLM,
         ),
+        ModelConfig(
+            key="deepseek-pro",
+            display_name="DeepSeek V4 Pro",
+            api_key=os.getenv("DEEPSEEK_API_KEY", ""),
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-pro",
+            timeout=90,
+            max_tokens=8192,
+            llm_class=DeepSeekChatLLM,
+        ),
     ]
 
     settings_path = settings_dir / settings_filename

@@ -48,6 +48,11 @@ _COST_CONFIG: dict[str, dict[str, float]] = {
         "cache_hit_per_m": 0.02,
         "output_per_m":    2.0,
     },
+    "deepseek-v4-pro": {
+        "input_per_m":     3.0,
+        "cache_hit_per_m": 0.025,
+        "output_per_m":    6.0,
+    },
     "qwen3-vl-plus": {
         "input_per_m":     1.0,
         "cache_hit_per_m": 0.0,
@@ -184,12 +189,14 @@ _AVAILABLE_TEXT_MODELS: dict[str, list[dict]] = {
         {"key": "qwen",     "display_name": "Qwen 3.5 Plus",     "provider": "dashscope"},
         {"key": "qwen36",   "display_name": "Qwen 3.6 Plus",     "provider": "dashscope"},
         {"key": "deepseek", "display_name": "DeepSeek V4 Flash", "provider": "deepseek"},
+        {"key": "deepseek-pro", "display_name": "DeepSeek V4 Pro", "provider": "deepseek"},
     ],
     "ehs-bot": [
         {"key": "minimax",  "display_name": "MiniMax M2.7",      "provider": "minimax"},
         {"key": "qwen",     "display_name": "Qwen 3.5 Plus",     "provider": "dashscope"},
         {"key": "qwen36",   "display_name": "Qwen 3.6 Plus",     "provider": "dashscope"},
         {"key": "deepseek", "display_name": "DeepSeek V4 Flash", "provider": "deepseek"},
+        {"key": "deepseek-pro", "display_name": "DeepSeek V4 Pro", "provider": "deepseek"},
     ],
 }
 
