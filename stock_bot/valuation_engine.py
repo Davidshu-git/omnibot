@@ -9,13 +9,14 @@
 """
 
 import socket
+import threading
 import yfinance as yf
 import akshare as ak
 import mplfinance as mpf
 import pandas as pd
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Callable, Tuple
 import logging
 from tenacity import retry, stop_after_attempt, wait_fixed, retry_if_exception_type
 import requests
@@ -189,6 +190,134 @@ def format_universal_ticker(ticker: str) -> str:
     return ticker
 
 
+_STOCK_SOURCE_TIMEOUT: float = 12.0
+"""单个行情源调用的硬超时（秒）。akshare/requests 不一定遵守 socket 超时，
+慢吊会无限阻塞，故在线程级兜底；守护线程随进程退出，不泄漏到主流程。"""
+
+
+def _run_with_timeout(fn: Callable[[], Any], timeout_s: float) -> Any:
+    """在守护线程中执行 fn 并施加硬超时。
+
+    Args:
+        fn: 无参可调用对象（外部数据源调用）。
+        timeout_s: 硬超时秒数。
+
+    Returns:
+        fn 的返回值。
+
+    Raises:
+        TimeoutError: fn 超过 timeout_s 仍未返回。
+        Exception: fn 内部抛出的原始异常（透传）。
+    """
+    box: Dict[str, Any] = {}
+
+    def _runner() -> None:
+        try:
+            box["result"] = fn()
+        except Exception as exc:  # noqa: BLE001 - 由调用方统一降级处理
+            box["error"] = exc
+
+    th = threading.Thread(target=_runner, daemon=True)
+    th.start()
+    th.join(timeout_s)
+    if th.is_alive():
+        raise TimeoutError(f"数据源调用超时（> {timeout_s}s）")
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
+
+
+def _map_to_akshare_sina_symbol(formatted_ticker: str) -> Optional[Tuple[str, str]]:
+    """把 yfinance 格式代码映射为 akshare 新浪源 symbol。
+
+    Args:
+        formatted_ticker: format_universal_ticker 的输出（如 600519.SS / 3033.HK / AAPL）。
+
+    Returns:
+        (market, symbol)，无法映射返回 None：
+          - A股 600519.SS -> ('a', 'sh600519')；000001.SZ -> ('a', 'sz000001')
+          - 港股 3033.HK   -> ('hk', '03033')（新浪需 5 位补零）
+          - 美股 AAPL      -> ('us', 'AAPL')
+    """
+    t = formatted_ticker.upper()
+    if t.endswith(".SS"):
+        return ("a", "sh" + "".join(filter(str.isdigit, t)))
+    if t.endswith(".SZ"):
+        return ("a", "sz" + "".join(filter(str.isdigit, t)))
+    if t.endswith(".HK"):
+        digits = "".join(filter(str.isdigit, t.split(".")[0]))
+        return ("hk", str(int(digits)).zfill(5)) if digits else None
+    if "." not in t and t.isalpha():
+        return ("us", t)
+    return None
+
+
+def _fetch_stock_price_akshare(formatted_ticker: str, date: Optional[str]) -> Dict[str, Any]:
+    """akshare 新浪源备用取价（A股/港股/美股）。
+
+    新浪行情源打 sina host，与 yfinance（Yahoo）/东财故障域独立，作为 yfinance 失败后的降级。
+
+    Args:
+        formatted_ticker: yfinance 格式代码。
+        date: 可选 'YYYY-MM-DD'，None 取最近交易日。
+
+    Returns:
+        与 yfinance 路径一致的价格字典（附 source='akshare_sina'）。
+
+    Raises:
+        ValueError: 无法映射代码 / 数据不完整。
+        IndexError: 指定日期或最新无数据。
+    """
+    mapped = _map_to_akshare_sina_symbol(formatted_ticker)
+    if mapped is None:
+        raise ValueError(f"无法为 {formatted_ticker} 映射 akshare 新浪源代码")
+    market, symbol = mapped
+
+    def _call() -> pd.DataFrame:
+        if market == "a":
+            end = (date or datetime.now().strftime("%Y-%m-%d")).replace("-", "")
+            start = (date or "1990-01-01").replace("-", "")
+            return ak.stock_zh_a_daily(symbol=symbol, start_date=start, end_date=end, adjust="")
+        if market == "hk":
+            return ak.stock_hk_daily(symbol=symbol, adjust="")
+        return ak.stock_us_daily(symbol=symbol, adjust="")
+
+    df = _run_with_timeout(_call, _STOCK_SOURCE_TIMEOUT)
+    if df is None or df.empty:
+        raise IndexError(f"akshare 新浪源未找到 {formatted_ticker} 的数据")
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    if date:
+        row_df = df[df["date"] == pd.to_datetime(date)]
+        if row_df.empty:
+            raise IndexError(f"akshare 新浪源无 {formatted_ticker} 在 {date} 的数据")
+        row = row_df.iloc[-1]
+        date_label = date
+    else:
+        row = df.sort_values("date").iloc[-1]
+        date_label = datetime.now().strftime("%Y-%m-%d")
+
+    open_val, close_val = row["open"], row["close"]
+    if pd.isna(open_val) or pd.isna(close_val):
+        raise ValueError("akshare 新浪源数据不完整（存在空值）")
+
+    result: Dict[str, Any] = {
+        "ticker": formatted_ticker,
+        "open": round(float(open_val), 2),
+        "close": round(float(close_val), 2),
+        "date": row["date"].strftime("%Y-%m-%d"),
+        "query_date": date_label,
+        "source": "akshare_sina",
+    }
+    if "high" in row.index and pd.notna(row["high"]):
+        result["high"] = round(float(row["high"]), 2)
+    if "low" in row.index and pd.notna(row["low"]):
+        result["low"] = round(float(row["low"]), 2)
+    return result
+
+
 def fetch_stock_price_raw(ticker: str, date: Optional[str] = None) -> Dict[str, Any]:
     """
     获取全球股票原始价格数据（支持美股/A 股/港股）。
@@ -198,18 +327,29 @@ def fetch_stock_price_raw(ticker: str, date: Optional[str] = None) -> Dict[str, 
         date: 可选日期 'YYYY-MM-DD'，未提供则返回最近交易日
     
     Returns:
-        dict: {"open": xxx, "close": xxx, "date": "...", "high": xxx, "low": xxx}
-    
+        dict: {"open": xxx, "close": xxx, "date": "...", "high": xxx, "low": xxx,
+               "source": "yfinance" | "akshare_sina"}
+
+    数据源降级：yfinance（Yahoo）为主 → akshare 新浪源为备。两源故障域独立
+    （境外 Yahoo vs 境内新浪），单源抽风/限流不再直接熔断。日期格式错误不触发降级。
+
     Raises:
         ValueError: 日期格式不正确
-        KeyError: 数据字段缺失
-        IndexError: 无历史数据
+        IndexError: 所有数据源均无历史数据
     """
     formatted_ticker = format_universal_ticker(ticker)
-    stock = yf.Ticker(formatted_ticker)
-    
+
     if date:
         try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError as e:
+            raise ValueError(f"日期格式不正确：{e}")
+
+    # 主源：yfinance
+    yf_error: Optional[Exception] = None
+    try:
+        stock = yf.Ticker(formatted_ticker)
+        if date:
             target_date = datetime.strptime(date, "%Y-%m-%d")
             next_date = target_date + timedelta(days=1)
             hist = stock.history(
@@ -218,39 +358,48 @@ def fetch_stock_price_raw(ticker: str, date: Optional[str] = None) -> Dict[str, 
                 timeout=10
             )
             date_label = date
-        except ValueError as e:
-            raise ValueError(f"日期格式不正确：{e}")
-    else:
-        hist = stock.history(period="1d", timeout=10)
-        date_label = datetime.now().strftime("%Y-%m-%d")
-    
-    if hist.empty:
-        raise IndexError(f"未找到 {formatted_ticker} 的历史数据")
-    
-    open_val = hist['Open'].iloc[0]
-    close_val = hist['Close'].iloc[0]
-    high_val = hist['High'].iloc[0] if 'High' in hist.columns else None
-    low_val = hist['Low'].iloc[0] if 'Low' in hist.columns else None
-    
-    if pd.isna(open_val) or pd.isna(close_val):
-        raise ValueError("数据不完整（存在空值）")
-    
-    actual_date = hist.index[0].strftime("%Y-%m-%d")
-    
-    result: Dict[str, Any] = {
-        "ticker": formatted_ticker,
-        "open": round(float(open_val), 2),
-        "close": round(float(close_val), 2),
-        "date": actual_date,
-        "query_date": date_label
-    }
-    
-    if high_val and not pd.isna(high_val):
-        result["high"] = round(float(high_val), 2)
-    if low_val and not pd.isna(low_val):
-        result["low"] = round(float(low_val), 2)
-    
-    return result
+        else:
+            hist = stock.history(period="1d", timeout=10)
+            date_label = datetime.now().strftime("%Y-%m-%d")
+
+        if hist.empty:
+            raise IndexError(f"未找到 {formatted_ticker} 的历史数据")
+
+        open_val = hist['Open'].iloc[0]
+        close_val = hist['Close'].iloc[0]
+        high_val = hist['High'].iloc[0] if 'High' in hist.columns else None
+        low_val = hist['Low'].iloc[0] if 'Low' in hist.columns else None
+
+        if pd.isna(open_val) or pd.isna(close_val):
+            raise ValueError("数据不完整（存在空值）")
+
+        result: Dict[str, Any] = {
+            "ticker": formatted_ticker,
+            "open": round(float(open_val), 2),
+            "close": round(float(close_val), 2),
+            "date": hist.index[0].strftime("%Y-%m-%d"),
+            "query_date": date_label,
+            "source": "yfinance",
+        }
+        if high_val is not None and not pd.isna(high_val):
+            result["high"] = round(float(high_val), 2)
+        if low_val is not None and not pd.isna(low_val):
+            result["low"] = round(float(low_val), 2)
+        return result
+    except Exception as e:
+        yf_error = e
+
+    # 备源：akshare 新浪源（yfinance 失败后降级）
+    try:
+        logger.warning(
+            f"yfinance 取价 {formatted_ticker} 失败（{type(yf_error).__name__}），降级 akshare 新浪源"
+        )
+        return _fetch_stock_price_akshare(formatted_ticker, date)
+    except Exception as ak_error:
+        raise IndexError(
+            f"未找到 {formatted_ticker} 的历史数据"
+            f"（yfinance: {type(yf_error).__name__}；akshare: {type(ak_error).__name__}）"
+        )
 
 
 def fetch_etf_price_raw(etf_code: str, date: Optional[str] = None) -> Dict[str, Any]:
@@ -648,11 +797,15 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
     
     positions = {}
     skip_keys = {"风险偏好", "投资目标", "备注", "持仓策略"}
-    
+    # 股票代码只含 ASCII 字母/数字/点/连字符（AAPL、600519、3033.HK、BRK-B）。
+    # 含中文等非此格式的键（如"持仓信息"汇总、"价格提醒"备注）不是持仓，直接跳过，
+    # 避免把自然语言备注误当 ticker 去查价、产生熔断报错行。
+    ticker_pattern = re.compile(r'^[A-Za-z0-9.\-]{1,12}$')
+
     for key, value in user_data.items():
-        if key in skip_keys:
+        if key in skip_keys or not ticker_pattern.match(str(key)):
             continue
-        
+
         try:
             ticker = key
             holding_str = str(value)
