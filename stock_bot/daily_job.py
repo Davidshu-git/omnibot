@@ -204,13 +204,16 @@ def fetch_global_market_news() -> str:
         RuntimeError: 所有数据源全部失效时抛出。
     """
     data_sources: List[Dict[str, Any]] = [
-        {"name": "财联社全球电报", "func": _fetch_cls_news},
+        # 财联社 stock_info_global_cls 服务端持续吊死（接受连接不回包，非网络问题），
+        # 每次都要等满 _SOURCE_TIMEOUT 才跳过、平白拖慢 20s。暂时摘除，待 akshare 升级
+        # 或财联社接口恢复后取消注释即可恢复（函数 _fetch_cls_news 与映射均保留）。
+        # {"name": "财联社全球电报", "func": _fetch_cls_news},
         {"name": "新浪 7x24", "func": _fetch_sina_news},
         {"name": "东财全球快讯", "func": _fetch_em_news},
     ]
 
     column_mapping: Dict[str, Dict[str, str]] = {
-        "财联社全球电报": {"time": "发布时间", "content": "内容"},
+        "财联社全球电报": {"time": "发布时间", "content": "内容"},  # 摘除中，恢复财联社时一并启用
         "新浪 7x24": {"time": "时间", "content": "内容"},
         "东财全球快讯": {"time": "发布时间", "content": "摘要"},
     }
