@@ -14,6 +14,7 @@ import os
 import sys
 import json
 import time
+import threading
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, TypedDict
@@ -144,6 +145,15 @@ def _fetch_em_news() -> pd.DataFrame:
     return ak.stock_info_global_em()
 
 
+_SOURCE_TIMEOUT: int = 20
+"""单个资讯源的硬超时（秒）。
+
+akshare 底层 requests/urllib3 会用自身的 socket 超时覆盖 ``socket.setdefaulttimeout``，
+某一源（如财联社）服务端接受连接却不回包时会无限阻塞 read，导致整份日报永远卡死。
+故在线程级施加硬超时：超时即放弃该源（守护线程随主进程退出），保证其余源照常产出报告。
+"""
+
+
 def fetch_global_market_news() -> str:
     """
     高可用多源数据聚合抓取，内置三级降级与数据融合机制。
@@ -171,36 +181,65 @@ def fetch_global_market_news() -> str:
         "东财全球快讯": {"time": "发布时间", "content": "摘要"},
     }
 
+    # 并行启动三源抓取（守护线程），主线程以共享 deadline 逐个 join，单源最多等
+    # _SOURCE_TIMEOUT 秒。超时的源继续在后台跑（daemon，随进程退出），主流程不被其拖死。
+    results: Dict[str, Any] = {}
+
+    def _runner(name: str, fn: Any) -> None:
+        """在守护线程中执行单源抓取，结果或异常统一回填 results。"""
+        try:
+            results[name] = fn()
+        except Exception as exc:  # noqa: BLE001 - 记录后由主线程统一降级，不可让子线程异常逃逸
+            results[name] = exc
+
+    threads: Dict[str, threading.Thread] = {}
+    for source in data_sources:
+        th = threading.Thread(
+            target=_runner,
+            args=(source["name"], source["func"]),
+            name=f"news-{source['name']}",
+            daemon=True,
+        )
+        th.start()
+        threads[source["name"]] = th
+
+    deadline: float = time.monotonic() + _SOURCE_TIMEOUT
+
     dfs = []
 
     for source in data_sources:
         source_name: str = source["name"]
-        fetch_func = source["func"]
+        threads[source_name].join(max(0.0, deadline - time.monotonic()))
 
-        try:
-            df: pd.DataFrame = fetch_func()
-
-            if df is not None and not df.empty:
-                console.print(f"[bold green]✅ 成功获取 {source_name}: {len(df)} 条数据[/bold green]")
-
-                mapping = column_mapping.get(source_name, {})
-                time_col: str = mapping.get("time", "")
-                content_col: str = mapping.get("content", "")
-
-                if time_col in df.columns and content_col in df.columns:
-                    selected_df = df[[time_col, content_col]].copy()
-                    selected_df.columns = ["time", "content"]
-                    dfs.append(selected_df)
-                    console.print(f"[dim]   └─ 列名映射：{time_col} → time, {content_col} → content[/dim]")
-                else:
-                    console.print(f"[bold red]❌ {source_name} 列名不匹配，期望 time='{time_col}', content='{content_col}'[/bold red]")
-                    console.print(f"[dim]   实际列名：{list(df.columns)}[/dim]")
-                    continue
-            else:
-                console.print(f"[bold yellow]⚠️  {source_name} 返回空数据[/bold yellow]")
-        except Exception as e:
-            console.print(f"[bold red]❌ {source_name} 获取失败：{type(e).__name__} - {str(e)}[/bold red]")
+        if threads[source_name].is_alive():
+            console.print(f"[bold red]❌ {source_name} 抓取超时（> {_SOURCE_TIMEOUT}s），跳过[/bold red]")
             continue
+
+        outcome = results.get(source_name)
+        if isinstance(outcome, Exception):
+            console.print(f"[bold red]❌ {source_name} 获取失败：{type(outcome).__name__} - {str(outcome)}[/bold red]")
+            continue
+
+        df: pd.DataFrame = outcome
+
+        if df is not None and not df.empty:
+            console.print(f"[bold green]✅ 成功获取 {source_name}: {len(df)} 条数据[/bold green]")
+
+            mapping = column_mapping.get(source_name, {})
+            time_col: str = mapping.get("time", "")
+            content_col: str = mapping.get("content", "")
+
+            if time_col in df.columns and content_col in df.columns:
+                selected_df = df[[time_col, content_col]].copy()
+                selected_df.columns = ["time", "content"]
+                dfs.append(selected_df)
+                console.print(f"[dim]   └─ 列名映射：{time_col} → time, {content_col} → content[/dim]")
+            else:
+                console.print(f"[bold red]❌ {source_name} 列名不匹配，期望 time='{time_col}', content='{content_col}'[/bold red]")
+                console.print(f"[dim]   实际列名：{list(df.columns)}[/dim]")
+                continue
+        else:
+            console.print(f"[bold yellow]⚠️  {source_name} 返回空数据[/bold yellow]")
 
     if not dfs:
         raise RuntimeError("所有宏观资讯源全部失效")
