@@ -120,6 +120,35 @@ def make_memory_tools(memory_dir: Path) -> list:
             return f"记忆写入失败：{type(e).__name__} - {str(e)}"
 
     @tool
+    def delete_user_memory(key: str) -> str:
+        """
+        🗑️【记忆删除指令】：
+        从长期记忆库中彻底移除一个已无用的条目（按 key 删除整条）。
+        仅用于清理 LTM（用户状态/偏好/持仓快照），不影响交易流水日志。
+        - 触发条件：用户清仓某标的并要求删除、明确指出某条记忆已过时/记错了要删掉，
+          或需要清理"已清空""无效占位"等僵尸条目。
+        - 参数 key: 要删除的记忆分类标签（必须与现有 key 完全一致，如 "0700.HK"、"价格提醒"）。
+        """
+        try:
+            if not profile_path.exists():
+                return "❌ 记忆库为空，无可删除条目。"
+            with FileLock(lock_path, timeout=5):
+                with open(profile_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                if key not in data:
+                    return f"⚠️ 未找到记忆条目 [{key}]，无需删除（请确认 key 是否完全一致）。"
+                removed_value = data.pop(key)
+                with open(profile_path, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+            return f"✅ 已删除记忆条目：[{key}]（原值：'{str(removed_value)[:50]}'）"
+        except json.JSONDecodeError:
+            return "❌ 记忆文件损坏：JSONDecodeError"
+        except TimeoutError:
+            return "❌ 文件锁超时：其他进程正在写入记忆"
+        except Exception as e:
+            return f"记忆删除失败：{type(e).__name__} - {str(e)}"
+
+    @tool
     def append_transaction_log(action: str, target: str, details: str) -> str:
         """
         🚨【交易日志指令】：
@@ -140,4 +169,4 @@ def make_memory_tools(memory_dir: Path) -> list:
         except Exception as e:
             return f"记录流水失败：{type(e).__name__} - {str(e)}"
 
-    return [update_user_memory, append_transaction_log]
+    return [update_user_memory, delete_user_memory, append_transaction_log]

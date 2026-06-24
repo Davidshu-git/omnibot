@@ -51,9 +51,11 @@ def make_stock_tools(
     )
     def get_universal_stock_price(ticker: str, date: Optional[str] = None) -> str:
         """
-        🌐 全球股票查价引擎（支持美股、A 股、港股）。
-        只需传入用户提到的代码即可（例如：AAPL, 600519, 0700），底层会自动判断市场。
-        - 参数 date (可选): 'YYYY-MM-DD'。未提供则默认返回最近交易日。
+        🌐 全球资产查价引擎（支持美股、A 股、港股，以及主流加密货币）。
+        只需传入用户提到的代码即可，底层会自动判断市场：
+        - 股票：AAPL、600519、0700（自动补市场后缀）
+        - 加密货币：BTC、ETH（比特币/以太坊等，自动补 -USD 兑美元报价，7x24 实时）
+        - 参数 date (可选): 'YYYY-MM-DD'。未提供则默认返回最近交易日/最新行情。
         """
         price_data = fetch_stock_price_raw(ticker, date)
         return (
@@ -123,6 +125,8 @@ def make_stock_tools(
         """
         当你不知道某家公司、产品或品牌的具体股票代码时，必须先使用此工具。
         输入公司或产品名称（如 'aws', '淘宝', '马斯克的公司'），联网搜索并返回相关信息。
+        ⚠️ 加密货币（比特币/BTC、以太坊/ETH 等）不要用此工具，也不要去找对应的现货 ETF
+        （如 IBIT、GBTC）——请直接把币种符号传给 `get_universal_stock_price` 查现货价。
         """
         import requests
         try:
@@ -158,10 +162,27 @@ def make_stock_tools(
             if not user_data:
                 return "❌ 持仓记忆为空，请先告知我您的持仓情况。"
             positions = parse_user_profile_to_positions(user_data)
+            # 安全网：检测"看起来是持仓（value 含 X股 + 成本）但 key 不合法被静默跳过"的条目，
+            # 避免像 BTC持仓 这类畸形 key 导致持仓凭空漏算却无任何提示。
+            import re as _re
+            skipped = [
+                k for k, v in user_data.items()
+                if k not in positions
+                and _re.search(r'[\d.]+\s*股', str(v))
+                and '成本' in str(v)
+            ]
             if not positions:
                 return "❌ 未解析到有效持仓数据，请检查持仓记忆格式。"
             valuation = calculate_portfolio_valuation(positions)
-            return format_portfolio_report(valuation)
+            report = format_portfolio_report(valuation)
+            if skipped:
+                report += (
+                    "\n\n⚠️ **检测到疑似漏算持仓**：以下记忆条目疑似持仓但 key 不合法（未纳入计算）："
+                    + "、".join(f"`{k}`" for k in skipped)
+                    + "。请将其 key 改为裸代码/币种符号（如 BTC），可让用户确认后用 "
+                    "`delete_user_memory` 删旧 key、`update_user_memory` 以正确 key 重写。"
+                )
+            return report
         except json.JSONDecodeError:
             return "❌ 持仓记忆文件损坏：JSONDecodeError"
         except Exception as e:

@@ -37,6 +37,29 @@ DEFAULT_EXCHANGE_RATES = {
     "CNY_CNY": 1.0
 }
 
+# 主流加密货币符号集合。yfinance 用 "BTC-USD" 形式取价（兑美元计价），
+# 用户/LLM 可能传裸符号（BTC）或已带 -USD 后缀，统一在此规整。
+# 仅收录主流币种，避免与普通股票代码（如 ADA/SOL 等同名风险）误判范围扩散。
+CRYPTO_SYMBOLS = {
+    "BTC", "ETH", "USDT", "USDC", "BNB", "SOL", "XRP", "ADA",
+    "DOGE", "TRX", "LINK", "DOT", "LTC", "BCH", "AVAX", "XLM",
+    "ATOM", "ETC", "FIL", "APT", "ARB", "OP", "SUI", "TON", "NEAR",
+    "MATIC", "SHIB", "UNI", "AAVE", "ICP",
+}
+
+
+def is_crypto_ticker(ticker: str) -> bool:
+    """判断 ticker 是否为受支持的加密货币（裸符号或 -USD 形式）。
+
+    Args:
+        ticker: 原始或已格式化的代码（如 BTC、BTC-USD、比特币的代码）。
+
+    Returns:
+        bool: 命中 CRYPTO_SYMBOLS 返回 True。
+    """
+    base = ticker.strip().upper().split("-")[0]
+    return base in CRYPTO_SYMBOLS
+
 
 @retry(
     stop=stop_after_attempt(2),
@@ -139,7 +162,12 @@ def detect_ticker_currency(ticker: str) -> str:
         str: 货币代码 "USD", "HKD", 或 "CNY"
     """
     ticker_upper = ticker.upper()
-    
+
+    # 加密货币以美元计价（yfinance 的 BTC-USD 等），须先于下方逻辑判断，
+    # 否则 "BTC-USD" 含连字符会落到 else 分支被误判为 CNY，导致估值汇率算错。
+    if is_crypto_ticker(ticker_upper):
+        return "USD"
+
     if ".HK" in ticker_upper:
         return "HKD"
     elif ".SS" in ticker_upper or ".SZ" in ticker_upper:
@@ -161,6 +189,11 @@ def format_universal_ticker(ticker: str) -> str:
         str: 格式化后的 ticker（如 AAPL, 600519.SS, 0700.HK）
     """
     ticker = ticker.strip().upper()
+
+    # 加密货币：裸符号（BTC）补 -USD；已是 BTC-USD 形式则原样返回。
+    # 必须先于下方股票逻辑，避免 BTC 被 isalpha 分支当美股代码直接返回。
+    if is_crypto_ticker(ticker):
+        return f"{ticker.split('-')[0]}-USD"
 
     if "." in ticker:
         # 已带后缀：港股把 HKEX 5 位码（含前导 0，如 03033）规整为 Yahoo 的 4 位
