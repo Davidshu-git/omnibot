@@ -664,13 +664,15 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
                 if first_part and not re.match(r'^\d', first_part):
                     company_name = first_part
             
-            shares_match = re.search(r'(\d+)\s*股', holding_str)
+            # 股数支持小数（碎股/ETF 份额，如 1.5082 股）。原 (\d+) 只匹配整数，
+            # 会贪婪抓到小数点后的数字（1.5082 → 5082），导致市值放大数千倍。
+            shares_match = re.search(r'([\d.]+)\s*股', holding_str)
             cost_match = re.search(r'成本\s*([\d.]+)', holding_str)
-            
+
             if not shares_match or not cost_match:
                 continue
-            
-            shares = int(shares_match.group(1))
+
+            shares = float(shares_match.group(1))
             cost_basis = float(cost_match.group(1))
             
             # ETF 前缀：沪市 50/51/58，深市 15/16，防止普通6位A股被误判
