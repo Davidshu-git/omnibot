@@ -391,17 +391,23 @@ def fetch_stock_price_raw(ticker: str, date: Optional[str] = None) -> Dict[str, 
                 timeout=10
             )
             date_label = date
+            row_idx = 0
         else:
             hist = stock.history(period="1d", timeout=10)
+            # yfinance period=1d 对加密货币（7x24）及盘前等场景偶发返回空，
+            # 用 5d 兜底取最近一根。crypto 无 akshare 新浪源可降级，此处兜底尤为关键。
+            if hist.empty:
+                hist = stock.history(period="5d", timeout=10)
             date_label = datetime.now().strftime("%Y-%m-%d")
+            row_idx = -1  # 取最近一根（5d 兜底时 iloc[0] 会是 5 天前）
 
         if hist.empty:
             raise IndexError(f"未找到 {formatted_ticker} 的历史数据")
 
-        open_val = hist['Open'].iloc[0]
-        close_val = hist['Close'].iloc[0]
-        high_val = hist['High'].iloc[0] if 'High' in hist.columns else None
-        low_val = hist['Low'].iloc[0] if 'Low' in hist.columns else None
+        open_val = hist['Open'].iloc[row_idx]
+        close_val = hist['Close'].iloc[row_idx]
+        high_val = hist['High'].iloc[row_idx] if 'High' in hist.columns else None
+        low_val = hist['Low'].iloc[row_idx] if 'Low' in hist.columns else None
 
         if pd.isna(open_val) or pd.isna(close_val):
             raise ValueError("数据不完整（存在空值）")
@@ -410,7 +416,7 @@ def fetch_stock_price_raw(ticker: str, date: Optional[str] = None) -> Dict[str, 
             "ticker": formatted_ticker,
             "open": round(float(open_val), 2),
             "close": round(float(close_val), 2),
-            "date": hist.index[0].strftime("%Y-%m-%d"),
+            "date": hist.index[row_idx].strftime("%Y-%m-%d"),
             "query_date": date_label,
             "source": "yfinance",
         }
@@ -735,7 +741,10 @@ def _calculate_single_position(
         }
 
 
-def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def calculate_portfolio_valuation(
+    positions: Dict[str, Dict[str, Any]],
+    cash_assets: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
     """
     计算持仓组合的精确总市值与今日总盈亏（统一折算为 CNY）。
     
@@ -792,15 +801,34 @@ def calculate_portfolio_valuation(positions: Dict[str, Dict[str, Any]]) -> Dict[
                 total_market_value_cny += result["market_value_cny"]
                 total_cost_cny += result["cost_value_cny"]
     
+    # 现金/活动资金：按币种折 CNY 计入总净值。现金无盈亏，成本=市值，
+    # 同时计入 market_value 与 cost，故不影响 total_profit_loss 绝对值。
+    cash_holdings: List[Dict[str, Any]] = []
+    cash_total_cny = 0.0
+    for cash in (cash_assets or []):
+        rate = exchange_rates.get(f"{cash['currency']}_CNY", 1.0)
+        cny_value = cash["amount"] * rate
+        cash_total_cny += cny_value
+        cash_holdings.append({
+            "platform": cash["platform"],
+            "amount": cash["amount"],
+            "currency": cash["currency"],
+            "cny_value": round(cny_value, 2),
+        })
+    total_market_value_cny += cash_total_cny
+    total_cost_cny += cash_total_cny
+
     total_profit_loss_cny = total_market_value_cny - total_cost_cny
     total_profit_loss_percent = (total_profit_loss_cny / total_cost_cny * 100) if total_cost_cny != 0 else 0
-    
+
     return {
         "total_market_value": round(total_market_value_cny, 2),
         "total_cost": round(total_cost_cny, 2),
         "total_profit_loss": round(total_profit_loss_cny, 2),
         "profit_loss_percent": round(total_profit_loss_percent, 2),
         "holdings": holdings_result,
+        "cash_holdings": cash_holdings,
+        "cash_total_cny": round(cash_total_cny, 2),
         "exchange_rates": exchange_rates,
         "currency_unit": "CNY",
         "calculation_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -877,6 +905,50 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
     return positions
 
 
+def parse_cash_assets(user_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """从用户记忆中解析现金/活动资金条目（key 以"现金"开头）。
+
+    约定格式：key=`现金·<平台>`（如 `现金·汇丰`），value=`<金额> <币种>`
+    （币种关键词：港币/港元、美元/美金、人民币/元）。
+
+    Args:
+        user_data: 用户记忆字典。
+
+    Returns:
+        List[Dict]: 每项含 platform / amount / currency（USD/HKD/CNY）。
+        无法解析金额的条目跳过。
+    """
+    import re
+
+    cash_list: List[Dict[str, Any]] = []
+    for key, value in user_data.items():
+        if not str(key).startswith("现金"):
+            continue
+        vs = str(value).replace("，", ",")
+        amount_match = re.search(r'([\d,]+\.?\d*)', vs)
+        if not amount_match:
+            continue
+        try:
+            amount = float(amount_match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+
+        # 币种判定：先匹配更具体的 美元/港币，最后才是裸"元"（避免"美元"含"元"被误判 CNY）
+        if any(t in vs for t in ("美元", "美金", "USD", "$")):
+            currency = "USD"
+        elif any(t in vs for t in ("港币", "港元", "HKD", "HK$")):
+            currency = "HKD"
+        else:
+            currency = "CNY"
+
+        cash_list.append({
+            "platform": str(key).replace("现金·", "").replace("现金", "").strip("·： :") or str(key),
+            "amount": amount,
+            "currency": currency,
+        })
+    return cash_list
+
+
 def format_portfolio_report(valuation: Dict[str, Any]) -> str:
     """
     将 calculate_portfolio_valuation 返回的估值字典格式化为标准 Markdown 表格报告（多货币支持）。
@@ -939,16 +1011,31 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
         "",
         "### 📊 总资产概览",
         "",
-        f"- **总市值**: ¥{valuation['total_market_value']:,.2f}",
-        f"- **总成本**: ¥{valuation['total_cost']:,.2f}",
-        f"- **累计盈亏**: ¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)",
+    ]
+
+    cash_total = valuation.get('cash_total_cny', 0) or 0
+    securities_value = valuation['total_market_value'] - cash_total
+    if cash_total:
+        markdown_lines.extend([
+            f"- **总净值**: ¥{valuation['total_market_value']:,.2f}（证券 ¥{securities_value:,.2f} + 现金 ¥{cash_total:,.2f}）",
+            f"- **证券总成本**: ¥{valuation['total_cost'] - cash_total:,.2f}",
+            f"- **累计盈亏**: ¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)",
+        ])
+    else:
+        markdown_lines.extend([
+            f"- **总市值**: ¥{valuation['total_market_value']:,.2f}",
+            f"- **总成本**: ¥{valuation['total_cost']:,.2f}",
+            f"- **累计盈亏**: ¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)",
+        ])
+
+    markdown_lines.extend([
         "",
         "### 📈 持仓明细",
         "",
         "| 标的代码 | 公司名称 | 最新价 | 持仓成本 | 原生市值 | 折合人民币 (CNY) | 绝对盈亏 (CNY) | 盈亏率 |",
         "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
-    ]
-    
+    ])
+
     for detail in sorted_details:
         if detail.get('has_error', False):
             markdown_lines.append(
@@ -967,11 +1054,22 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
                 f"| {detail['ticker']} | {detail['company_name']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_percent:+.2f}% |"
             )
     
-    summary_line = f"**【账户总计】当前折合总市值：¥{valuation['total_market_value']:,.2f}，累计总盈亏：{valuation['total_profit_loss']:+,.2f}**"
-    
+    cash_holdings = valuation.get('cash_holdings', [])
+    if cash_holdings:
+        cash_symbol = {"USD": "$", "HKD": "HK$", "CNY": "¥"}
+        markdown_lines.extend(["", "### 💵 现金 / 活动资金", ""])
+        for c in sorted(cash_holdings, key=lambda x: x.get('cny_value', 0), reverse=True):
+            sym = cash_symbol.get(c['currency'], '')
+            markdown_lines.append(
+                f"- **{c['platform']}**：{sym}{c['amount']:,.2f} {c['currency']} → ¥{c['cny_value']:,.2f}"
+            )
+        markdown_lines.append(f"- 现金小计：**¥{valuation.get('cash_total_cny', 0):,.2f}**")
+
+    summary_line = f"**【账户总计】当前折合总净值：¥{valuation['total_market_value']:,.2f}，累计总盈亏：{valuation['total_profit_loss']:+,.2f}**"
+
     markdown_lines.extend([
         "",
         summary_line
     ])
-    
+
     return "\n".join(markdown_lines)

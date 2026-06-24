@@ -30,8 +30,26 @@ def _count_message_tokens(messages: list) -> int:
     return total
 
 
+def _cash_platform_name(key: str) -> str:
+    """从现金条目 key（如 '现金·汇丰'）中提取平台名。"""
+    return key.replace("现金·", "").replace("现金", "").strip("·： :") or key
+
+
 def get_user_profile(memory_dir: Path) -> str:
-    """读取 KV 结构的长期记忆（供 agent 注入 system prompt）"""
+    """读取 KV 结构的长期记忆并按"资金全貌"分组呈现（供 agent 注入 system prompt）。
+
+    分组规则（按 key/value 特征判定，与具体 bot 无关，可优雅降级）：
+      - 证券持仓：value 同时含"股"和"成本"关键词；
+      - 现金/活动资金：key 以"现金"开头；
+      - 历史教训：key 含"教训/错误/纠错"；
+      - 偏好与设定：其余全部（ehs bot 的企业信息等会落入此组）。
+
+    Args:
+        memory_dir: 记忆文件目录。
+
+    Returns:
+        str: 分组标题式的记忆文本；无记忆时返回"暂无长期记忆"。
+    """
     profile_path = memory_dir / "user_profile.json"
     if not profile_path.exists():
         return "暂无长期记忆"
@@ -40,7 +58,35 @@ def get_user_profile(memory_dir: Path) -> str:
             data = json.load(f)
         if not data:
             return "暂无长期记忆"
-        return "\n".join([f"- 【{k}】: {v}" for k, v in data.items()])
+
+        positions, cash, lessons, others = [], [], [], []
+        for k, v in data.items():
+            ks, vs = str(k), str(v)
+            if ks.startswith("现金"):
+                cash.append((ks, vs))
+            elif "股" in vs and "成本" in vs:
+                positions.append((ks, vs))
+            elif any(w in ks for w in ("教训", "错误", "纠错")):
+                lessons.append((ks, vs))
+            else:
+                others.append((ks, vs))
+
+        sections: list[str] = []
+        if positions:
+            lines = "\n".join(f"• {k}｜{v}" for k, v in positions)
+            sections.append(f"━━ 📈 证券持仓 ━━\n{lines}")
+        if cash:
+            lines = "\n".join(f"• {_cash_platform_name(k)}｜{v}" for k, v in cash)
+            sections.append(f"━━ 💵 现金/活动资金 ━━\n{lines}")
+        if others:
+            lines = "\n".join(f"• {k}：{v}" for k, v in others)
+            sections.append(f"━━ ⚙️ 偏好与设定 ━━\n{lines}")
+        if lessons:
+            lines = "\n".join(f"• {k}：{v}" for k, v in lessons)
+            sections.append(f"━━ 📝 历史教训 ━━\n{lines}")
+
+        title = "【用户资金全貌】" if (positions or cash) else "【用户长期记忆】"
+        return f"{title}\n" + "\n".join(sections)
     except Exception as e:
         logger.warning(f"读取长期记忆失败：{type(e).__name__}")
         return "暂无长期记忆"

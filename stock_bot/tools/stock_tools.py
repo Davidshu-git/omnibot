@@ -20,6 +20,7 @@ from stock_bot.valuation_engine import (
     generate_kline_chart,
     calculate_portfolio_valuation,
     parse_user_profile_to_positions,
+    parse_cash_assets,
     format_portfolio_report,
 )
 
@@ -162,6 +163,7 @@ def make_stock_tools(
             if not user_data:
                 return "❌ 持仓记忆为空，请先告知我您的持仓情况。"
             positions = parse_user_profile_to_positions(user_data)
+            cash_assets = parse_cash_assets(user_data)
             # 安全网：检测"看起来是持仓（value 含 X股 + 成本）但 key 不合法被静默跳过"的条目，
             # 避免像 BTC持仓 这类畸形 key 导致持仓凭空漏算却无任何提示。
             import re as _re
@@ -171,9 +173,9 @@ def make_stock_tools(
                 and _re.search(r'[\d.]+\s*股', str(v))
                 and '成本' in str(v)
             ]
-            if not positions:
-                return "❌ 未解析到有效持仓数据，请检查持仓记忆格式。"
-            valuation = calculate_portfolio_valuation(positions)
+            if not positions and not cash_assets:
+                return "❌ 未解析到有效持仓或现金数据，请检查记忆格式。"
+            valuation = calculate_portfolio_valuation(positions, cash_assets)
             report = format_portfolio_report(valuation)
             if skipped:
                 report += (
