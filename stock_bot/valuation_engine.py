@@ -160,10 +160,17 @@ def format_universal_ticker(ticker: str) -> str:
         str: 格式化后的 ticker（如 AAPL, 600519.SS, 0700.HK）
     """
     ticker = ticker.strip().upper()
-    
+
     if "." in ticker:
+        # 已带后缀：港股把 HKEX 5 位码（含前导 0，如 03033）规整为 Yahoo 的 4 位
+        # 格式（3033.HK），否则 yfinance 返回 404。zfill(4) 只补零不截断，非前导 0 的
+        # 5 位码（如 80737 RMB 双柜台）会原样保留。其余市场后缀原样返回。
+        if ticker.endswith(".HK"):
+            hk_digits = ''.join(filter(str.isdigit, ticker.split(".", 1)[0]))
+            if hk_digits:
+                return f"{str(int(hk_digits)).zfill(4)}.HK"
         return ticker
-        
+
     if ticker.isalpha():
         return ticker
         
