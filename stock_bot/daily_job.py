@@ -145,6 +145,40 @@ def _fetch_em_news() -> pd.DataFrame:
     return ak.stock_info_global_em()
 
 
+_MIN_NEWS_ITEMS: int = 30
+"""akshare 财经源（财联社/新浪/东财）聚合后的最低条数阈值。
+
+低于此值视为财经源集体失效/产出过少，启用 DuckDuckGo 搜索兜底补充。正常情况下
+新浪(~20)+东财(~200)足以越过阈值，兜底不触发，避免引入搜索结果噪声。"""
+
+
+def _fetch_ddgs_news() -> pd.DataFrame:
+    """DuckDuckGo 财经新闻搜索兜底源。
+
+    当 akshare 财经源集体失效时启用。打 duckduckgo（经代理出网），故障域与 akshare
+    （境内东财/新浪）完全独立。多查询拼接，单查询失败不影响其余。
+
+    Returns:
+        pd.DataFrame: 含 ``time`` / ``content`` 两列（已对齐聚合 schema）；无结果返回空表。
+    """
+    from ddgs import DDGS
+
+    queries = ["A股 港股 财经 快讯", "美股 全球股市 要闻", "stock market news today"]
+    rows: List[Dict[str, str]] = []
+    ddgs = DDGS(timeout=8)
+    for q in queries:
+        try:
+            for item in ddgs.news(q, max_results=10):
+                title = (item.get("title") or "").strip()
+                if title:
+                    rows.append({"time": str(item.get("date", "")), "content": title})
+        except Exception as exc:  # noqa: BLE001 - 单查询失败跳过，不影响兜底整体
+            console.print(f"[dim]   └─ DDGS 查询 {q!r} 失败：{type(exc).__name__}[/dim]")
+            continue
+
+    return pd.DataFrame(rows, columns=["time", "content"])
+
+
 _SOURCE_TIMEOUT: int = 20
 """单个资讯源的硬超时（秒）。
 
@@ -240,6 +274,35 @@ def fetch_global_market_news() -> str:
                 continue
         else:
             console.print(f"[bold yellow]⚠️  {source_name} 返回空数据[/bold yellow]")
+
+    # 搜索引擎兜底：akshare 财经源集体失效/产出过少时，用 DuckDuckGo 补充全球财经要闻。
+    akshare_items: int = sum(len(d) for d in dfs)
+    if akshare_items < _MIN_NEWS_ITEMS:
+        console.print(
+            f"[bold yellow]⚠️  akshare 财经源仅 {akshare_items} 条（< {_MIN_NEWS_ITEMS}），"
+            f"启用 DuckDuckGo 搜索兜底[/bold yellow]"
+        )
+        ddgs_box: Dict[str, Any] = {}
+
+        def _ddgs_runner() -> None:
+            try:
+                ddgs_box["df"] = _fetch_ddgs_news()
+            except Exception as exc:  # noqa: BLE001 - 兜底失败不影响主流程
+                ddgs_box["err"] = exc
+
+        ddgs_thread = threading.Thread(target=_ddgs_runner, name="news-ddgs", daemon=True)
+        ddgs_thread.start()
+        ddgs_thread.join(_SOURCE_TIMEOUT)
+
+        if ddgs_thread.is_alive():
+            console.print(f"[bold red]❌ DuckDuckGo 兜底超时（> {_SOURCE_TIMEOUT}s）[/bold red]")
+        elif "err" in ddgs_box:
+            console.print(f"[bold red]❌ DuckDuckGo 兜底失败：{type(ddgs_box['err']).__name__}[/bold red]")
+        else:
+            ddgs_df = ddgs_box.get("df")
+            if ddgs_df is not None and not ddgs_df.empty:
+                dfs.append(ddgs_df[["time", "content"]].copy())
+                console.print(f"[bold green]✅ DuckDuckGo 兜底补充 {len(ddgs_df)} 条[/bold green]")
 
     if not dfs:
         raise RuntimeError("所有宏观资讯源全部失效")
