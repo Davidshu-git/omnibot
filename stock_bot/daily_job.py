@@ -30,6 +30,7 @@ from rich.console import Console
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from core.notifier import send_market_report_email
+from core.model_registry import make_standard_registry
 
 socket.setdefaulttimeout(30)
 from stock_bot.valuation_engine import (
@@ -231,30 +232,49 @@ def fetch_global_market_news() -> str:
 
 
 def generate_market_report(news_text: str, user_memory: str, indices_data: str, portfolio_metrics: Dict[str, Any]) -> str:
-    """基于 LangGraph 的多智能体研报辩论引擎"""
-    dashscope_key: str = os.getenv("ALI_CODING_PLAN_KEY", "")
-    if not dashscope_key:
-        raise ValueError("ALI_CODING_PLAN_KEY 未配置")
+    """基于 LangGraph 的多智能体研报辩论引擎。
 
-    llm = ChatOpenAI(
-        model="qwen3.5-plus",
-        base_url="https://coding.dashscope.aliyuncs.com/v1",
-        temperature=0.7,  # 牛熊辩论节点：激进发散，挖掘极端多空逻辑
-        timeout=120,
-        max_retries=3,
-        max_tokens=8192,
-        api_key=SecretStr(dashscope_key),
+    LLM 选择跟随 ``data/stock/daily_model_settings.json``（盘后日报专属，与交互 bot 的
+    主控模型 ``model_settings.json`` 解耦）。在 obs 主界面「日报模型」chip 或 Telegram
+    切换后，下一次盘后报告自动生效，无需改代码或重启本进程。
+    """
+    settings_dir: Path = (Path(__file__).parent / "../data/stock").resolve()
+    registry = make_standard_registry(
+        settings_dir, settings_filename="daily_model_settings.json", default_key="deepseek"
     )
+    cfg = registry.current()
+    if not cfg.api_key:
+        raise ValueError(f"当前选中模型 {cfg.key!r}（{cfg.display_name}）的 API Key 未配置")
 
-    pm_llm = ChatOpenAI(
-        model="qwen3.5-plus",
-        base_url="https://coding.dashscope.aliyuncs.com/v1",
-        temperature=0.1,  # PM 裁判节点：保守收敛，确保最终结论严谨客观
-        timeout=120,
-        max_retries=3,
-        max_tokens=8192,
-        api_key=SecretStr(dashscope_key),
-    )
+    def _build_llm(temperature: float) -> ChatOpenAI:
+        """以当前选中模型为基底构建 LLM，按节点覆盖温度。
+
+        Args:
+            temperature: 该节点期望的采样温度。
+
+        Returns:
+            构建好的 ChatOpenAI（或其子类，如 DeepSeekChatLLM）实例。
+
+        Note:
+            若该模型不支持温度（``cfg.temperature is None``，如思考模式），则不传温度，
+            避免触发 provider 的参数报错。
+        """
+        kwargs: Dict[str, Any] = dict(
+            model=cfg.model,
+            base_url=cfg.base_url,
+            api_key=SecretStr(cfg.api_key),
+            timeout=120,
+            max_retries=3,
+            max_tokens=8192,
+        )
+        if cfg.temperature is not None:
+            kwargs["temperature"] = temperature
+        if cfg.extra_body:
+            kwargs["extra_body"] = cfg.extra_body
+        return cfg.llm_class(**kwargs)
+
+    llm = _build_llm(0.7)     # 牛熊辩论节点：激进发散，挖掘极端多空逻辑
+    pm_llm = _build_llm(0.1)  # PM 裁判节点：保守收敛，确保最终结论严谨客观
 
     def bull_node(state: ReportState):
         console.print("[bold green]🐂 [Agent 1] 激进策略师正在挖掘利好与翻倍逻辑...[/bold green]")
@@ -427,8 +447,10 @@ def job_routine() -> None:
     except ValueError as e:
         console.print(f"[bold red]❌ [报告生成] {str(e)}[/bold red]")
         return
-    except Exception:
-        console.print("[bold red]❌ [报告生成] 大模型推理失败，任务中止。[/bold red]")
+    except Exception as e:
+        console.print(
+            f"[bold red]❌ [报告生成] 大模型推理失败，任务中止：{type(e).__name__}: {e}[/bold red]"
+        )
         return
 
     console.print("[bold green]✔️  [报告生成] 盘后报告生成完毕[/bold green]")

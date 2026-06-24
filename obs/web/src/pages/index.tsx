@@ -516,13 +516,16 @@ function ProjectCard({
       )}
 
       {/* runtime models */}
-      {rt && (rt.available_text_models?.length > 0 || rt.available_vl_models?.length > 0) && (
+      {rt && (rt.available_text_models?.length > 0 || rt.available_vl_models?.length > 0 || rt.available_daily_models?.length > 0) && (
         <div style={{ display: "flex", flexDirection: "column", gap: 5, marginBottom: "0.5rem" }}>
           {rt.available_text_models?.length > 0 && (
             <ModelChipsRow label="主控模型" icon="🧠" models={rt.available_text_models} activeKey={rt.text_model?.model_key ?? null} projectId={p.project_id} kind="text" onSwitched={onSwitched} />
           )}
           {rt.available_vl_models?.length > 0 && (
             <ModelChipsRow label="视觉模型" icon="👁" models={rt.available_vl_models} activeKey={rt.vl_model?.model_key ?? null} projectId={p.project_id} kind="vl" onSwitched={onSwitched} />
+          )}
+          {rt.available_daily_models?.length > 0 && (
+            <ModelChipsRow label="日报模型" icon="📰" models={rt.available_daily_models} activeKey={rt.daily_model?.model_key ?? null} projectId={p.project_id} kind="daily" onSwitched={onSwitched} />
           )}
         </div>
       )}
@@ -577,7 +580,7 @@ function ModelChipsRow({ label, icon, models, activeKey, projectId, kind, onSwit
   models: AvailableModelInfo[];
   activeKey: string | null;
   projectId: string;
-  kind: "text" | "vl";
+  kind: "text" | "vl" | "daily";
   onSwitched: () => void;
 }) {
   const [pending, setPending] = useState<string | null>(null);

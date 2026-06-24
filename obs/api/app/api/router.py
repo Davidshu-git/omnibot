@@ -200,6 +200,11 @@ _AVAILABLE_VL_MODELS: dict[str, list[dict]] = {
     ],
 }
 
+# 盘后日报专属可切换模型（仅 stock-bot 有日报）。与文本模型同款列表。
+_AVAILABLE_DAILY_MODELS: dict[str, list[dict]] = {
+    "stock-bot": _AVAILABLE_TEXT_MODELS["stock-bot"],
+}
+
 
 def _read_settings_safe(path: Path) -> dict | None:
     """安全读取 settings JSON，文件不存在 / 损坏 / 字段缺失返回 None。"""
@@ -230,12 +235,15 @@ async def projects_runtime_models():
     for project_id, base in runtime_dirs.items():
         text = _read_settings_safe(Path(base) / "model_settings.json")
         vl = _read_settings_safe(Path(base) / "vl_model_settings.json")
+        daily = _read_settings_safe(Path(base) / "daily_model_settings.json")
         out.append({
             "project_id": project_id,
             "text_model": text,
             "vl_model": vl,
+            "daily_model": daily,
             "available_text_models": _AVAILABLE_TEXT_MODELS.get(project_id, []),
             "available_vl_models": _AVAILABLE_VL_MODELS.get(project_id, []),
+            "available_daily_models": _AVAILABLE_DAILY_MODELS.get(project_id, []),
         })
     return out
 
@@ -526,8 +534,8 @@ async def proxy_switch_model(project: str, body: dict):
 
     kind = body.get("kind", "text")
     model_key = body.get("model_key")
-    if kind not in ("text", "vl"):
-        raise HTTPException(status_code=422, detail="kind must be 'text' or 'vl'")
+    if kind not in ("text", "vl", "daily"):
+        raise HTTPException(status_code=422, detail="kind must be 'text', 'vl' or 'daily'")
     if not isinstance(model_key, str) or not model_key.strip():
         raise HTTPException(status_code=422, detail="model_key must be a non-empty string")
 

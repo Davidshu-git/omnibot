@@ -230,11 +230,22 @@ def make_mhxy_registry(settings_dir: Path) -> ModelRegistry:
     return ModelRegistry(configs=configs, settings_path=settings_path, default_key="qwen")
 
 
-def make_standard_registry(settings_dir: Path) -> ModelRegistry:
+def make_standard_registry(
+    settings_dir: Path,
+    settings_filename: str = "model_settings.json",
+    default_key: str = "minimax",
+) -> ModelRegistry:
     """
-    从环境变量读取 API Key，构造三个标准 ModelConfig，返回 ModelRegistry。
-    settings 文件写入 settings_dir/model_settings.json。
-    若某个 key 的 api_key 为空，仍注册但 build_llm 时会报错。
+    从环境变量读取 API Key，构造四个标准 ModelConfig，返回 ModelRegistry。
+
+    Args:
+        settings_dir: 持久化目录。
+        settings_filename: 持久化文件名。默认 ``model_settings.json``（交互 bot 主控模型）；
+            盘后日报独立切换时传 ``daily_model_settings.json`` 以与主控模型解耦。
+        default_key: settings 文件不存在时的初始选中 key。
+
+    Returns:
+        ModelRegistry 实例。若某个 key 的 api_key 为空，仍注册但 ``build_llm`` 时会报错。
     """
     from core.deepseek_llm import DeepSeekChatLLM
 
@@ -278,5 +289,5 @@ def make_standard_registry(settings_dir: Path) -> ModelRegistry:
         ),
     ]
 
-    settings_path = settings_dir / "model_settings.json"
-    return ModelRegistry(configs=configs, settings_path=settings_path, default_key="minimax")
+    settings_path = settings_dir / settings_filename
+    return ModelRegistry(configs=configs, settings_path=settings_path, default_key=default_key)

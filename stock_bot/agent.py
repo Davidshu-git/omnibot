@@ -39,6 +39,11 @@ for _d in [SANDBOX_DIR, KB_DIR, MEMORY_DIR, FAISS_DIR, SETTINGS_DIR]:
 # 模型注册中心（两个 bot 各自独立持久化）
 # ==========================================
 registry = make_standard_registry(SETTINGS_DIR)
+# 盘后日报专属 registry：与交互主控模型解耦，写入 daily_model_settings.json，
+# daily_job 子进程读取同一文件。默认 deepseek（qwen 订阅已失效）。
+daily_registry = make_standard_registry(
+    SETTINGS_DIR, settings_filename="daily_model_settings.json", default_key="deepseek"
+)
 
 # ==========================================
 # System Prompt

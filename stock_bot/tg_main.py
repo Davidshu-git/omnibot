@@ -22,6 +22,7 @@ from stock_bot.agent import (
     agent_with_chat_history,
     get_user_profile_fn,
     registry,
+    daily_registry,
     SANDBOX_DIR,
     KB_DIR,
     MEMORY_DIR,
@@ -99,7 +100,7 @@ class StockBot(TelegramBotBase):
         return f"🤖 当前模型：<b>{cfg.display_name}</b>"
 
     def get_model_registries(self) -> dict:
-        return {"text": registry}
+        return {"text": registry, "daily": daily_registry}
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {

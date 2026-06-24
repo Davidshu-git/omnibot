@@ -146,8 +146,10 @@ export interface ProjectRuntimeModels {
   project_id: string;
   text_model: RuntimeModelInfo | null;
   vl_model: RuntimeModelInfo | null;
+  daily_model: RuntimeModelInfo | null;
   available_text_models: AvailableModelInfo[];
   available_vl_models: AvailableModelInfo[];
+  available_daily_models: AvailableModelInfo[];
 }
 
 export interface MhxyInstanceDetail {
@@ -224,7 +226,7 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
 
   runtimeModels: () => get<ProjectRuntimeModels[]>("/api/projects/runtime-models"),
 
-  switchModel: (project: string, kind: "text" | "vl", modelKey: string) =>
+  switchModel: (project: string, kind: "text" | "vl" | "daily", modelKey: string) =>
     postJson<{ kind: string; model_key: string; display_name: string }>(
       `/api/external/${project}/switch-model`,
       { kind, model_key: modelKey },
