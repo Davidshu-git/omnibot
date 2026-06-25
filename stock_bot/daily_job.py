@@ -37,6 +37,7 @@ socket.setdefaulttimeout(30)
 from stock_bot.valuation_engine import (
     fetch_stock_price_raw,
     parse_user_profile_to_positions,
+    parse_cash_assets,
     calculate_portfolio_valuation,
     format_portfolio_report,
 )
@@ -530,10 +531,11 @@ def job_routine() -> None:
     console.print(f"[bold dim]🧠 [记忆读取] 用户记忆加载完成[/bold dim]")
 
     positions = parse_user_profile_to_positions(user_memory_dict)
+    cash_assets = parse_cash_assets(user_memory_dict)
     valuation = {}
     markdown_report = "暂无持仓数据"
-    if positions:
-        valuation = calculate_portfolio_valuation(positions)
+    if positions or cash_assets:
+        valuation = calculate_portfolio_valuation(positions, cash_assets)
         markdown_report = format_portfolio_report(valuation)
         console.print(f"[bold dim]💰 [财务计算] 总市值：¥{valuation['total_market_value']:,.2f}, 累计盈亏：¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)[/bold dim]")
 

@@ -15,6 +15,7 @@
 | ws-scrcpy Web 启动脚本 | [ops/setup_ws_scrcpy_web.ps1](ops/setup_ws_scrcpy_web.ps1) / [ops/ws_scrcpy_web_run.bat](ops/ws_scrcpy_web_run.bat) | Windows 侧 ws-scrcpy 服务的安装与启动 |
 | obs TLS 网关 | [ops/obs_tls_gateway.md](ops/obs_tls_gateway.md) | Caddy https 网关部署/重启、根 CA 各设备安装、OBS_TLS_HOST 配置、WebCodecs/证书排障 |
 | obs ↔ bot 对话通道 | [ops/obs_bot_chat.md](ops/obs_bot_chat.md) | obs 时间线直接对话 bot、8810/8811/8812 端口、OBS_BOT_CHAT_TOKEN 排障 |
+| stock_bot 代码重发 | [ops/redeploy_stock.sh](ops/redeploy_stock.sh) | 改完 stock_bot/ 后**一键重启 stock-tg-bot + stock-daily-job 两个容器**（防只重启一个漏另一个） |
 
 > 新增任何"远程主机 / 物理设备 / 部署流程"相关的操作步骤时，请落到 `ops/` 下对应手册并在本表登记，不要散落在源码注释或临时聊天里。
 
@@ -47,6 +48,9 @@ docker compose up -d --build                                # 启动所有 bot �
 docker compose logs -f                                      # 查看全量日志
 docker compose logs ehs-tg-bot --tail=50                    # 查看单个服务日志
 docker compose restart stock-tg-bot                         # 重启单个服务
+# ⚠️ 改完 stock_bot/（或共享 core/）后必须重启「两个」依赖容器：bind mount 只同步
+#    磁盘文件，常驻 Python 进程不热重载；docker compose up -d 对纯代码改动不重建容器。
+bash ops/redeploy_stock.sh                                  # = restart stock-tg-bot + stock-daily-job
 
 # Docker - obs 可观测性平台（独立 compose，在 obs/ 目录下操作）
 docker compose -f obs/docker-compose.yml up -d --build     # 启动 obs
@@ -271,13 +275,15 @@ omnibot/
 
 **crypto 取价兜底**：`fetch_stock_price_raw()` 无日期路径在 yfinance `period="1d"` 返回空时用 `period="5d"` 兜底取最近一根（`iloc[-1]`）。加密货币 7x24、`1d` 偶发返回空，且 crypto 无 akshare 新浪源可降级（`_map_to_akshare_sina_symbol` 对 `BTC-USD` 返回 None），此兜底防止 BTC 因偶发空数据掉出估值。
 
+**异常盈亏哨兵（防坏数据变灾难报告）**：`format_portfolio_report()` 对任一持仓 `|盈亏率| > _SUSPECT_PNL_PCT(=90%)` 标记 `⚠️待核实`，并在报告末尾输出告警块「请先人工核实、勿据此给加减仓建议」。因该报告同时是用户可见内容与 daily_job 喂给 LLM 的上下文，故一处标注两端生效。背景：曾因取价错误（BTC 被当美股取到 $26.47 → -99.96%）使 LLM 写出"立即清仓"的假建议推送给用户。
+
 ### 盘后报告数据流
 
 ```
 stock_bot/daily_job.py::job_routine()
   ├── fetch_global_market_news()        # 财联社 + 新浪 + 东财 → 去重 → top 200
   ├── fetch_global_indices()            # 沪深300 + HSI + HSTECH + NDX
-  ├── load_user_profile() + calculate_portfolio_valuation()
+  ├── load_user_profile() + parse_cash_assets() + calculate_portfolio_valuation()  # 持仓+现金，与交互 bot 一致
   ├── generate_market_report()          # LLM 推理（120s 超时）
   ├── knowledge_base/盘后日报_*.md      # 归档 RAG 知识库
   ├── notifier.send_market_report_email()

@@ -31,6 +31,12 @@ class AkshareTimeoutError(Exception):
     """akshare 请求超时异常"""
     pass
 
+
+# 异常盈亏哨兵阈值：单个持仓 |盈亏率| 超过此值（%）极可能是取价错误
+# （如某次 BTC 因代码格式问题被当美股取到 $26.47 → -99.96%），而非真实行情。
+# 命中则在报告中标"待人工核实"并提示勿据此给加减仓建议，防止坏数据变成灾难报告。
+_SUSPECT_PNL_PCT = 90.0
+
 DEFAULT_EXCHANGE_RATES = {
     "USD_CNY": 7.20,
     "HKD_CNY": 0.92,
@@ -729,7 +735,8 @@ def _calculate_single_position(
             "market_value_cny": round(market_value_cny, 2),
             "cost_value_cny": round(cost_value_cny, 2),
             "profit_loss_cny": round(profit_loss_cny, 2),
-            "profit_loss_percent": round(profit_loss_percent, 2)
+            "profit_loss_percent": round(profit_loss_percent, 2),
+            "suspect": abs(profit_loss_percent) > _SUSPECT_PNL_PCT,
         }
         
     except Exception as e:
@@ -993,7 +1000,8 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
                 "native_value": native_value,
                 "cny_value": cny_value,
                 "cny_profit": cny_profit,
-                "pnl_percent": pnl_percent
+                "pnl_percent": pnl_percent,
+                "suspect": holding.get('suspect', False)
             })
     
     sorted_details = sorted(
@@ -1049,11 +1057,25 @@ def format_portfolio_report(valuation: Dict[str, Any]) -> str:
             cny_value = detail.get('cny_value', 0)
             cny_profit = detail.get('cny_profit', 0)
             pnl_percent = detail.get('pnl_percent', 0)
-            
+            ticker_label = f"⚠️ {detail['ticker']}" if detail.get('suspect') else detail['ticker']
+            pnl_label = f"{pnl_percent:+.2f}% ⚠️待核实" if detail.get('suspect') else f"{pnl_percent:+.2f}%"
+
             markdown_lines.append(
-                f"| {detail['ticker']} | {detail['company_name']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_percent:+.2f}% |"
+                f"| {ticker_label} | {detail['company_name']} | {currency_symbol}{current_price:.2f} | {currency_symbol}{cost_basis:.2f} | {currency_symbol}{native_value:,.2f} | ¥{cny_value:,.2f} | {cny_profit:+,.2f} | {pnl_label} |"
             )
     
+    # 异常盈亏哨兵：把取价疑似错误的标的显式标注，并指示读者（含 LLM）勿据此操作，
+    # 防止坏数据（如 BTC 被误当美股取到 $26.47 → -99.96%）变成"立即清仓"的灾难建议。
+    suspect_tickers = [d['ticker'] for d in sorted_details if d.get('suspect')]
+    if suspect_tickers:
+        markdown_lines.extend([
+            "",
+            "> ⚠️ **数据异常告警**：以下标的盈亏率超出常理（|盈亏率| > "
+            f"{_SUSPECT_PNL_PCT:.0f}%），极可能是取价错误而非真实行情：**"
+            + "、".join(suspect_tickers) + "**。",
+            "> **请先人工核实其最新价，切勿据此给出或采纳任何加减仓 / 清仓建议。**",
+        ])
+
     cash_holdings = valuation.get('cash_holdings', [])
     if cash_holdings:
         cash_symbol = {"USD": "$", "HKD": "HK$", "CNY": "¥"}
