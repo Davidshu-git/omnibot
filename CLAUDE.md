@@ -263,7 +263,13 @@ omnibot/
 
 **沙箱安全防御**：所有 I/O 使用 `pathlib.is_relative_to()` 强制限制范围（sandbox → `agent_workspace/`，RAG → `knowledge_base/`）。
 
-**持仓记忆格式（Stock Bot 硬性约束）**：`user_profile.json` 中持仓条目 value 必须严格遵循 `"[中文公司名]，X 股，成本 Y"` 格式。`parse_user_profile_to_positions()` 的正则解析器强依赖关键词 `成本`，不可用同义词替换。
+**持仓记忆格式（Stock Bot 硬性约束）**：`user_profile.json` 中持仓条目 **key 必须是裸代码/币种符号**（如 `AAPL`、`600519`、`3033.HK`、`BTC`，禁止 `BTC持仓` 这类中文后缀，否则 `parse_user_profile_to_positions()` 的 ticker 正则识别不到、持仓被**静默漏算**）；**value 必须遵循 `"[中文公司名]，X 股，成本 Y"` 格式**，其中 **`成本 Y` 是每股/每币单价（单价），不是总投入金额**（引擎按 `总成本 = Y × 股数` 计算；曾因把总额当单价导致 BTC 盈亏率算出 +30000%）。正则解析器强依赖关键词 `成本`，不可用同义词替换。`calculate_exact_portfolio_value` 内置**漏算安全网**：value 含"股+成本"但 key 非法被跳过的条目，会在报告末尾显式告警。
+
+**现金 / 活动资金记忆约定（Stock Bot）**：现金不是持仓，走独立约定——**key 用 `现金·平台名`**（如 `现金·汇丰`、`现金·众安`、`现金·Neverless`），**value 用 `金额 币种`**（币种写 港币/美元/人民币，如 `5000 港币`）。`parse_cash_assets()` 据此解析（币种判定先匹配美元/港币、最后才裸"元"，避免"美元"含"元"被误判 CNY），`calculate_portfolio_valuation()` 按汇率折 CNY 计入**总净值**（现金成本=市值、盈亏恒 0，不污染持仓盈亏绝对值）。**绝不能用伪持仓（`5000股，成本1`）hack 现金**。
+
+**资金全貌分组呈现（LTM 注入形式）**：`get_user_profile()` 每轮把 `user_profile.json` 注入 System Prompt 的 `{user_profile}` 占位符。输出为**分组标题式**（📈证券持仓 / 💵现金活动资金 / ⚙️偏好与设定 / 📝历史教训），按 key/value 特征自动归类：key 以"现金"开头→现金；value 含"股"且含"成本"→持仓；key 含"教训/错误/纠错"→教训；其余→偏好。有持仓或现金时标题为"【用户资金全貌】"，否则"【用户长期记忆】"（ehs bot 优雅降级）。改归类规则须同步评估对两个 bot 的影响。
+
+**crypto 取价兜底**：`fetch_stock_price_raw()` 无日期路径在 yfinance `period="1d"` 返回空时用 `period="5d"` 兜底取最近一根（`iloc[-1]`）。加密货币 7x24、`1d` 偶发返回空，且 crypto 无 akshare 新浪源可降级（`_map_to_akshare_sina_symbol` 对 `BTC-USD` 返回 None），此兜底防止 BTC 因偶发空数据掉出估值。
 
 ### 盘后报告数据流
 
