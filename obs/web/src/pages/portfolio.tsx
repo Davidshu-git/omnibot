@@ -50,7 +50,11 @@ export default function PortfolioPage() {
   useEffect(() => { load(); }, [load]);
 
   const available = snap?.available;
-  const holdings = (snap?.holdings ?? []).filter((h) => !h.error);
+  // 快照 holdings 原序由引擎并发取价的返回先后决定（非确定性），
+  // 这里按市值 CNY 降序固定展示顺序——大头在上，符合总控台直觉。
+  const holdings = (snap?.holdings ?? [])
+    .filter((h) => !h.error)
+    .sort((a, b) => (b.market_value_cny ?? 0) - (a.market_value_cny ?? 0));
   const errored = (snap?.holdings ?? []).filter((h) => h.error);
   const cash = snap?.cash_holdings ?? [];
   const suspectCount = holdings.filter((h) => h.suspect).length;
