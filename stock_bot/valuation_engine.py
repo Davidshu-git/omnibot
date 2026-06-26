@@ -887,7 +887,10 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
             
             # 股数支持小数（碎股/ETF 份额，如 1.5082 股）。原 (\d+) 只匹配整数，
             # 会贪婪抓到小数点后的数字（1.5082 → 5082），导致市值放大数千倍。
-            shares_match = re.search(r'([\d.]+)\s*股', holding_str)
+            # 份额单位放宽：股票/ETF 用"股"，加密货币自然单位是"枚/个"。
+            # 若只认"股"，BTC 这类写成"0.006271枚"的持仓会被静默漏算（连下方安全网都漏，
+            # 因安全网同样以"股"为关键词）——必须三处单位口径一致。
+            shares_match = re.search(r'([\d.]+)\s*(?:股|枚|个)', holding_str)
             cost_match = re.search(r'成本\s*([\d.]+)', holding_str)
 
             if not shares_match or not cost_match:

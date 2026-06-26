@@ -164,18 +164,28 @@ def make_stock_tools(
                 return "❌ 持仓记忆为空，请先告知我您的持仓情况。"
             positions = parse_user_profile_to_positions(user_data)
             cash_assets = parse_cash_assets(user_data)
-            # 安全网：检测"看起来是持仓（value 含 X股 + 成本）但 key 不合法被静默跳过"的条目，
+            # 安全网：检测"看起来是持仓（value 含 X股/枚/个 + 成本）但 key 不合法被静默跳过"的条目，
             # 避免像 BTC持仓 这类畸形 key 导致持仓凭空漏算却无任何提示。
+            # 单位口径须与 parse_user_profile_to_positions 一致（股|枚|个），否则 crypto 漏算时安全网会瞎。
             import re as _re
             skipped = [
                 k for k, v in user_data.items()
                 if k not in positions
-                and _re.search(r'[\d.]+\s*股', str(v))
+                and _re.search(r'[\d.]+\s*(?:股|枚|个)', str(v))
                 and '成本' in str(v)
             ]
             if not positions and not cash_assets:
                 return "❌ 未解析到有效持仓或现金数据，请检查记忆格式。"
             valuation = calculate_portfolio_valuation(positions, cash_assets)
+            # 对话中算完估值就顺手落一条组合快照（复用本次 valuation，不重复取价），
+            # 让 obs「投资总控台」刷新即可拿到最新数据。同日去重已保证每日一行不膨胀。
+            # write_snapshot 内部已吞掉异常并返回 None，绝不冒泡污染本工具的报告主流程。
+            try:
+                from stock_bot.snapshot import write_snapshot
+                if write_snapshot(valuation) is not None:
+                    logger.info("[组合快照] 对话触发已落盘 portfolio.jsonl")
+            except Exception as snap_exc:  # 兜底：快照模块导入/调用异常不影响报告返回
+                logger.warning("[组合快照] 对话触发落盘失败：%s", snap_exc)
             report = format_portfolio_report(valuation)
             if skipped:
                 report += (
