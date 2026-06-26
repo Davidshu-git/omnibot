@@ -55,6 +55,10 @@ export default function PortfolioPage() {
   const holdings = (snap?.holdings ?? [])
     .filter((h) => !h.error)
     .sort((a, b) => (b.market_value_cny ?? 0) - (a.market_value_cny ?? 0));
+  // 加密货币单列成组，不再混入证券：type==="crypto" 归加密，其余归证券。
+  const securities = holdings.filter((h) => h.type !== "crypto");
+  const cryptos = holdings.filter((h) => h.type === "crypto");
+  const cryptoTotal = snap?.crypto_total_cny ?? 0;
   const errored = (snap?.holdings ?? []).filter((h) => h.error);
   // 现金原序为 user_profile.json 书写顺序，同样按折 CNY 降序，与证券持仓口径一致。
   const cash = (snap?.cash_holdings ?? [])
@@ -138,13 +142,21 @@ export default function PortfolioPage() {
               </span>
             </KpiCard>
 
-            <KpiCard title="证券 / 现金">
+            <KpiCard title={cryptoTotal > 0 ? "证券 / 加密 / 现金" : "证券 / 现金"}>
               <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 18, fontWeight: 700, color: "var(--blue)", fontVariantNumeric: "tabular-nums" }}>
                   {fmtCny(snap?.securities_total_cny)}
                 </span>
                 <span style={{ color: "var(--text-dim)", fontSize: 12 }}>证券</span>
               </div>
+              {cryptoTotal > 0 && (
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
+                  <span style={{ fontSize: 18, fontWeight: 700, color: "var(--teal)", fontVariantNumeric: "tabular-nums" }}>
+                    {fmtCny(cryptoTotal)}
+                  </span>
+                  <span style={{ color: "var(--text-dim)", fontSize: 12 }}>加密</span>
+                </div>
+              )}
               <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
                 <span style={{ fontSize: 18, fontWeight: 700, color: "var(--amber)", fontVariantNumeric: "tabular-nums" }}>
                   {fmtCny(snap?.cash_total_cny)}
@@ -165,6 +177,7 @@ export default function PortfolioPage() {
               title="资产配比"
               segments={[
                 { label: "证券", value: snap?.securities_total_cny ?? 0, color: "var(--blue)" },
+                ...(cryptoTotal > 0 ? [{ label: "加密", value: cryptoTotal, color: "var(--teal)" }] : []),
                 { label: "现金", value: snap?.cash_total_cny ?? 0, color: "var(--amber)" },
               ]}
             />
@@ -189,14 +202,22 @@ export default function PortfolioPage() {
             </div>
           )}
 
-          {/* 持仓明细 */}
-          <SectionTitle>证券持仓（{holdings.length}）</SectionTitle>
-          <HoldingsTable holdings={holdings} isMobile={isMobile} />
+          {/* 证券持仓明细 */}
+          <SectionTitle>证券持仓（{securities.length}）</SectionTitle>
+          <HoldingsTable holdings={securities} isMobile={isMobile} />
 
           {errored.length > 0 && (
             <p style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 6 }}>
               {errored.length} 笔取价失败：{errored.map((h) => h.ticker).join("、")}
             </p>
+          )}
+
+          {/* 加密货币明细（独立成组，不混入证券） */}
+          {cryptos.length > 0 && (
+            <>
+              <SectionTitle>加密货币（{cryptos.length}）</SectionTitle>
+              <HoldingsTable holdings={cryptos} isMobile={isMobile} />
+            </>
           )}
 
           {/* 现金明细 */}

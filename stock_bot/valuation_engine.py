@@ -153,7 +153,7 @@ def fetch_exchange_rates() -> Dict[str, float]:
     
     if hkd_rate:
         rates["HKD_CNY"] = round(hkd_rate, 4)
-    
+
     return rates
 
 
@@ -697,7 +697,8 @@ def _calculate_single_position(
     shares = position.get("shares", 0)
     cost_basis = position.get("cost_basis", 0)
     company_name = position.get("company_name", "-")
-    is_etf = position.get("type", "stock") == "etf"
+    asset_type = position.get("type", "stock")
+    is_etf = asset_type == "etf"
     
     try:
         if is_etf:
@@ -725,6 +726,7 @@ def _calculate_single_position(
             "ticker": ticker,
             "company_name": company_name,
             "shares": shares,
+            "type": asset_type,
             "current_price": current_price,
             "currency": currency,
             "currency_symbol": currency_symbol,
@@ -899,14 +901,20 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
             shares = float(shares_match.group(1))
             cost_basis = float(cost_match.group(1))
             
-            # ETF 前缀：沪市 50/51/58，深市 15/16，防止普通6位A股被误判
-            is_etf = (key.isdigit() and len(key) == 6 and
-                      key.startswith(('50', '51', '58', '15', '16')))
-            
+            # 资产类型判定（优先级：crypto > etf > stock）。crypto 必须先判，
+            # 否则 BTC/ETH 会落到 stock，导致估值汇总时被算进"证券"而非"加密货币"。
+            # ETF 前缀：沪市 50/51/58，深市 15/16，防止普通6位A股被误判。
+            if is_crypto_ticker(ticker):
+                asset_type = "crypto"
+            elif key.isdigit() and len(key) == 6 and key.startswith(('50', '51', '58', '15', '16')):
+                asset_type = "etf"
+            else:
+                asset_type = "stock"
+
             positions[ticker] = {
                 "shares": shares,
                 "cost_basis": cost_basis,
-                "type": "etf" if is_etf else "stock",
+                "type": asset_type,
                 "company_name": company_name
             }
         except Exception:

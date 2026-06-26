@@ -82,15 +82,32 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     cash_holdings: List[Dict[str, Any]] = valuation.get("cash_holdings", [])
     cash_total_cny: float = valuation.get("cash_total_cny", 0.0)
 
-    # 证券市值 = 总市值 - 现金（仅统计估值成功的持仓）
+    # 资产分类汇总（均仅统计估值成功的持仓）：
+    #   - 证券 = type≠crypto 的持仓（股票/ETF），加密货币单列，不再混入证券；
+    #   - 加密 = type==crypto 的持仓（BTC/ETH 等）。
+    # 历史快照无 crypto_total_cny 字段，obs 前端须 ?? 0 兜底。
     securities_total_cny: float = round(
-        sum(h.get("market_value_cny", 0.0) for h in holdings if "error" not in h), 2
+        sum(
+            h.get("market_value_cny", 0.0)
+            for h in holdings
+            if "error" not in h and h.get("type") != "crypto"
+        ), 2
+    )
+    crypto_total_cny: float = round(
+        sum(
+            h.get("market_value_cny", 0.0)
+            for h in holdings
+            if "error" not in h and h.get("type") == "crypto"
+        ), 2
     )
 
-    # 币种敞口（CNY 口径）：证券按持仓 currency 归并 + 现金按 currency 归并
+    # 币种敞口（CNY 口径，仅法币）：证券按持仓 currency 归并 + 现金按 currency 归并。
+    # 加密货币（type==crypto）虽以美元报价，但其波动主要来自币市本身而非汇率，
+    # 计入美元敞口会高估真实法币汇率风险，故剔除——加密风险由「加密货币」组单独体现。
+    # 故 currency_exposure 合计 = 总净值 − 加密市值（仅法币口径）。
     currency_exposure: Dict[str, float] = {}
     for h in holdings:
-        if "error" in h:
+        if "error" in h or h.get("type") == "crypto":
             continue
         cur = h.get("currency", "CNY")
         currency_exposure[cur] = currency_exposure.get(cur, 0.0) + h.get("market_value_cny", 0.0)
@@ -109,6 +126,7 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "total_profit_loss": valuation.get("total_profit_loss", 0.0),
         "profit_loss_percent": valuation.get("profit_loss_percent", 0.0),
         "securities_total_cny": securities_total_cny,
+        "crypto_total_cny": crypto_total_cny,
         "cash_total_cny": cash_total_cny,
         "currency_exposure": currency_exposure,
         "holdings": holdings,

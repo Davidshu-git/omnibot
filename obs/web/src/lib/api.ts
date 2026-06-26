@@ -180,6 +180,7 @@ export interface PortfolioHolding {
   ticker: string;
   company_name: string;
   shares: number;
+  type?: string; // "stock" | "etf" | "crypto"，用于证券/加密分类
   current_price?: number;
   currency?: string;
   currency_symbol?: string;
@@ -209,6 +210,7 @@ export interface PortfolioSnapshot {
   total_profit_loss?: number;
   profit_loss_percent?: number;
   securities_total_cny?: number;
+  crypto_total_cny?: number;
   cash_total_cny?: number;
   currency_exposure?: Record<string, number>;
   holdings?: PortfolioHolding[];
