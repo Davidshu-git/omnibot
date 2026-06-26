@@ -118,10 +118,10 @@ export default function PortfolioPage() {
             </span>
           </div>
 
-          {/* KPI 卡 */}
+          {/* KPI 卡（证券/加密/现金拆分由下方「资产配比」承载，此处不重复） */}
           <div style={{
             display: "grid",
-            gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))",
+            gridTemplateColumns: isMobile ? "1fr" : "repeat(2, minmax(0, 1fr))",
             gap: "1rem",
             marginBottom: "1.5rem",
           }}>
@@ -142,32 +142,9 @@ export default function PortfolioPage() {
                 {fmtPct(snap?.profit_loss_percent)}
               </span>
             </KpiCard>
-
-            <KpiCard title={cryptoTotal > 0 ? "证券 / 加密 / 现金" : "证券 / 现金"}>
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                <span style={{ fontSize: 18, fontWeight: 700, color: "var(--blue)", fontVariantNumeric: "tabular-nums" }}>
-                  {fmtCny(snap?.securities_total_cny)}
-                </span>
-                <span style={{ color: "var(--text-dim)", fontSize: 12 }}>证券</span>
-              </div>
-              {cryptoTotal > 0 && (
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
-                  <span style={{ fontSize: 18, fontWeight: 700, color: "var(--teal)", fontVariantNumeric: "tabular-nums" }}>
-                    {fmtCny(cryptoTotal)}
-                  </span>
-                  <span style={{ color: "var(--text-dim)", fontSize: 12 }}>加密</span>
-                </div>
-              )}
-              <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 2 }}>
-                <span style={{ fontSize: 18, fontWeight: 700, color: "var(--amber)", fontVariantNumeric: "tabular-nums" }}>
-                  {fmtCny(snap?.cash_total_cny)}
-                </span>
-                <span style={{ color: "var(--text-dim)", fontSize: 12 }}>现金</span>
-              </div>
-            </KpiCard>
           </div>
 
-          {/* 配比：证券 vs 现金 + 币种敞口 */}
+          {/* 配比：资产配比（证券/加密/现金）+ 币种敞口 */}
           <div style={{
             display: "grid",
             gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
@@ -180,7 +157,7 @@ export default function PortfolioPage() {
                 { label: "证券", value: snap?.securities_total_cny ?? 0, color: "var(--blue)" },
                 ...(cryptoTotal > 0 ? [{ label: "加密", value: cryptoTotal, color: "var(--teal)" }] : []),
                 { label: "现金", value: snap?.cash_total_cny ?? 0, color: "var(--amber)" },
-              ]}
+              ].sort((a, b) => b.value - a.value)}
             />
             <CurrencyExposureCard
               exposure={snap?.currency_exposure ?? {}}
