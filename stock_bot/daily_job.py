@@ -539,6 +539,14 @@ def job_routine() -> None:
         markdown_report = format_portfolio_report(valuation)
         console.print(f"[bold dim]💰 [财务计算] 总市值：¥{valuation['total_market_value']:,.2f}, 累计盈亏：¥{valuation['total_profit_loss']:,.2f} ({valuation['profit_loss_percent']:+.2f}%)[/bold dim]")
 
+        # 复用本次估值结果，落盘组合快照供 obs 投资总控台消费（失败不影响日报主流程）
+        try:
+            from stock_bot.snapshot import write_snapshot
+            if write_snapshot(valuation) is not None:
+                console.print("[bold dim]📸 [组合快照] 已写入 data/stock/snapshots/portfolio.jsonl[/bold dim]")
+        except Exception as e:
+            console.print(f"[bold yellow]⚠️ [组合快照] 落盘失败（不影响日报）：{type(e).__name__} - {e}[/bold yellow]")
+
     portfolio_metrics = {
         "total_market_value": valuation.get("total_market_value", 0.0),
         "total_pnl": valuation.get("total_profit_loss", 0.0),

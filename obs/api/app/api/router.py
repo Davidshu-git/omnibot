@@ -282,6 +282,85 @@ async def stock_chart_file(filename: str):
 
 
 # ---------------------------------------------------------------------------
+# 投资总控台（stock-bot 组合快照，只读自挂载的 snapshots/portfolio.jsonl）
+# ---------------------------------------------------------------------------
+
+def _portfolio_snapshot_path() -> Path:
+    """组合快照 JSONL 在 obs 容器内的只读路径。"""
+    base = Path(os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot")
+    return base / "snapshots" / "portfolio.jsonl"
+
+
+def _read_portfolio_snapshots() -> list[dict]:
+    """读取全部组合快照（按 date 升序）。
+
+    文件由 stock_bot.snapshot 每日写入（每日一行）。obs 仅做只读消费，
+    不参与任何财务计算。坏行跳过，文件缺失返回空列表。
+
+    Returns:
+        list[dict]: 快照列表，按 ``date`` 升序排列。
+    """
+    path = _portfolio_snapshot_path()
+    if not path.is_file():
+        return []
+    rows: list[dict] = []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError as exc:
+        logger.warning("读取组合快照失败：%s", exc)
+        return []
+    rows.sort(key=lambda r: r.get("date", ""))
+    return rows
+
+
+@router.get("/portfolio/latest")
+async def portfolio_latest():
+    """返回最新一条组合快照（投资总控台「当下快照」数据源）。
+
+    Returns:
+        dict: 最新快照；无任何快照时返回 ``{"available": False}``。
+    """
+    rows = _read_portfolio_snapshots()
+    if not rows:
+        return {"available": False}
+    return {"available": True, **rows[-1]}
+
+
+@router.get("/portfolio/history")
+async def portfolio_history(days: int = Query(default=90, ge=1, le=730)):
+    """返回最近 N 天的组合快照精简序列（为后续净值曲线预留）。
+
+    Args:
+        days: 回溯天数，默认 90，最大 730。
+
+    Returns:
+        dict: ``{"points": [{date, total_market_value, total_profit_loss,
+            profit_loss_percent, securities_total_cny, cash_total_cny}, ...]}``
+    """
+    rows = _read_portfolio_snapshots()[-days:]
+    points = [
+        {
+            "date": r.get("date"),
+            "total_market_value": r.get("total_market_value", 0.0),
+            "total_profit_loss": r.get("total_profit_loss", 0.0),
+            "profit_loss_percent": r.get("profit_loss_percent", 0.0),
+            "securities_total_cny": r.get("securities_total_cny", 0.0),
+            "cash_total_cny": r.get("cash_total_cny", 0.0),
+        }
+        for r in rows
+    ]
+    return {"points": points}
+
+
+# ---------------------------------------------------------------------------
 # External service status
 # ---------------------------------------------------------------------------
 

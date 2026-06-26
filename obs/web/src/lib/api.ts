@@ -176,6 +176,45 @@ export interface BotChatResult {
   trace_id: string;
 }
 
+export interface PortfolioHolding {
+  ticker: string;
+  company_name: string;
+  shares: number;
+  current_price?: number;
+  currency?: string;
+  currency_symbol?: string;
+  market_value_cny?: number;
+  cost_value_cny?: number;
+  profit_loss_cny?: number;
+  profit_loss_percent?: number;
+  suspect?: boolean;
+  error?: string;
+}
+
+export interface PortfolioCashHolding {
+  platform: string;
+  amount: number;
+  currency: string;
+  cny_value: number;
+}
+
+export interface PortfolioSnapshot {
+  available: boolean;
+  date?: string;
+  generated_at?: string;
+  currency_unit?: string;
+  total_market_value?: number;
+  total_cost?: number;
+  total_profit_loss?: number;
+  profit_loss_percent?: number;
+  securities_total_cny?: number;
+  cash_total_cny?: number;
+  currency_exposure?: Record<string, number>;
+  holdings?: PortfolioHolding[];
+  cash_holdings?: PortfolioCashHolding[];
+  exchange_rates?: Record<string, number>;
+}
+
 export const api = {
   projects: () => get<Project[]>("/api/projects"),
   overview: () => get<ProjectOverview[]>("/api/stats/overview"),
@@ -236,4 +275,6 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
   ingestMhxyExecutor: () => post<{ status: string; events_inserted: number }>("/api/ingest/mhxy-executor"),
   ingestStockBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/stock-bot"),
   ingestEhsBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/ehs-bot"),
+
+  portfolioLatest: () => get<PortfolioSnapshot>("/api/portfolio/latest"),
 };
