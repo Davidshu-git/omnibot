@@ -56,7 +56,10 @@ export default function PortfolioPage() {
     .filter((h) => !h.error)
     .sort((a, b) => (b.market_value_cny ?? 0) - (a.market_value_cny ?? 0));
   const errored = (snap?.holdings ?? []).filter((h) => h.error);
-  const cash = snap?.cash_holdings ?? [];
+  // 现金原序为 user_profile.json 书写顺序，同样按折 CNY 降序，与证券持仓口径一致。
+  const cash = (snap?.cash_holdings ?? [])
+    .slice()
+    .sort((a, b) => (b.cny_value ?? 0) - (a.cny_value ?? 0));
   const suspectCount = holdings.filter((h) => h.suspect).length;
 
   return (
@@ -273,11 +276,12 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? 640 : 720, tableLayout: "fixed" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? 760 : 840, tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: 150 }} />
             <col style={{ width: 76 }} />
             <col style={{ width: 96 }} />
+            <col style={{ width: 120 }} />
             <col style={{ width: 116 }} />
             <col style={{ width: 116 }} />
             <col style={{ width: 90 }} />
@@ -285,7 +289,7 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
           </colgroup>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              {["持仓", "数量", "现价", "市值(CNY)", "盈亏(CNY)", "盈亏%", "占比"].map((h, i) => (
+              {["持仓", "数量", "现价", "原币市值", "市值(CNY)", "盈亏(CNY)", "盈亏%", "占比"].map((h, i) => (
                 <th key={h} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -303,6 +307,9 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
                   <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{h.shares}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
                     {h.currency_symbol}{h.current_price?.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                  </td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                    {h.currency_symbol}{h.native_market_value?.toLocaleString("en-US", { maximumFractionDigits: 2 })}
                   </td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text)", fontFamily: "var(--font-mono)" }}>{fmtCny(h.market_value_cny)}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: pnlColor(h.profit_loss_cny), fontFamily: "var(--font-mono)" }}>{fmtCny(h.profit_loss_cny)}</td>

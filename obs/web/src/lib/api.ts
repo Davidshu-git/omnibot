@@ -183,6 +183,7 @@ export interface PortfolioHolding {
   current_price?: number;
   currency?: string;
   currency_symbol?: string;
+  native_market_value?: number;
   market_value_cny?: number;
   cost_value_cny?: number;
   profit_loss_cny?: number;
