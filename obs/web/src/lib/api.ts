@@ -200,6 +200,13 @@ export interface PortfolioCashHolding {
   cny_value: number;
 }
 
+export interface FxTrend {
+  rate: number;
+  change_pct: number;
+  window_days?: number;
+  spark?: number[];
+}
+
 export interface PortfolioSnapshot {
   available: boolean;
   date?: string;
@@ -213,6 +220,7 @@ export interface PortfolioSnapshot {
   crypto_total_cny?: number;
   cash_total_cny?: number;
   currency_exposure?: Record<string, number>;
+  fx_trend?: Record<string, FxTrend>;
   holdings?: PortfolioHolding[];
   cash_holdings?: PortfolioCashHolding[];
   exchange_rates?: Record<string, number>;

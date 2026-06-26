@@ -157,6 +157,80 @@ def fetch_exchange_rates() -> Dict[str, float]:
     return rates
 
 
+# 币种 → yfinance 兑人民币汇率代码（趋势取数用）
+_FX_SYMBOL_MAP: Dict[str, str] = {"USD": "USDCNY=X", "HKD": "HKDCNY=X"}
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2),
+       retry=retry_if_exception_type((ConnectionError, TimeoutError)))
+def _fetch_fx_history(symbol: str, period: str = "1mo") -> Optional[pd.Series]:
+    """取单一汇率近一月日线收盘序列（趋势走势线/变化率用）。
+
+    Args:
+        symbol: yfinance 汇率代码（如 ``USDCNY=X``）。
+        period: yfinance 周期，默认 ``1mo``。
+
+    Returns:
+        Optional[pd.Series]: 收盘价序列（DatetimeIndex），无数据返回 None。
+
+    Raises:
+        ConnectionError / TimeoutError: 触发 tenacity 重试的网络类异常。
+    """
+    hist = yf.Ticker(symbol).history(period=period, timeout=10)
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        return None
+    closes = hist["Close"].dropna()
+    return closes if not closes.empty else None
+
+
+def fetch_fx_trend(
+    currencies: List[str],
+    change_window_days: int = 7,
+    spark_points: int = 10,
+) -> Dict[str, Dict[str, Any]]:
+    """获取若干币种兑人民币的近期汇率趋势（当前价 + 窗口变化率 + 迷你走势序列）。
+
+    供 obs「币种敞口」展示汇率走向用。**非关键路径**：任一币种取数失败仅跳过，
+    绝不冒泡打断快照主流程（汇率趋势是展示增益，缺失应优雅降级为无趋势）。
+
+    Args:
+        currencies: 需要趋势的币种列表（如 ``["USD", "HKD"]``）；``CNY`` 等无映射者跳过。
+        change_window_days: 变化率回溯的自然日窗口，默认 7。
+        spark_points: 走势线保留的最近收盘点数，默认 10。
+
+    Returns:
+        Dict[str, Dict]: ``{币种: {rate, change_pct, window_days, spark: [..]}}``。
+            ``rate`` 当前汇率，``change_pct`` 近 N 日兑人民币涨跌百分比，
+            ``spark`` 最近若干日收盘序列。无数据的币种不出现在结果里。
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for cur in currencies:
+        symbol = _FX_SYMBOL_MAP.get(cur)
+        if not symbol:
+            continue
+        try:
+            closes = _fetch_fx_history(symbol)
+        except Exception as exc:  # 网络/解析异常一律降级为"无趋势"，不打断快照
+            logger.warning("FX 趋势获取失败 %s：%s - %s", cur, type(exc).__name__, exc)
+            continue
+        if closes is None or closes.empty:
+            continue
+        rate = float(closes.iloc[-1])
+        # 取"当前日期 − change_window_days"当日或之前最近一根作为基准价
+        cutoff = closes.index[-1] - pd.Timedelta(days=change_window_days)
+        past_series = closes[closes.index <= cutoff]
+        past = float(past_series.iloc[-1]) if not past_series.empty else float(closes.iloc[0])
+        change_pct = round((rate - past) / past * 100, 2) if past else 0.0
+        spark = [round(float(x), 4) for x in closes.iloc[-spark_points:]]
+        out[cur] = {
+            "rate": round(rate, 4),
+            "change_pct": change_pct,
+            "window_days": change_window_days,
+            "spark": spark,
+        }
+    return out
+
+
 def detect_ticker_currency(ticker: str) -> str:
     """
     根据股票代码特征判断其原生货币。

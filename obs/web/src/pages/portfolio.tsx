@@ -5,6 +5,7 @@ import {
   type PortfolioSnapshot,
   type PortfolioHolding,
   type PortfolioCashHolding,
+  type FxTrend,
 } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -181,15 +182,9 @@ export default function PortfolioPage() {
                 { label: "现金", value: snap?.cash_total_cny ?? 0, color: "var(--amber)" },
               ]}
             />
-            <AllocCard
-              title="币种敞口"
-              segments={Object.entries(snap?.currency_exposure ?? {})
-                .sort((a, b) => b[1] - a[1])
-                .map(([cur, val], i) => ({
-                  label: CURRENCY_LABEL[cur] ?? cur,
-                  value: val,
-                  color: ALLOC_PALETTE[i % ALLOC_PALETTE.length],
-                }))}
+            <CurrencyExposureCard
+              exposure={snap?.currency_exposure ?? {}}
+              fxTrend={snap?.fx_trend ?? {}}
             />
           </div>
 
@@ -284,6 +279,74 @@ function AllocCard({ title, segments }: {
             </span>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+/** 迷你走势线（内联 SVG，中性描边，仅示意方向，不抢色）。 */
+function Sparkline({ data, width = 52, height = 14 }: { data: number[]; width?: number; height?: number }) {
+  if (!data || data.length < 2) return null;
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const pts = data
+    .map((v, i) => {
+      const x = (i / (data.length - 1)) * width;
+      const y = height - ((v - min) / range) * height;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return (
+    <svg width={width} height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block", flexShrink: 0 }}>
+      <polyline points={pts} fill="none" stroke="var(--text-dim)" strokeWidth={1} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+/** 币种敞口卡：敞口配比条 + 每币种两行（敞口金额/占比 + 汇率趋势走势线/变化率）。 */
+function CurrencyExposureCard({ exposure, fxTrend }: {
+  exposure: Record<string, number>;
+  fxTrend: Record<string, FxTrend>;
+}) {
+  const entries = Object.entries(exposure).sort((a, b) => b[1] - a[1]);
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  return (
+    <div className="card" style={{ padding: "0.85rem 1.1rem" }}>
+      <span style={{
+        display: "block", color: "var(--text-muted)", fontSize: 11, fontWeight: 600,
+        letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: "0.6rem",
+      }}>币种敞口</span>
+      <div style={{ display: "flex", height: 8, borderRadius: 4, overflow: "hidden", background: "var(--border)", marginBottom: "0.6rem" }}>
+        {total > 0 && entries.map(([cur, val], i) => (
+          <div key={cur} style={{ width: `${(val / total) * 100}%`, background: ALLOC_PALETTE[i % ALLOC_PALETTE.length], transition: "width 0.5s var(--ease)" }} />
+        ))}
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {entries.map(([cur, val], i) => {
+          const t = fxTrend[cur];
+          const pct = total > 0 ? Math.round((val / total) * 100) : 0;
+          return (
+            <div key={cur}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                <span style={{ width: 10, height: 10, borderRadius: 2, background: ALLOC_PALETTE[i % ALLOC_PALETTE.length], flexShrink: 0 }} />
+                <span style={{ color: "var(--text-muted)", flex: 1 }}>{CURRENCY_LABEL[cur] ?? cur}</span>
+                <span style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>{fmtCny(val)}</span>
+                <span style={{ color: "var(--text-dim)", minWidth: 42, textAlign: "right" }}>{total > 0 ? `${pct}%` : "—"}</span>
+              </div>
+              {t && (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, marginTop: 3, paddingLeft: 18 }}>
+                  <span style={{ color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{t.rate}</span>
+                  <Sparkline data={t.spark ?? []} />
+                  <span style={{ color: pnlColor(t.change_pct), fontVariantNumeric: "tabular-nums" }}>
+                    {t.change_pct >= 0 ? "▲" : "▼"}{fmtPct(t.change_pct)}
+                  </span>
+                  <span style={{ color: "var(--text-dim)" }}>近{t.window_days ?? 7}日</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

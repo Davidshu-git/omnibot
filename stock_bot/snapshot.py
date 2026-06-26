@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from stock_bot.valuation_engine import (
     calculate_portfolio_valuation,
+    fetch_fx_trend,
     parse_cash_assets,
     parse_user_profile_to_positions,
 )
@@ -116,6 +117,11 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         currency_exposure[cur] = currency_exposure.get(cur, 0.0) + c.get("cny_value", 0.0)
     currency_exposure = {k: round(v, 2) for k, v in currency_exposure.items()}
 
+    # 汇率趋势（非关键增益）：仅对敞口里出现的非 CNY 币种取近期走势，供 obs 展示。
+    # fetch_fx_trend 内部已对每币种做异常降级，失败返回空 dict，绝不打断快照。
+    fx_currencies = [c for c in currency_exposure if c != "CNY"]
+    fx_trend = fetch_fx_trend(fx_currencies) if fx_currencies else {}
+
     now = datetime.now()
     return {
         "date": now.strftime("%Y-%m-%d"),
@@ -129,6 +135,7 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "crypto_total_cny": crypto_total_cny,
         "cash_total_cny": cash_total_cny,
         "currency_exposure": currency_exposure,
+        "fx_trend": fx_trend,
         "holdings": holdings,
         "cash_holdings": cash_holdings,
         "exchange_rates": valuation.get("exchange_rates", {}),
