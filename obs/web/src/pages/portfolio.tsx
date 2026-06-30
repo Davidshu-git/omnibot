@@ -89,7 +89,7 @@ export default function PortfolioPage() {
 
       {!loading && !available && !err && (
         <div className="card" style={{ padding: "1.25rem", color: "var(--text-muted)", fontSize: 13, lineHeight: 1.7 }}>
-          暂无组合快照。盘后调度器（15:30）首次运行后即生成，或在 stock 容器内手动执行
+          暂无组合快照。盘后调度器（16:30）首次运行后即生成，或在 stock 容器内手动执行
           <code style={{ margin: "0 4px", color: "var(--text)", fontFamily: "var(--font-mono)" }}>python -m stock_bot.snapshot</code>
           生成一条。
         </div>

@@ -19,7 +19,7 @@ OmniBot 不是一个 Demo，而是一个**持续运行在生产环境中的多 A
 ```mermaid
 graph TD
     User((👤 Telegram 用户)) --> |自然语言 / 命令| Layer_Bots
-    Scheduler((⏰ 定时调度)) --> |每日 15:30 / Watchdog| Layer_Bots
+    Scheduler((⏰ 定时调度)) --> |每日 16:30 / Watchdog| Layer_Bots
 
     subgraph Layer_Bots ["🤖 Bot 应用层"]
         Stock["📈 OmniStock<br/>量化股票助理"]
@@ -102,7 +102,7 @@ graph TD
 
 ### 📈 OmniStock — 量化股票助理
 
-覆盖 A 股 / 港股 / 美股，每日 15:30 自动执行盘后研报，支持持仓管理、价格预警、K 线分析。
+覆盖 A 股 / 港股 / 美股，每日 16:30 自动执行盘后研报，支持持仓管理、价格预警、K 线分析。
 
 | 能力 | 实现 |
 |------|------|
@@ -206,7 +206,7 @@ docker compose -f obs/docker-compose.yml logs api -f
 | 容器 | 说明 |
 |------|------|
 | `v2-omnistock-tg-bot` | OmniStock Telegram Bot |
-| `v2-omnistock-daily-job` | 盘后调度器（每日 15:30） |
+| `v2-omnistock-daily-job` | 盘后调度器（每日 16:30） |
 | `v2-omniehs-tg-bot` | OmniEHS Telegram Bot |
 | `v2-omnimhxy-tg-bot` | OmniMHXY 游戏控制 Bot |
 | `obs-api-1 / obs-web-1 / obs-db-1` | 可观测性平台 |

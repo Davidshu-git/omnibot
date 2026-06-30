@@ -2,7 +2,7 @@
 盘后调度主程序 - 每日盘后热点分析与邮件推送调度器。
 
 本模块负责：
-1. 定时调度（每日 15:30 盘后）
+1. 定时调度（每日 16:30 盘后，覆盖港股 16:10 收盘竞价）
 2. 高可用多源数据聚合（财联社/新浪/东财并行拉取 + 去重融合）
 3. 读取用户持仓记忆
 4. 调用大模型生成盘后报告
@@ -622,9 +622,9 @@ def run_scheduler() -> None:
     """
     启动定时调度器，进入挂起等待状态。
     """
-    schedule.every().day.at("15:30").do(job_routine)
+    schedule.every().day.at("16:30").do(job_routine)
 
-    console.print("[bold cyan]🕒 调度器已启动，等待每日 15:30 执行盘后任务...[/bold cyan]")
+    console.print("[bold cyan]🕒 调度器已启动，等待每日 16:30 执行盘后任务...[/bold cyan]")
     console.print("[dim]按 Ctrl+C 停止调度器[/dim]")
 
     try:

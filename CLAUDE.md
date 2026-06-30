@@ -205,7 +205,7 @@ omnibot/
 ├── stock_bot/               # OmniStock 量化助理
 │   ├── agent.py             # 目录配置 + System Prompt + 工具组装
 │   ├── tg_main.py           # StockBot(TelegramBotBase) 子类
-│   ├── daily_job.py         # 盘后调度器（每日 15:30）
+│   ├── daily_job.py         # 盘后调度器（每日 16:30）
 │   ├── valuation_engine.py  # 多币种估值引擎（独立模块，禁止 LLM 绕过）
 │   └── tools/stock_tools.py # make_stock_tools() 工厂
 │
