@@ -337,7 +337,7 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? 760 : 840, tableLayout: "fixed" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? 876 : 956, tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: 150 }} />
             <col style={{ width: 76 }} />
@@ -345,12 +345,13 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
             <col style={{ width: 120 }} />
             <col style={{ width: 116 }} />
             <col style={{ width: 116 }} />
+            <col style={{ width: 116 }} />
             <col style={{ width: 90 }} />
             <col style={{ width: 70 }} />
           </colgroup>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              {["持仓", "数量", "现价", "原币市值", "市值(CNY)", "盈亏(CNY)", "盈亏%", "占比"].map((h, i) => (
+              {["持仓", "数量", "现价", "原币市值", "市值(CNY)", "成本(CNY)", "盈亏(CNY)", "盈亏%", "占比"].map((h, i) => (
                 <th key={h} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
@@ -373,6 +374,7 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
                     {h.currency_symbol}{h.native_market_value?.toLocaleString("en-US", { maximumFractionDigits: 2 })}
                   </td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text)", fontFamily: "var(--font-mono)" }}>{fmtCny(h.market_value_cny)}</td>
+                  <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>{fmtCny(h.cost_value_cny)}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: pnlColor(h.profit_loss_cny), fontFamily: "var(--font-mono)" }}>{fmtCny(h.profit_loss_cny)}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: pnlColor(h.profit_loss_percent), fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmtPct(h.profit_loss_percent)}</td>
                   <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-dim)" }}>{pct}%</td>
