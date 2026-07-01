@@ -39,6 +39,8 @@ export default function PortfolioPage() {
   const [snap, setSnap] = useState<PortfolioSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
+  const [revaluing, setRevaluing] = useState(false);
+  const [revalMsg, setRevalMsg] = useState("");
 
   const load = useCallback(() => {
     setLoading(true);
@@ -47,6 +49,23 @@ export default function PortfolioPage() {
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));
   }, []);
+
+  // 「重新估值」：触发 stock bot 联网重新取价并覆盖当天快照，跑完重读。
+  // 区别于「刷新」（纯重读已落盘数据、秒回）。60s 冷却由 bot 侧强制，前端只做提示。
+  const revalue = useCallback(() => {
+    setRevaluing(true);
+    setRevalMsg("");
+    api.portfolioRefresh()
+      .then((r) => {
+        setRevalMsg(`✓ 已重新取价（净值 ${fmtCny(r.total_market_value)}）`);
+        load();
+      })
+      .catch((e) => {
+        const msg = String(e);
+        setRevalMsg(msg.includes("429") ? "⏳ 冷却中，请约 1 分钟后再试" : `重新估值失败：${msg}`);
+      })
+      .finally(() => setRevaluing(false));
+  }, [load]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -82,8 +101,23 @@ export default function PortfolioPage() {
           <button onClick={load} disabled={loading} className="tag-btn" style={{ fontSize: 12 }}>
             {loading ? "刷新中…" : "↻ 刷新"}
           </button>
+          <button
+            onClick={revalue}
+            disabled={revaluing || loading}
+            className="tag-btn"
+            style={{ fontSize: 12 }}
+            title="触发 stock bot 联网重新取价并覆盖当天快照（约十几秒，60s 冷却）"
+          >
+            {revaluing ? "重新估值中…" : "⟳ 重新估值"}
+          </button>
         </div>
       </div>
+
+      {revalMsg && (
+        <p style={{ color: revalMsg.startsWith("✓") ? "var(--text-muted)" : "var(--amber)", fontSize: 12, marginTop: -8, marginBottom: "1rem" }}>
+          {revalMsg}
+        </p>
+      )}
 
       {err && <p style={{ color: "var(--red)", marginBottom: "1rem" }}>{err}</p>}
 

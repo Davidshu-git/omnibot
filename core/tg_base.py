@@ -1011,6 +1011,18 @@ class TelegramBotBase:
             reset_current_observer(obs_token)
             self.set_observability_context(None)
 
+    async def refresh_portfolio_snapshot(self) -> Optional[dict]:
+        """钩子：重新取价并落盘组合快照（obs 面板「重新估值」触发）。
+
+        基类默认不支持，返回 ``None`` → HTTP 404。持仓类 bot（如 StockBot）覆写本方法，
+        在线程池中执行同步且联网的 ``write_snapshot()``，避免阻塞 asyncio 事件循环。
+
+        Returns:
+            None: 该 bot 不支持组合快照刷新（非持仓类，如 EHS）。
+            dict: ``{"status": "ok"|"cooldown"|"error", ...}``，供 obs 面板展示。
+        """
+        return None
+
     async def _start_obs_chat_http_server(self) -> None:
         """启动 obs 反向对话入口，与 Telegram polling 共用事件循环。"""
         token = os.getenv("OBS_BOT_CHAT_TOKEN", "")
@@ -1026,16 +1038,32 @@ class TelegramBotBase:
 
         port = int(os.getenv("OBS_CHAT_HTTP_PORT", "8810"))
 
+        def obs_action(*, parse_json: bool = True):
+            """装饰器：统一 obs→bot 动作端点的 token 鉴权与 JSON 解析样板。
+
+            token 不符 → 401；``parse_json`` 时 body 非法 JSON → 422，均在此短路。
+            被装饰 handler 通过 ``request["obs_body"]`` 取已解析请求体，只写业务逻辑。
+            新增 obs→bot 动作端点一律套用本装饰器，勿再手抄鉴权/解析样板。
+            """
+            def deco(fn):
+                async def wrapper(request: web.Request) -> web.Response:
+                    if request.headers.get("X-OBS-Token") != token:
+                        return web.json_response({"detail": "invalid token"}, status=401)
+                    if parse_json:
+                        try:
+                            request["obs_body"] = await request.json()
+                        except json.JSONDecodeError:
+                            return web.json_response({"detail": "invalid json body"}, status=422)
+                    return await fn(request)
+                return wrapper
+            return deco
+
         async def healthz(_: web.Request) -> web.Response:
             return web.json_response({"status": "ok", "bot": self.agent_id or self.get_bot_name()})
 
+        @obs_action()
         async def chat(request: web.Request) -> web.Response:
-            if request.headers.get("X-OBS-Token") != token:
-                return web.json_response({"detail": "invalid token"}, status=401)
-            try:
-                body = await request.json()
-            except json.JSONDecodeError:
-                return web.json_response({"detail": "invalid json body"}, status=422)
+            body = request["obs_body"]
 
             raw_user_id = body.get("user_id")
             text = body.get("text")
@@ -1059,13 +1087,9 @@ class TelegramBotBase:
                 return web.json_response({"detail": str(exc) or "agent failed"}, status=500)
             return web.json_response(result)
 
+        @obs_action()
         async def switch_model(request: web.Request) -> web.Response:
-            if request.headers.get("X-OBS-Token") != token:
-                return web.json_response({"detail": "invalid token"}, status=401)
-            try:
-                body = await request.json()
-            except json.JSONDecodeError:
-                return web.json_response({"detail": "invalid json body"}, status=422)
+            body = request["obs_body"]
 
             registries = self.get_model_registries()
             if not registries:
@@ -1108,10 +1132,8 @@ class TelegramBotBase:
                 "display_name": cur.display_name,
             })
 
+        @obs_action()
         async def executor_power(request: web.Request) -> web.Response:
-            if request.headers.get("X-OBS-Token") != token:
-                return web.json_response({"detail": "invalid token"}, status=401)
-
             power_file = os.getenv("EXECUTOR_POWER_FILE", "")
             if not power_file:
                 return web.json_response(
@@ -1119,11 +1141,7 @@ class TelegramBotBase:
                     status=404,
                 )
 
-            try:
-                body = await request.json()
-            except json.JSONDecodeError:
-                return web.json_response({"detail": "invalid json body"}, status=422)
-
+            body = request["obs_body"]
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
                 return web.json_response(
@@ -1153,11 +1171,25 @@ class TelegramBotBase:
             logger.info("[obs_chat] executor power set enabled=%s", enabled)
             return web.json_response(payload)
 
+        @obs_action(parse_json=False)
+        async def refresh_portfolio(request: web.Request) -> web.Response:
+            result = await self.refresh_portfolio_snapshot()
+            if result is None:
+                return web.json_response(
+                    {"detail": "portfolio refresh not supported by this bot"},
+                    status=404,
+                )
+            status = {"ok": 200, "cooldown": 429, "error": 500}.get(
+                result.get("status", "ok"), 200
+            )
+            return web.json_response(result, status=status)
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
         app.router.add_post("/switch-model", switch_model)
         app.router.add_post("/executor-power", executor_power)
+        app.router.add_post("/refresh-portfolio", refresh_portfolio)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

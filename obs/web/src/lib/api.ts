@@ -288,4 +288,9 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
   ingestEhsBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/ehs-bot"),
 
   portfolioLatest: () => get<PortfolioSnapshot>("/api/portfolio/latest"),
+  // 触发 stock bot 重新取价 + 覆盖当天快照（区别于 portfolioLatest 的纯重读）。
+  portfolioRefresh: () =>
+    post<{ status: string; generated_at?: string; total_market_value?: number; retry_after?: number; detail?: string }>(
+      "/api/external/stock-bot/refresh-portfolio",
+    ),
 };

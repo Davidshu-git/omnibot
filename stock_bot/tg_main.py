@@ -3,6 +3,7 @@ Stock Bot Telegram 入口 - 继承 TelegramBotBase，注入股票领域专属逻
 """
 import os
 import json
+import time
 import asyncio
 import logging
 from pathlib import Path
@@ -101,6 +102,43 @@ class StockBot(TelegramBotBase):
 
     def get_model_registries(self) -> dict:
         return {"text": registry, "daily": daily_registry}
+
+    _PORTFOLIO_REFRESH_COOLDOWN_S: int = 60
+    _last_portfolio_refresh_ts: float = 0.0
+
+    async def refresh_portfolio_snapshot(self) -> dict:
+        """obs 面板「重新估值」：线程池重新取价 + 落盘组合快照（60s 冷却）。
+
+        ``write_snapshot()`` 同步且联网（yfinance/akshare 取价、tenacity 重试），是重活，
+        必须丢进 ``run_in_executor`` 线程池，避免阻塞与 Telegram polling 共用的事件循环
+        （否则取价那十几秒 bot 整体卡死不回消息）。同日去重由 write_snapshot 内部保证。
+
+        Returns:
+            dict: ``status=ok`` 附最新快照摘要；``status=cooldown`` 附 ``retry_after``（秒）；
+                  ``status=error`` 附 ``detail``。
+        """
+        now = time.monotonic()
+        remaining = self._PORTFOLIO_REFRESH_COOLDOWN_S - (now - self._last_portfolio_refresh_ts)
+        if remaining > 0:
+            return {"status": "cooldown", "retry_after": int(remaining) + 1}
+
+        from stock_bot.snapshot import write_snapshot
+        loop = asyncio.get_running_loop()
+        try:
+            snap = await loop.run_in_executor(None, write_snapshot)
+        except Exception as exc:  # 兜底：取价/落盘任何异常都不冒泡成 500 裸栈
+            logger.exception("[refresh_portfolio] write_snapshot 执行失败")
+            return {"status": "error", "detail": str(exc) or "refresh failed"}
+
+        self._last_portfolio_refresh_ts = now
+        if snap is None:
+            return {"status": "error", "detail": "快照生成失败（无持仓或取价异常，详见容器日志）"}
+        return {
+            "status": "ok",
+            "date": snap.get("date"),
+            "generated_at": snap.get("generated_at"),
+            "total_market_value": snap.get("total_market_value"),
+        }
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {

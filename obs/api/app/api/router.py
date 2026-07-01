@@ -650,6 +650,51 @@ async def proxy_switch_model(project: str, body: dict):
     return r.json()
 
 
+@router.post("/external/{project}/refresh-portfolio")
+async def proxy_refresh_portfolio(project: str):
+    """Trigger the live stock bot to re-fetch prices and rewrite its portfolio snapshot.
+
+    The runtime snapshot file is mounted read-only into obs, and only stock_bot has
+    the valuation engine + price deps. So the recompute is delegated to the live bot
+    via its embedded HTTP server (same channel/token as chat / switch-model).
+    """
+    import httpx as _httpx
+
+    urls = {
+        "stock-bot": settings.stock_bot_chat_url,
+        "ehs-bot": settings.ehs_bot_chat_url,
+        "mhxy-bot": settings.mhxy_bot_chat_url,
+    }
+
+    if project not in BOT_CHAT_PROJECTS:
+        raise HTTPException(status_code=404, detail="Unknown bot project")
+    if not settings.obs_bot_chat_token:
+        raise HTTPException(status_code=503, detail="OBS_BOT_CHAT_TOKEN is not configured")
+
+    bot_url = urls[project].rstrip("/")
+    try:
+        # 取价 + 落盘可能耗时十几秒（yfinance/akshare 重试），超时给足 45s。
+        async with _httpx.AsyncClient(timeout=45) as client:
+            r = await client.post(
+                f"{bot_url}/refresh-portfolio",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.json() or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    # 广播让所有连接的 obs 客户端刷新总控台快照（非触发方也能看到最新值）。
+    _broadcast_event("portfolio_refreshed")
+    return r.json()
+
+
 @router.get("/external/mhxy-executor/status")
 async def mhxy_executor_status():
     path = Path(settings.mhxy_executor_status_file)
