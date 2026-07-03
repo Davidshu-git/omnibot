@@ -207,6 +207,26 @@ export interface FxTrend {
   spark?: number[];
 }
 
+export interface PortfolioHistoryPoint {
+  date: string;
+  total_market_value: number;
+  total_profit_loss: number;
+  profit_loss_percent: number;
+  securities_total_cny: number;
+  cash_total_cny: number;
+}
+
+export interface PortfolioHistoryExcludedPoint {
+  date: string;
+  errored_tickers: string[];
+}
+
+export interface PortfolioHistoryResponse {
+  points: PortfolioHistoryPoint[];
+  excluded_points?: PortfolioHistoryExcludedPoint[];
+  excluded_count?: number;
+}
+
 export interface PortfolioSnapshot {
   available: boolean;
   date?: string;
@@ -221,9 +241,41 @@ export interface PortfolioSnapshot {
   cash_total_cny?: number;
   currency_exposure?: Record<string, number>;
   fx_trend?: Record<string, FxTrend>;
+  has_pricing_error?: boolean;
+  errored_tickers?: string[];
   holdings?: PortfolioHolding[];
   cash_holdings?: PortfolioCashHolding[];
   exchange_rates?: Record<string, number>;
+}
+
+export interface StockTrendPoint {
+  date: string;
+  close: number;
+  ma20: number | null;
+  ma60: number | null;
+  ma250: number | null;
+}
+
+export interface StockTrendMaInfo {
+  available: boolean;
+  value?: number;
+  direction?: "向上" | "向下" | "走平";
+  slope_pct?: number;
+  deviation_pct?: number;
+  deviation_percentile?: number | null;
+}
+
+export interface StockTrend {
+  status: string;
+  detail?: string;
+  ticker?: string;
+  latest_price?: number;
+  latest_date?: string;
+  series?: StockTrendPoint[];
+  ma20?: StockTrendMaInfo;
+  ma60?: StockTrendMaInfo;
+  ma250?: StockTrendMaInfo;
+  regime_note?: string;
 }
 
 export const api = {
@@ -288,9 +340,14 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
   ingestEhsBot: () => post<{ status: string; events_inserted: number }>("/api/ingest/ehs-bot"),
 
   portfolioLatest: () => get<PortfolioSnapshot>("/api/portfolio/latest"),
+  portfolioHistory: (days = 90) =>
+    get<PortfolioHistoryResponse>("/api/portfolio/history", { days }),
   // 触发 stock bot 重新取价 + 覆盖当天快照（区别于 portfolioLatest 的纯重读）。
   portfolioRefresh: () =>
     post<{ status: string; generated_at?: string; total_market_value?: number; retry_after?: number; detail?: string }>(
       "/api/external/stock-bot/refresh-portfolio",
     ),
+  // 个股趋势分析（价格 + MA20/60/250）：仅 stock bot 支持，硬编码 project。
+  stockTrend: (ticker: string) =>
+    postJson<StockTrend>("/api/external/stock-bot/stock-trend", { ticker }),
 };

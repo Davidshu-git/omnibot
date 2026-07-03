@@ -29,6 +29,7 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 | `/switch-model` | POST | `/api/external/{project}/switch-model` | obs 总览页点击芯片热切换主控/视觉模型 |
 | `/executor-power` | POST | `/api/external/mhxy-executor/power` | obs 实例页开关 Windows Executor(仅 mhxy) |
 | `/refresh-portfolio` | POST | `/api/external/{project}/refresh-portfolio` | obs 投资总控台「⟳ 重新估值」联网重新取价 + 覆盖当天快照(仅 stock) |
+| `/stock-trend` | POST | `/api/external/{project}/stock-trend` | obs 投资总控台「个股趋势分析」弹窗,取价 + 计算 MA20/60/250(仅 stock) |
 
 > 所有 POST 动作端点共用 `core/tg_base.py::_start_obs_chat_http_server` 内的 `obs_action` 装饰器统一做 token 鉴权 + JSON 解析 + 错误短路,handler 只写业务逻辑,请求体从 `request["obs_body"]` 取。**新增动作端点一律套用此装饰器,勿再手抄鉴权/解析样板。**
 
@@ -47,6 +48,16 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 - **60s 冷却**(bot 侧内存时间戳强制):冷却中返回 `{"status":"cooldown","retry_after":N}` → HTTP **429**;成功返回 `{"status":"ok","date","generated_at","total_market_value"}` → 200;取价/落盘异常返回 `{"status":"error","detail"}` → 500。
 - obs 代理超时给 **45s**(取价含 tenacity 重试可能十几秒),成功后广播 `portfolio_refreshed` SSE。
 - 前端「⟳ 重新估值」与「↻ 刷新」**语义两分**:刷新=纯重读已落盘快照(秒回),重新估值=触发本端点联网重算。
+
+`/stock-trend` 契约:
+
+- 鉴权:请求头 `X-OBS-Token` == `OBS_BOT_CHAT_TOKEN`。
+- 请求体:`{"ticker": "<代码>"}`(必须非空字符串,否则 422)。
+- 仅 stock bot 生效:由基类钩子 `TelegramBotBase.get_stock_trend()` 暴露,基类默认返回 `None` → **404**(ehs/mhxy 未覆写)。`StockBot` 覆写:`run_in_executor` 线程池跑 `valuation_engine.fetch_stock_trend()`(yfinance 取近 2 年日线 + 计算 MA20/60/250 + 偏离度历史分位),**不能在事件循环里直跑**。
+- **5 分钟内存缓存**(按格式化后 ticker 为 key,bot 侧惰性初始化,非 60s 冷却限流而是纯防抖):同一 ticker 5 分钟内重复请求直接返回缓存,不重复打 yfinance。无 cooldown 语义(不返回 429)。
+- 成功返回 `{"status":"ok","ticker","latest_price","latest_date","series"[{date,close,ma20,ma60,ma250}],"ma20"/"ma60"/"ma250":{available,value,direction,slope_pct,deviation_pct,deviation_percentile},"regime_note"}` → 200;取价/计算异常返回 `{"status":"error","detail"}` → 500。
+- 产出**仅为描述性指标**(均线方向 + 偏离度历史分位 + 一句 `regime_note` 观察),不产出任何买卖建议措辞,前端固定展示免责声明。
+- obs 代理超时给 **20s**(单次 yfinance 拉取,比重估值轻),**不广播 SSE**(纯读查询,只对发起请求的客户端有意义)。
 
 `/switch-model` 契约:
 
@@ -113,3 +124,6 @@ docker compose -f obs/docker-compose.yml up -d --build
 - `/refresh-portfolio` 返回 404：非 stock bot（ehs/mhxy 未覆写钩子，正常）；或 stock 进程仍是旧代码未含钩子，需 `docker restart v2-omnistock-tg-bot`。
 - `/refresh-portfolio` 返回 429：60s 冷却内重复触发，`retry_after` 为剩余秒数，属正常限流。
 - `/refresh-portfolio` 返回 500 或 obs 代理 502/超时：查 `v2-omnistock-tg-bot` 日志，多为 yfinance/akshare 取价失败或持仓记忆为空（`write_snapshot()` 返回 None）。
+- `/stock-trend` 返回 404：非 stock bot（ehs/mhxy 未覆写钩子，正常）；或 stock 进程仍是旧代码未含钩子，需 `docker restart v2-omnistock-tg-bot`。
+- `/stock-trend` 返回 500 或 obs 代理 502/超时：查 `v2-omnistock-tg-bot` 日志，多为该 ticker 在 yfinance 查无历史数据（代码格式错误 / 已退市）。
+- `/stock-trend` 返回数据但某条均线 `available:false`：该标的历史不足以计算对应周期均线（如新上市标的不足 250 个交易日算不出 MA250），前端已优雅降级为提示文案，非故障。

@@ -1023,6 +1023,21 @@ class TelegramBotBase:
         """
         return None
 
+    async def get_stock_trend(self, ticker: str) -> Optional[dict]:
+        """钩子：个股价格 + 多周期均线趋势（obs 总控台「趋势分析」弹窗触发）。
+
+        基类默认不支持，返回 ``None`` → HTTP 404。持仓类 bot（如 StockBot）覆写，
+        在线程池中执行同步且联网的取价 + 均线计算，避免阻塞 asyncio 事件循环。
+
+        Args:
+            ticker: 股票/加密货币代码（原始或已格式化均可）。
+
+        Returns:
+            None: 该 bot 不支持个股趋势查询（非持仓类，如 EHS）。
+            dict: ``{"status": "ok"|"error", ...}``，供 obs 面板展示。
+        """
+        return None
+
     async def _start_obs_chat_http_server(self) -> None:
         """启动 obs 反向对话入口，与 Telegram polling 共用事件循环。"""
         token = os.getenv("OBS_BOT_CHAT_TOKEN", "")
@@ -1184,12 +1199,30 @@ class TelegramBotBase:
             )
             return web.json_response(result, status=status)
 
+        @obs_action()
+        async def stock_trend(request: web.Request) -> web.Response:
+            body = request["obs_body"]
+            ticker = body.get("ticker")
+            if not isinstance(ticker, str) or not ticker.strip():
+                return web.json_response(
+                    {"detail": "ticker must be a non-empty string"}, status=422
+                )
+
+            result = await self.get_stock_trend(ticker.strip())
+            if result is None:
+                return web.json_response(
+                    {"detail": "stock trend not supported by this bot"}, status=404
+                )
+            status = {"ok": 200, "error": 500}.get(result.get("status", "ok"), 200)
+            return web.json_response(result, status=status)
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
         app.router.add_post("/switch-model", switch_model)
         app.router.add_post("/executor-power", executor_power)
         app.router.add_post("/refresh-portfolio", refresh_portfolio)
+        app.router.add_post("/stock-trend", stock_trend)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

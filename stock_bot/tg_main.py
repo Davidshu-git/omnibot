@@ -28,7 +28,7 @@ from stock_bot.agent import (
     KB_DIR,
     MEMORY_DIR,
 )
-from stock_bot.valuation_engine import fetch_stock_price_raw
+from stock_bot.valuation_engine import fetch_stock_price_raw, fetch_stock_trend
 
 OBS_DIR = (Path(__file__).parent.parent / "data" / "stock" / "observability" / "sessions").resolve()
 OBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -139,6 +139,38 @@ class StockBot(TelegramBotBase):
             "generated_at": snap.get("generated_at"),
             "total_market_value": snap.get("total_market_value"),
         }
+
+    _STOCK_TREND_CACHE_TTL_S: int = 300
+
+    async def get_stock_trend(self, ticker: str) -> dict:
+        """obs 面板「趋势分析」弹窗：线程池取价 + 计算均线（5 分钟缓存）。
+
+        ``fetch_stock_trend`` 同步且联网（yfinance 取价），必须丢进
+        ``run_in_executor`` 线程池，避免阻塞与 Telegram polling 共用的事件循环。
+        惰性初始化缓存字典（而非可变类属性默认值），避免被同类所有实例共享。
+
+        Returns:
+            dict: ``status=ok`` 附趋势数据；``status=error`` 附 ``detail``。
+        """
+        if not hasattr(self, "_stock_trend_cache"):
+            self._stock_trend_cache: dict[str, tuple[float, dict]] = {}
+
+        cache_key = ticker.strip().upper()
+        now = time.monotonic()
+        cached = self._stock_trend_cache.get(cache_key)
+        if cached and (now - cached[0]) < self._STOCK_TREND_CACHE_TTL_S:
+            return cached[1]
+
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, fetch_stock_trend, ticker)
+        except Exception as exc:  # 取价/计算任何异常都不冒泡成 500 裸栈
+            logger.exception("[get_stock_trend] fetch_stock_trend 执行失败 ticker=%s", ticker)
+            return {"status": "error", "detail": str(exc) or "trend fetch failed"}
+
+        result = {"status": "ok", **data}
+        self._stock_trend_cache[cache_key] = (now, result)
+        return result
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {

@@ -752,6 +752,152 @@ def generate_kline_chart(ticker: str, save_dir: Path, days: int = 30) -> Dict[st
     }
 
 
+# 均线方向判定阈值（%）：斜率绝对值低于此值判"走平"，避免噪声抖动误判方向。
+_TREND_FLAT_THRESHOLD_PCT = 0.5
+
+# 均线周期 → 判定方向所需的回溯天数（该均线自身的近似"一个观察窗口"）。
+_MA_TREND_LOOKBACK = {"ma20": 10, "ma60": 20, "ma250": 60}
+
+
+def _ma_trend_info(
+    ma_series: "pd.Series",
+    close_series: "pd.Series",
+    latest_price: float,
+    lookback: int,
+) -> Dict[str, Any]:
+    """计算单条均线的方向、当前值、价格偏离度及偏离度历史分位。
+
+    Args:
+        ma_series: 该均线的完整序列（含前段 NaN）。
+        close_series: 收盘价序列，与 ma_series 同索引。
+        latest_price: 最新收盘价。
+        lookback: 判定方向的回溯天数。
+
+    Returns:
+        Dict[str, Any]: ``available=False`` 表示历史数据不足以计算该均线；
+        否则含 ``value``/``direction``/``deviation_pct``/``deviation_percentile``。
+    """
+    valid = ma_series.dropna()
+    if len(valid) < lookback + 1:
+        return {"available": False}
+
+    cur = float(valid.iloc[-1])
+    prev = float(valid.iloc[-lookback - 1])
+    slope_pct = (cur - prev) / prev * 100 if prev else 0.0
+    if slope_pct > _TREND_FLAT_THRESHOLD_PCT:
+        direction = "向上"
+    elif slope_pct < -_TREND_FLAT_THRESHOLD_PCT:
+        direction = "向下"
+    else:
+        direction = "走平"
+
+    deviation_pct = (latest_price - cur) / cur * 100 if cur else 0.0
+
+    # 偏离度历史分位：用该标的自身历史的偏离度分布定相对位置，
+    # 而非拍死一个绝对阈值（同一偏离度对蓝筹和 BTC 意义完全不同）。
+    dev_series = ((close_series - ma_series) / ma_series * 100).dropna()
+    percentile = float((dev_series < deviation_pct).mean() * 100) if not dev_series.empty else None
+
+    return {
+        "available": True,
+        "value": round(cur, 4),
+        "direction": direction,
+        "slope_pct": round(slope_pct, 2),
+        "deviation_pct": round(deviation_pct, 2),
+        "deviation_percentile": round(percentile, 1) if percentile is not None else None,
+    }
+
+
+def _build_regime_note(ma60: Dict[str, Any], ma250: Dict[str, Any]) -> str:
+    """基于长/短周期均线生成一句纯观察性描述（不含任何操作建议措辞）。
+
+    仅描述"大势方向"（MA250）与"短期是否回踩"（MA60 偏离度），呼应
+    "顺大势逆小势"的传统方法论观察角度，绝不使用"建议买入/卖出"等祈使句式。
+    """
+    if not ma250.get("available"):
+        return "长期均线数据不足，暂无法判断大势方向。"
+
+    direction = ma250["direction"]
+    if direction == "向下":
+        return "长期均线向下，短期低点不代表企稳，需结合基本面判断是否仍在磨底。"
+
+    if direction == "走平":
+        return "长期均线走平，大势方向不明朗，暂无法判断当前处于钟摆的哪个阶段。"
+
+    # 大势向上：结合 MA60 偏离度细分
+    if not ma60.get("available"):
+        return "长期均线向上，短期数据不足，暂无法判断是否处于回调区间。"
+    dev = ma60["deviation_pct"]
+    pct = ma60.get("deviation_percentile")
+    if dev < 0:
+        return "大势向上，短期价格已回踩至中期均线下方（传统『顺大势逆小势』特征区间）。"
+    if pct is not None and pct >= 85:
+        return "大势向上，但短期偏离度处于自身历史高位，情绪偏乐观，注意钟摆过度的回归风险。"
+    return "大势向上，短期价格位于中期均线上方，暂未出现明显回调。"
+
+
+def fetch_stock_trend(ticker: str, period: str = "2y") -> Dict[str, Any]:
+    """获取个股价格历史 + 多周期均线（MA20/60/250）+ 偏离度历史分位。
+
+    供 obs 投资总控台「个股趋势分析」弹窗使用。产出仅为描述性指标（均线方向 +
+    价格偏离度所处历史分位），不产出任何买卖建议——技术分析只是仪表盘，不是
+    预测器，延续本项目 ``_SUSPECT_PNL_PCT`` 哨兵同样的免责基调。
+
+    Args:
+        ticker: 股票/加密货币代码（原始或已格式化均可）。
+        period: yfinance 合法 period 值，默认 "2y"（约 500 个交易日，
+            足够计算 MA250 并留出约 250 个非 NaN 点用于偏离度历史分位）。
+
+    Returns:
+        Dict[str, Any]: 含 ``ticker``/``latest_price``/``latest_date``/
+            ``series``（逐日 date/close/ma20/ma60/ma250）/``ma20``/``ma60``/
+            ``ma250``（各自的 ``_ma_trend_info`` 结果）/``regime_note``。
+
+    Raises:
+        IndexError: 未取到历史数据。
+    """
+    formatted_ticker = format_universal_ticker(ticker)
+    hist = yf.Ticker(formatted_ticker).history(period=period)
+
+    if hist is None or hist.empty:
+        raise IndexError(f"未找到 {formatted_ticker} 的历史数据，无法计算趋势")
+
+    close = hist["Close"].dropna()
+    ma20 = close.rolling(20).mean()
+    ma60 = close.rolling(60).mean()
+    ma250 = close.rolling(250).mean()
+    latest_price = float(close.iloc[-1])
+
+    ma20_info = _ma_trend_info(ma20, close, latest_price, _MA_TREND_LOOKBACK["ma20"])
+    ma60_info = _ma_trend_info(ma60, close, latest_price, _MA_TREND_LOOKBACK["ma60"])
+    ma250_info = _ma_trend_info(ma250, close, latest_price, _MA_TREND_LOOKBACK["ma250"])
+
+    def _num_or_none(v: float) -> Optional[float]:
+        return round(float(v), 4) if pd.notna(v) else None
+
+    series = [
+        {
+            "date": idx.strftime("%Y-%m-%d"),
+            "close": round(float(close.loc[idx]), 4),
+            "ma20": _num_or_none(ma20.loc[idx]),
+            "ma60": _num_or_none(ma60.loc[idx]),
+            "ma250": _num_or_none(ma250.loc[idx]),
+        }
+        for idx in close.index
+    ]
+
+    return {
+        "ticker": formatted_ticker,
+        "latest_price": round(latest_price, 4),
+        "latest_date": close.index[-1].strftime("%Y-%m-%d"),
+        "series": series,
+        "ma20": ma20_info,
+        "ma60": ma60_info,
+        "ma250": ma250_info,
+        "regime_note": _build_regime_note(ma60_info, ma250_info),
+    }
+
+
 def _calculate_single_position(
     ticker: str,
     position: Dict[str, Any],

@@ -41,6 +41,14 @@
   --cat-2:        #34d399;
   --cat-3:        #a78bfa;
 
+  /* -- Chart series palette (non-semantic) ------------------------------------
+   * 专供多线走势图（如个股趋势弹窗的均线）着色，不复用 --cat-* (agent/model
+   * 专属) 或语义色 (--blue/--amber/--purple 等，会与页面既有语义冲突)。
+   * ------------------------------------------------------------------------ */
+  --chart-ma20:   #7dd3fc;
+  --chart-ma60:   #fca5f1;
+  --chart-ma250:  #fcd34d;
+
   --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Fira Code", ui-monospace, Menlo, monospace;
 

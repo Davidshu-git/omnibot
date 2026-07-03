@@ -321,6 +321,16 @@ def _read_portfolio_snapshots() -> list[dict]:
     return rows
 
 
+def _portfolio_pricing_error_tickers(row: dict) -> list[str]:
+    """提取单条快照中取价失败的持仓代码。"""
+    tickers: list[str] = []
+    for holding in row.get("holdings", []):
+        if isinstance(holding, dict) and holding.get("error"):
+            ticker = holding.get("ticker")
+            tickers.append(str(ticker) if ticker else "UNKNOWN")
+    return tickers
+
+
 @router.get("/portfolio/latest")
 async def portfolio_latest():
     """返回最新一条组合快照（投资总控台「当下快照」数据源）。
@@ -331,7 +341,14 @@ async def portfolio_latest():
     rows = _read_portfolio_snapshots()
     if not rows:
         return {"available": False}
-    return {"available": True, **rows[-1]}
+    latest = rows[-1]
+    errored_tickers = _portfolio_pricing_error_tickers(latest)
+    return {
+        "available": True,
+        **latest,
+        "has_pricing_error": bool(errored_tickers),
+        "errored_tickers": errored_tickers,
+    }
 
 
 @router.get("/portfolio/history")
@@ -342,10 +359,22 @@ async def portfolio_history(days: int = Query(default=90, ge=1, le=730)):
         days: 回溯天数，默认 90，最大 730。
 
     Returns:
-        dict: ``{"points": [{date, total_market_value, total_profit_loss,
-            profit_loss_percent, securities_total_cny, cash_total_cny}, ...]}``
+        dict: ``{"points": [...], "excluded_points": [...]}``。含持仓取价错误的
+        快照会被剔除，避免 BTC 等单项取价失败把净值走势画成假跳水。
     """
     rows = _read_portfolio_snapshots()[-days:]
+    clean_rows: list[dict] = []
+    excluded_points: list[dict] = []
+    for row in rows:
+        errored_tickers = _portfolio_pricing_error_tickers(row)
+        if errored_tickers:
+            excluded_points.append({
+                "date": row.get("date"),
+                "errored_tickers": errored_tickers,
+            })
+            continue
+        clean_rows.append(row)
+
     points = [
         {
             "date": r.get("date"),
@@ -355,9 +384,13 @@ async def portfolio_history(days: int = Query(default=90, ge=1, le=730)):
             "securities_total_cny": r.get("securities_total_cny", 0.0),
             "cash_total_cny": r.get("cash_total_cny", 0.0),
         }
-        for r in rows
+        for r in clean_rows
     ]
-    return {"points": points}
+    return {
+        "points": points,
+        "excluded_points": excluded_points,
+        "excluded_count": len(excluded_points),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -692,6 +725,55 @@ async def proxy_refresh_portfolio(project: str):
 
     # 广播让所有连接的 obs 客户端刷新总控台快照（非触发方也能看到最新值）。
     _broadcast_event("portfolio_refreshed")
+    return r.json()
+
+
+@router.post("/external/{project}/stock-trend")
+async def proxy_stock_trend(project: str, body: dict):
+    """Proxy a per-ticker trend query (price + MA20/60/250) to the live stock bot.
+
+    Read-only lookup — the runtime price data lives only in the stock_bot container
+    (yfinance/akshare deps), so this is delegated via the same embedded HTTP channel
+    as chat / switch-model / refresh-portfolio. No SSE broadcast: this only matters
+    to the requesting client, not the whole obs session.
+    """
+    import httpx as _httpx
+
+    urls = {
+        "stock-bot": settings.stock_bot_chat_url,
+        "ehs-bot": settings.ehs_bot_chat_url,
+        "mhxy-bot": settings.mhxy_bot_chat_url,
+    }
+
+    if project not in BOT_CHAT_PROJECTS:
+        raise HTTPException(status_code=404, detail="Unknown bot project")
+    if not settings.obs_bot_chat_token:
+        raise HTTPException(status_code=503, detail="OBS_BOT_CHAT_TOKEN is not configured")
+
+    ticker = body.get("ticker")
+    if not isinstance(ticker, str) or not ticker.strip():
+        raise HTTPException(status_code=422, detail="ticker must be a non-empty string")
+
+    bot_url = urls[project].rstrip("/")
+    try:
+        # 单次 yfinance 拉取 + 均线计算，比重估值轻，20s 足够。
+        async with _httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(
+                f"{bot_url}/stock-trend",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+                json={"ticker": ticker.strip()},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.json() or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
     return r.json()
 
 

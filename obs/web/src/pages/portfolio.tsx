@@ -5,7 +5,11 @@ import {
   type PortfolioSnapshot,
   type PortfolioHolding,
   type PortfolioCashHolding,
+  type PortfolioHistoryPoint,
   type FxTrend,
+  type StockTrend,
+  type StockTrendMaInfo,
+  type StockTrendPoint,
 } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -31,21 +35,31 @@ function pnlColor(n: number | undefined | null): string {
 const CURRENCY_LABEL: Record<string, string> = { USD: "美元", HKD: "港币", CNY: "人民币" };
 const ALLOC_PALETTE = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--blue)", "var(--amber)"];
 
-// Ghostfolio 范式的时间窗骨架；v1 仅「累计」可用，其余窗待快照积累（二档）。
+// Ghostfolio 范式的时间窗；今日/累计已点亮（有基准），MTD/YTD/1Y 待快照与现金流积累（二档）。
 const TIME_WINDOWS = ["今日", "WTD", "MTD", "YTD", "1Y", "累计"] as const;
+const ACTIVE_WINDOWS = new Set<string>(["今日", "累计"]);
 
 export default function PortfolioPage() {
   const isMobile = useIsMobile();
   const [snap, setSnap] = useState<PortfolioSnapshot | null>(null);
+  const [history, setHistory] = useState<PortfolioHistoryPoint[]>([]);
+  const [historyExcludedCount, setHistoryExcludedCount] = useState(0);
+  const [win, setWin] = useState<"今日" | "累计">("累计");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [revaluing, setRevaluing] = useState(false);
   const [revalMsg, setRevalMsg] = useState("");
+  const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setLoading(true);
-    api.portfolioLatest()
-      .then((s) => { setSnap(s); setErr(""); })
+    Promise.all([api.portfolioLatest(), api.portfolioHistory(90)])
+      .then(([s, h]) => {
+        setSnap(s);
+        setHistory(h.points ?? []);
+        setHistoryExcludedCount(h.excluded_count ?? h.excluded_points?.length ?? 0);
+        setErr("");
+      })
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));
   }, []);
@@ -131,26 +145,35 @@ export default function PortfolioPage() {
 
       {available && (
         <>
-          {/* 时间窗切换（Ghostfolio 范式骨架，v1 仅「累计」点亮） */}
-          <div style={{ display: "flex", gap: 6, marginBottom: "1.25rem", flexWrap: "wrap", rowGap: 6, alignItems: "center" }}>
+          {/* 时间窗切换（今日/累计已点亮，MTD/YTD/1Y 待积累） */}
+          <div style={{ display: "flex", gap: 6, marginBottom: "1rem", flexWrap: "wrap", rowGap: 6, alignItems: "center" }}>
             {TIME_WINDOWS.map((w) => {
-              const active = w === "累计";
+              const active = ACTIVE_WINDOWS.has(w);
+              const selected = active && w === win;
               return (
                 <button
                   key={w}
                   disabled={!active}
-                  className={`tag-btn${active ? " active" : ""}`}
+                  onClick={() => active && setWin(w as "今日" | "累计")}
+                  className={`tag-btn${selected ? " active" : ""}`}
                   style={{ fontSize: 11, opacity: active ? 1 : 0.4, cursor: active ? "pointer" : "not-allowed" }}
-                  title={active ? "当前展示累计口径" : "趋势窗待快照积累（二档）"}
+                  title={active ? "查看该窗净值变化" : "趋势窗待快照与现金流积累（二档）"}
                 >
                   {w}
                 </button>
               );
             })}
             <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: 4 }}>
-              趋势窗待快照积累后点亮
+              MTD/YTD/1Y 待快照与现金流积累后点亮
             </span>
           </div>
+
+          {/* 净值走势曲线（Ghostfolio Net Worth Chart：纯总资产走势，不扣现金流） */}
+          <NetWorthCard
+            points={win === "今日" ? history.slice(-2) : history}
+            win={win}
+            excludedCount={historyExcludedCount}
+          />
 
           {/* KPI 卡（证券/加密/现金拆分由下方「资产配比」承载，此处不重复） */}
           <div style={{
@@ -210,7 +233,7 @@ export default function PortfolioPage() {
 
           {/* 证券持仓明细 */}
           <SectionTitle>证券持仓（{securities.length}）</SectionTitle>
-          <HoldingsTable holdings={securities} isMobile={isMobile} />
+          <HoldingsTable holdings={securities} isMobile={isMobile} onSelect={setSelectedTicker} />
 
           {errored.length > 0 && (
             <p style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 6 }}>
@@ -222,7 +245,7 @@ export default function PortfolioPage() {
           {cryptos.length > 0 && (
             <>
               <SectionTitle>加密货币（{cryptos.length}）</SectionTitle>
-              <HoldingsTable holdings={cryptos} isMobile={isMobile} />
+              <HoldingsTable holdings={cryptos} isMobile={isMobile} onSelect={setSelectedTicker} />
             </>
           )}
 
@@ -239,6 +262,8 @@ export default function PortfolioPage() {
           </p>
         </>
       )}
+
+      <StockTrendModal ticker={selectedTicker} onClose={() => setSelectedTicker(null)} />
     </div>
   );
 }
@@ -315,6 +340,82 @@ function Sparkline({ data, width = 52, height = 14 }: { data: number[]; width?: 
   );
 }
 
+/** 净值走势卡：标题 + 选中窗的净值变化（非投资收益）+ 全宽走势曲线。 */
+function NetWorthCard({ points, win, excludedCount }: {
+  points: PortfolioHistoryPoint[];
+  win: string;
+  excludedCount: number;
+}) {
+  const enough = points.length >= 2;
+  const first = points[0]?.total_market_value ?? 0;
+  const last = points[points.length - 1]?.total_market_value ?? 0;
+  const delta = last - first;
+  const deltaPct = first > 0 ? (delta / first) * 100 : 0;
+  return (
+    <div className="card" style={{ padding: "0.85rem 1.1rem", marginBottom: "1.5rem" }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <span style={{
+          color: "var(--text-muted)", fontSize: 11, fontWeight: 600,
+          letterSpacing: "0.04em", textTransform: "uppercase",
+        }}>净值走势 · {win}</span>
+        {enough && (
+          <>
+            <span style={{ color: pnlColor(delta), fontSize: 18, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+              {delta >= 0 ? "+" : "-"}{fmtCny(Math.abs(delta))}
+            </span>
+            <span style={{ color: pnlColor(deltaPct), fontSize: 12, fontWeight: 600 }}>{fmtPct(deltaPct)}</span>
+          </>
+        )}
+        <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: "auto" }}>
+          {points.length} 个快照点 · 净值变化 ≠ 投资收益（未扣入金/加仓）
+        </span>
+      </div>
+      {excludedCount > 0 && (
+        <p style={{ color: "var(--amber)", fontSize: 11, margin: "0 0 8px" }}>
+          已剔除 {excludedCount} 个取价异常快照，避免缺失持仓造成净值假跳变。
+        </p>
+      )}
+      {enough ? (
+        <>
+          <NetWorthChart points={points} />
+          {/* 起止日期 + 区间极值（HTML 渲染，避免 SVG 非等比缩放拉伸文字）。 */}
+          <div style={{ display: "flex", alignItems: "center", fontSize: 10, color: "var(--text-dim)", marginTop: 4 }}>
+            <span>{points[0].date}</span>
+            <span style={{ margin: "0 auto", fontVariantNumeric: "tabular-nums" }}>
+              区间 {fmtCny(Math.min(...points.map((p) => p.total_market_value)))} ~ {fmtCny(Math.max(...points.map((p) => p.total_market_value)))}
+            </span>
+            <span>{points[points.length - 1].date}</span>
+          </div>
+        </>
+      ) : (
+        <p style={{ color: "var(--text-dim)", fontSize: 12, margin: "8px 0" }}>快照不足两天，走势待积累。</p>
+      )}
+    </div>
+  );
+}
+
+/** 净值走势曲线（内联 SVG，涨红跌绿；自然日等距、休市走平；无第三方图表库）。 */
+function NetWorthChart({ points }: { points: PortfolioHistoryPoint[] }) {
+  const W = 640, H = 150, padT = 10, padB = 8;
+  const vals = points.map((p) => p.total_market_value);
+  const min = Math.min(...vals);
+  const max = Math.max(...vals);
+  const range = max - min || 1;
+  const x = (i: number) => (i / (points.length - 1)) * W;
+  const y = (v: number) => padT + (1 - (v - min) / range) * (H - padT - padB);
+  const linePts = points.map((p, i) => `${x(i).toFixed(1)},${y(p.total_market_value).toFixed(1)}`).join(" ");
+  const areaPts = `0,${H} ${linePts} ${W},${H}`;
+  const up = vals[vals.length - 1] >= vals[0];
+  const color = up ? "var(--red)" : "var(--green)"; // 涨红跌绿（A 股语义，与 pnlColor 一致）
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: 150 }}>
+      <polygon points={areaPts} fill={color} fillOpacity={0.08} />
+      <polyline points={linePts} fill="none" stroke={color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      <circle cx={x(points.length - 1)} cy={y(vals[vals.length - 1])} r={3} fill={color} vectorEffect="non-scaling-stroke" />
+    </svg>
+  );
+}
+
 /** 币种敞口卡：敞口配比条 + 每币种两行（敞口金额/占比 + 汇率趋势走势线/变化率）。 */
 function CurrencyExposureCard({ exposure, fxTrend }: {
   exposure: Record<string, number>;
@@ -363,7 +464,11 @@ function CurrencyExposureCard({ exposure, fxTrend }: {
   );
 }
 
-function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; isMobile: boolean }) {
+function HoldingsTable({ holdings, isMobile, onSelect }: {
+  holdings: PortfolioHolding[];
+  isMobile: boolean;
+  onSelect?: (ticker: string) => void;
+}) {
   if (holdings.length === 0) {
     return <p style={{ color: "var(--text-dim)", fontSize: 12 }}>暂无持仓</p>;
   }
@@ -394,8 +499,15 @@ function HoldingsTable({ holdings, isMobile }: { holdings: PortfolioHolding[]; i
             {holdings.map((h, i) => {
               const pct = totalMv > 0 ? Math.round((h.market_value_cny ?? 0) / totalMv * 100) : 0;
               return (
-                <tr key={h.ticker} style={{ borderBottom: i < holdings.length - 1 ? "1px solid var(--border)" : undefined }}>
-                  <td style={{ padding: "8px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`${h.company_name} ${h.ticker}`}>
+                <tr
+                  key={h.ticker}
+                  onClick={() => onSelect?.(h.ticker)}
+                  style={{
+                    borderBottom: i < holdings.length - 1 ? "1px solid var(--border)" : undefined,
+                    cursor: onSelect ? "pointer" : undefined,
+                  }}
+                >
+                  <td style={{ padding: "8px 12px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={`${h.company_name} ${h.ticker} · 点击查看趋势分析`}>
                     <span style={{ color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{h.ticker}</span>
                     {h.suspect && <span style={{ color: "var(--amber)", marginLeft: 6 }}>⚠️待核实</span>}
                     <span style={{ color: "var(--text-dim)", marginLeft: 6, fontSize: 11 }}>{h.company_name}</span>
@@ -447,5 +559,205 @@ function CashTable({ cash }: { cash: PortfolioCashHolding[] }) {
         </table>
       </div>
     </div>
+  );
+}
+
+/** 个股趋势分析弹窗：点击持仓行触发，独立 Modal（Esc / 点击遮罩 / 关闭按钮均可关闭）。 */
+type TrendLineKey = "close" | "ma20" | "ma60" | "ma250";
+const ALL_LINES_VISIBLE: Record<TrendLineKey, boolean> = { close: true, ma20: true, ma60: true, ma250: true };
+
+function StockTrendModal({ ticker, onClose }: { ticker: string | null; onClose: () => void }) {
+  const [data, setData] = useState<StockTrend | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+  const [visible, setVisible] = useState<Record<TrendLineKey, boolean>>(ALL_LINES_VISIBLE);
+  const toggleLine = (key: TrendLineKey) => setVisible((v) => ({ ...v, [key]: !v[key] }));
+
+  useEffect(() => {
+    if (!ticker) return;
+    setLoading(true);
+    setErr("");
+    setData(null);
+    setVisible(ALL_LINES_VISIBLE); // 每次换标的重置线条可见性，避免带着上一个 ticker 的隐藏状态
+    api.stockTrend(ticker)
+      .then((d) => {
+        if (d.status !== "ok") {
+          setErr(d.detail || "查询失败");
+        } else {
+          setData(d);
+        }
+      })
+      .catch((e) => setErr(String(e)))
+      .finally(() => setLoading(false));
+  }, [ticker]);
+
+  useEffect(() => {
+    if (!ticker) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [ticker, onClose]);
+
+  if (!ticker) return null;
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 100, padding: "1rem",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="card"
+        style={{ padding: "1.25rem", maxWidth: 720, width: "100%", maxHeight: "85vh", overflowY: "auto" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", marginBottom: "1rem" }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: "var(--text)", margin: 0, fontFamily: "var(--font-mono)" }}>
+            {ticker} 趋势分析
+          </h2>
+          <button onClick={onClose} className="tag-btn" style={{ marginLeft: "auto", fontSize: 12 }}>✕ 关闭</button>
+        </div>
+
+        {loading && <p style={{ color: "var(--text-dim)", fontSize: 13 }}>加载中…</p>}
+        {err && <p style={{ color: "var(--red)", fontSize: 13 }}>{err}</p>}
+
+        {data && data.status === "ok" && data.series && (
+          <>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 22, fontWeight: 800, color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+                {data.latest_price?.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+              </span>
+              <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{data.latest_date}</span>
+            </div>
+
+            <StockTrendChart series={data.series} visible={visible} />
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, marginBottom: 12 }}>
+              <TrendLegendRow label="现价" color="var(--text)" active={visible.close} onToggle={() => toggleLine("close")} />
+              <MaInfoRow label="MA20" color="var(--chart-ma20)" info={data.ma20} active={visible.ma20} onToggle={() => toggleLine("ma20")} />
+              <MaInfoRow label="MA60（中期）" color="var(--chart-ma60)" info={data.ma60} active={visible.ma60} onToggle={() => toggleLine("ma60")} />
+              <MaInfoRow label="MA250（年线 / 大势）" color="var(--chart-ma250)" info={data.ma250} active={visible.ma250} onToggle={() => toggleLine("ma250")} />
+            </div>
+            <p style={{ color: "var(--text-dim)", fontSize: 11, margin: "-4px 0 10px" }}>点击图例可显示/隐藏对应线条</p>
+
+            {data.regime_note && (
+              <div className="card" style={{ padding: "0.6rem 0.85rem", marginBottom: 10, borderColor: "var(--border-hi)" }}>
+                <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{data.regime_note}</span>
+              </div>
+            )}
+
+            <p style={{ color: "var(--text-dim)", fontSize: 11, margin: 0 }}>
+              以上为价格相对均线位置的描述性指标（趋势方向 + 历史分位），不构成买卖建议，据此操作风险自负。
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** 趋势图例行（无数值，仅标注线条含义，如"现价"）；点击切换该线条在图上的显示/隐藏。 */
+function TrendLegendRow({ label, color, active, onToggle }: {
+  label: string; color: string; active: boolean; onToggle: () => void;
+}) {
+  return (
+    <div
+      onClick={onToggle}
+      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, cursor: "pointer", opacity: active ? 1 : 0.4 }}
+    >
+      <span style={{ width: 10, height: 2, background: color, flexShrink: 0 }} />
+      <span style={{ color: "var(--text-muted)" }}>{label}</span>
+    </div>
+  );
+}
+
+/** 单条均线的图例 + 方向 + 偏离度 + 历史分位；数据不足时优雅降级为提示文案。
+ * 点击切换该均线在图上的显示/隐藏（数据不足时图上本就无此线，不响应点击）。 */
+function MaInfoRow({ label, color, info, active, onToggle }: {
+  label: string; color: string; info?: StockTrendMaInfo; active: boolean; onToggle: () => void;
+}) {
+  if (!info || !info.available) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+        <span style={{ width: 10, height: 2, background: color, flexShrink: 0 }} />
+        <span style={{ color: "var(--text-dim)" }}>{label}：历史数据不足</span>
+      </div>
+    );
+  }
+  // 涨红跌绿（A 股语义，与 pnlColor 一致）：均线向上视同"涨"。
+  const dirColor = info.direction === "向上" ? "var(--red)" : info.direction === "向下" ? "var(--green)" : "var(--text-dim)";
+  return (
+    <div
+      onClick={onToggle}
+      style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, flexWrap: "wrap", cursor: "pointer", opacity: active ? 1 : 0.4 }}
+    >
+      <span style={{ width: 10, height: 2, background: color, flexShrink: 0 }} />
+      <span style={{ color: "var(--text-muted)", minWidth: 110 }}>{label}</span>
+      <span style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+        {info.value?.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+      </span>
+      <span style={{ color: dirColor, fontWeight: 600 }}>{info.direction}</span>
+      <span style={{ color: pnlColor(info.deviation_pct) }}>偏离 {fmtPct(info.deviation_pct)}</span>
+      {info.deviation_percentile !== null && info.deviation_percentile !== undefined && (
+        <span style={{ color: "var(--text-dim)" }}>历史分位 {info.deviation_percentile.toFixed(0)}%</span>
+      )}
+    </div>
+  );
+}
+
+const TREND_LINE_KEYS: TrendLineKey[] = ["close", "ma20", "ma60", "ma250"];
+
+/** 价格 + MA20/60/250 多线走势图（内联 SVG，无第三方图表库）。
+ * MA 序列前段可能为 null（历史不足以计算），按连续非空段分别画 polyline，不整段连线。
+ * 隐藏的线条既不参与 y 轴范围计算也不画出——隐藏 MA250 之类的长线后图会自动缩放聚焦到剩余线条。 */
+function StockTrendChart({ series, visible }: { series: StockTrendPoint[]; visible: Record<TrendLineKey, boolean> }) {
+  const W = 640, H = 220, padT = 10, padB = 8;
+  if (series.length < 2) return null;
+
+  const visibleKeys = TREND_LINE_KEYS.filter((k) => visible[k]);
+  const allVals = series.flatMap((p) => visibleKeys.map((k) => p[k]))
+    .filter((v): v is number => v !== null && v !== undefined);
+  if (allVals.length === 0) return null; // 全部线条被隐藏，不渲染空图
+
+  const min = Math.min(...allVals);
+  const max = Math.max(...allVals);
+  const range = max - min || 1;
+  const x = (i: number) => (i / (series.length - 1)) * W;
+  const y = (v: number) => padT + (1 - (v - min) / range) * (H - padT - padB);
+
+  const buildSegments = (key: TrendLineKey): string[] => {
+    const segments: string[] = [];
+    let current: string[] = [];
+    series.forEach((p, i) => {
+      const v = p[key];
+      if (v === null || v === undefined) {
+        if (current.length > 1) segments.push(current.join(" "));
+        current = [];
+        return;
+      }
+      current.push(`${x(i).toFixed(1)},${y(v).toFixed(1)}`);
+    });
+    if (current.length > 1) segments.push(current.join(" "));
+    return segments;
+  };
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: H }}>
+      {visible.ma250 && buildSegments("ma250").map((pts, i) => (
+        <polyline key={`ma250-${i}`} points={pts} fill="none" stroke="var(--chart-ma250)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+      ))}
+      {visible.ma60 && buildSegments("ma60").map((pts, i) => (
+        <polyline key={`ma60-${i}`} points={pts} fill="none" stroke="var(--chart-ma60)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+      ))}
+      {visible.ma20 && buildSegments("ma20").map((pts, i) => (
+        <polyline key={`ma20-${i}`} points={pts} fill="none" stroke="var(--chart-ma20)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+      ))}
+      {visible.close && buildSegments("close").map((pts, i) => (
+        <polyline key={`close-${i}`} points={pts} fill="none" stroke="var(--text)" strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      ))}
+    </svg>
   );
 }
