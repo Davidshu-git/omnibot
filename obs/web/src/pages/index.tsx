@@ -557,9 +557,14 @@ function ProjectCard({
               </span>
             )}
             {p.project_id === "stock-bot" && (
-              <Link href="/portfolio" style={{ color: "var(--amber)", fontSize: 12 }}>
-                总控台 →
-              </Link>
+              <>
+                <Link href="/portfolio" style={{ color: "var(--amber)", fontSize: 12 }}>
+                  总控台 →
+                </Link>
+                <Link href="/portfolio?tab=screener" style={{ color: "var(--amber)", fontSize: 12 }}>
+                  选股 →
+                </Link>
+              </>
             )}
             <Link href={`/tokens?project_id=${p.project_id}`} style={{ color: "var(--text-muted)", fontSize: 12 }}>
               用量 →

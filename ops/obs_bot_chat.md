@@ -30,6 +30,10 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 | `/executor-power` | POST | `/api/external/mhxy-executor/power` | obs 实例页开关 Windows Executor(仅 mhxy) |
 | `/refresh-portfolio` | POST | `/api/external/{project}/refresh-portfolio` | obs 投资总控台「⟳ 重新估值」联网重新取价 + 覆盖当天快照(仅 stock) |
 | `/stock-trend` | POST | `/api/external/{project}/stock-trend` | obs 投资总控台「个股趋势分析」弹窗,取价 + 计算 MA20/60/250(仅 stock) |
+| `/screener-start` | POST | `/api/external/{project}/screener-start` | obs「选股筛股」页「开始扫描」,fire-and-forget 启动后台批量扫描(仅 stock) |
+| `/screener-status` | POST | `/api/external/{project}/screener-status` | obs 轮询扫描进度/结果(仅 stock) |
+| `/screener-universe` | POST | `/api/external/{project}/screener-universe` | obs 页面加载时读取当前股票池(仅 stock) |
+| `/screener-universe-save` | POST | `/api/external/{project}/screener-universe-save` | obs「保存股票池」,整体覆盖保存(仅 stock) |
 
 > 所有 POST 动作端点共用 `core/tg_base.py::_start_obs_chat_http_server` 内的 `obs_action` 装饰器统一做 token 鉴权 + JSON 解析 + 错误短路,handler 只写业务逻辑,请求体从 `request["obs_body"]` 取。**新增动作端点一律套用此装饰器,勿再手抄鉴权/解析样板。**
 
@@ -59,6 +63,18 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 - 产出**仅为描述性指标**(均线方向 + 偏离度历史分位 + 一句 `regime_note` 观察),不产出任何买卖建议措辞,前端固定展示免责声明。
 - `trades` 字段:从 `transaction_logs.jsonl`(自由文本记忆)里筛出该 ticker 的买卖记录,`date`/`price` 取**该交易日的实际收盘价**(不信自由文本里用户手写的价格,避免解析错价格),仅 `action` 含"买入"/"卖出"字样的记录会入选(入金/转出/建仓计划等非成交动作被过滤),交易时间距最近交易日超过 7 天视为窗口外不返回。`details` 保留原始自由文本供前端展示核对。
 - obs 代理超时给 **20s**(单次 yfinance 拉取,比重估值轻),**不广播 SSE**(纯读查询,只对发起请求的客户端有意义)。
+
+`/screener-start` / `/screener-status` / `/screener-universe` / `/screener-universe-save` 契约(选股筛股):
+
+- 鉴权:同上,请求头 `X-OBS-Token` == `OBS_BOT_CHAT_TOKEN`。
+- 仅 stock bot 生效:由基类钩子 `start_screener_scan()` / `get_screener_status()` / `get_screener_universe()` / `save_screener_universe()` 暴露(`core/tg_base.py`),基类默认返回 `None` → **404**。`StockBot` 覆写(`stock_bot/tg_main.py`),扫描逻辑在 `stock_bot/screener.py`。
+- **`/screener-start`**(无需 body):fire-and-forget,`asyncio.create_task` 包一层 `run_in_executor` 跑 `screener.run_scan_and_write_status()`,**立即返回不等扫描跑完**(扫描可能耗时数分钟)。全局只允许一个扫描同时跑,运行中(`scan_status.json` 的 `status=="running"`)再次触发返回 `{"status":"already_running"}`,不是新扫描也不排队。
+- **`/screener-status`**(无需 body):原样返回 `data/stock/memory/screener/scan_status.json` 内容——`{"status":"idle"|"running"|"done"|"error","total","done","started_at","completed_at"?,"results"?,"skipped"?,"error"?}`。`results`/`skipped` 只在 `status=="done"` 时存在。这是 obs 前端轮询目标,只读状态文件、无 yfinance 调用,响应应当很快。
+- **`/screener-universe`**(无需 body):读取 `data/stock/memory/screener/universe.json`,返回 `{"tickers":[...]}`,供 obs 页面加载时预填文本框。
+- **`/screener-universe-save`**:请求体 `{"tickers":["AAPL","0700.HK",...]}`(必须是字符串数组,否则 422),整体覆盖保存(非增量追加),返回保存后的 `{"tickers":[...]}`。
+- 扫描逻辑(`stock_bot/screener.py::screen_universe`):硬性过滤 MA250 方向必须"向上"(不满足直接排除,记入 `skipped` 并附 `skip_reason`);加密货币不纳入筛选(直接跳过,`skip_reason="不支持加密货币"`);按标的原生货币匹配基准指数(`^GSPC`/`^HSI`/`000300.SS`,与 `daily_job.py::fetch_global_indices` 同款已验证符号)算相对强度,**每次扫描每个基准只拉一次**,不随标的数量重复请求;`ThreadPoolExecutor(max_workers=15)` 并发扫描,无更细粒度限流(akshare/yfinance 高并发下的真实限流表现未做防御,大股票池扫描若遇批量超时属已知限制)。
+- 产出**多维信号列,无单一黑箱评分**:`relative_strength_pct`(相对强度)/`trend_duration_days`+`trend_duration_capped`(趋势持续天数,`capped=true` 表示只知道"至少这么久")/`deviation_percentile_ma60`(偏离度历史分位)。默认按相对强度降序,不产出买卖建议。
+- obs 代理超时:`/screener-start` 10s、`/screener-status` 5s(高频轮询,只读文件)、`/screener-universe` 10s、`/screener-universe-save` 10s。均**不广播 SSE**(前端靠自己的 `setInterval` 轮询 `/screener-status`,同 `executor-instances.tsx` 的开关轮询范式)。
 
 `/switch-model` 契约:
 
@@ -128,3 +144,7 @@ docker compose -f obs/docker-compose.yml up -d --build
 - `/stock-trend` 返回 404：非 stock bot（ehs/mhxy 未覆写钩子，正常）；或 stock 进程仍是旧代码未含钩子，需 `docker restart v2-omnistock-tg-bot`。
 - `/stock-trend` 返回 500 或 obs 代理 502/超时：查 `v2-omnistock-tg-bot` 日志，多为该 ticker 在 yfinance 查无历史数据（代码格式错误 / 已退市）。
 - `/stock-trend` 返回数据但某条均线 `available:false`：该标的历史不足以计算对应周期均线（如新上市标的不足 250 个交易日算不出 MA250），前端已优雅降级为提示文案，非故障。
+- `/screener-start` / `/screener-status` / `/screener-universe` / `/screener-universe-save` 返回 404：非 stock bot（正常）；或 stock 进程仍是旧代码未含钩子，需 `docker restart v2-omnistock-tg-bot`。
+- `/screener-start` 返回 `{"status":"already_running"}`：已有扫描在跑，等它完成（查 `/screener-status` 的 `total`/`done` 估算剩余量），非故障；这是并发互斥，不是限流冷却。
+- `/screener-status` 长期卡在某个 `done` 数值不动：查 `v2-omnistock-tg-bot` 日志，多为某只标的 yfinance 请求挂住阻塞了线程池的一个 worker（`ThreadPoolExecutor` 无超时防御是已知限制）；`total` 与 `done` 长期不等且日志无新进展，判定为卡死，需重启容器（进行中的扫描会中断，`scan_status.json` 停留在 `running`，需再次 `/screener-start` 重跑）。
+- `/screener-universe-save` 返回 422：请求体 `tickers` 不是纯字符串数组（前端理论上文本框按行拆分后就是字符串数组，出现此错先查前端有没有传错类型）。

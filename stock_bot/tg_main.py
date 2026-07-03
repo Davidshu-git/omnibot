@@ -29,6 +29,12 @@ from stock_bot.agent import (
     MEMORY_DIR,
 )
 from stock_bot.valuation_engine import fetch_stock_price_raw, fetch_stock_trend
+from stock_bot.screener import (
+    load_universe,
+    read_status,
+    run_scan_and_write_status,
+    save_universe,
+)
 
 OBS_DIR = (Path(__file__).parent.parent / "data" / "stock" / "observability" / "sessions").resolve()
 OBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -171,6 +177,49 @@ class StockBot(TelegramBotBase):
         result = {"status": "ok", **data}
         self._stock_trend_cache[cache_key] = (now, result)
         return result
+
+    async def _run_screener_background(self) -> None:
+        """后台扫描协程：await 执行器里的同步扫描，捕获异常防止任务静默失败。
+
+        `run_scan_and_write_status` 内部已经把扫描失败写进状态文件的 error 态，
+        这里的 try/except 是最后一道兜底（比如状态文件所在目录本身不可写导致
+        扫描函数在第一次写状态前就抛出），避免异常在后台任务里被吞掉不留痕迹。
+        """
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, run_scan_and_write_status, MEMORY_DIR)
+        except Exception:
+            logger.exception("[screener] 后台扫描任务异常")
+
+    async def start_screener_scan(self) -> dict:
+        """obs「选股筛股」页「开始扫描」：fire-and-forget 启动后台批量扫描。
+
+        扫描可能耗时数分钟，HTTP 请求必须立即返回，不能 await 整个过程；进度写入
+        `scan_status.json`，obs 侧靠轮询 `get_screener_status` 追踪。全局只允许一个
+        扫描同时跑，运行中拒绝新的启动请求（并发互斥，非时间冷却）。
+
+        Returns:
+            dict: `{"status": "started"}` 或 `{"status": "already_running"}`。
+        """
+        current = read_status(MEMORY_DIR)
+        if current.get("status") == "running":
+            return {"status": "already_running"}
+        # 存实例属性持有强引用，避免 Task 在扫描跑完前被 GC 提前回收。
+        self._screener_task = asyncio.create_task(self._run_screener_background())
+        return {"status": "started"}
+
+    async def get_screener_status(self) -> dict:
+        """obs 轮询选股扫描进度/结果。"""
+        return read_status(MEMORY_DIR)
+
+    async def get_screener_universe(self) -> dict:
+        """obs 页面加载时读取当前选股股票池，供文本框预填。"""
+        return {"tickers": [u["ticker"] for u in load_universe(MEMORY_DIR) if u.get("ticker")]}
+
+    async def save_screener_universe(self, tickers: list) -> dict:
+        """obs 页面「保存股票池」：整体覆盖保存。"""
+        saved = save_universe(MEMORY_DIR, tickers)
+        return {"tickers": [u["ticker"] for u in saved]}
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {

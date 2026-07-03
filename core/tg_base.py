@@ -24,7 +24,7 @@ import subprocess
 import unicodedata
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, List, Optional
 
 from core.observability import (
     OmniObserver,
@@ -1038,6 +1038,49 @@ class TelegramBotBase:
         """
         return None
 
+    async def start_screener_scan(self) -> Optional[dict]:
+        """钩子：启动选股批量扫描（obs「选股筛股」页「开始扫描」触发）。
+
+        基类默认不支持，返回 ``None`` → HTTP 404。持仓类 bot（如 StockBot）覆写，
+        fire-and-forget 启动后台扫描（不能 await 整个扫描过程——耗时可达几分钟，
+        HTTP 请求必须立即返回，进度由 ``get_screener_status`` 轮询）。
+
+        Returns:
+            None: 该 bot 不支持选股扫描。
+            dict: ``{"status": "started"|"already_running"}``。
+        """
+        return None
+
+    async def get_screener_status(self) -> Optional[dict]:
+        """钩子：读取选股扫描当前进度/结果（obs 轮询用）。
+
+        Returns:
+            None: 该 bot 不支持选股扫描。
+            dict: ``{"status": "idle"|"running"|"done"|"error", "total", "done", ...}``。
+        """
+        return None
+
+    async def get_screener_universe(self) -> Optional[dict]:
+        """钩子：读取当前选股股票池（obs 页面加载时预填文本框用）。
+
+        Returns:
+            None: 该 bot 不支持选股扫描。
+            dict: ``{"tickers": [...]}``。
+        """
+        return None
+
+    async def save_screener_universe(self, tickers: List[str]) -> Optional[dict]:
+        """钩子：整体覆盖保存选股股票池（obs 页面「保存股票池」触发）。
+
+        Args:
+            tickers: 股票代码列表（obs 页面文本框按行拆分后传入）。
+
+        Returns:
+            None: 该 bot 不支持选股扫描。
+            dict: ``{"tickers": [...]}``（保存后的结果，供前端回显）。
+        """
+        return None
+
     async def _start_obs_chat_http_server(self) -> None:
         """启动 obs 反向对话入口，与 Telegram polling 共用事件循环。"""
         token = os.getenv("OBS_BOT_CHAT_TOKEN", "")
@@ -1216,6 +1259,48 @@ class TelegramBotBase:
             status = {"ok": 200, "error": 500}.get(result.get("status", "ok"), 200)
             return web.json_response(result, status=status)
 
+        @obs_action(parse_json=False)
+        async def screener_start(request: web.Request) -> web.Response:
+            result = await self.start_screener_scan()
+            if result is None:
+                return web.json_response(
+                    {"detail": "screener not supported by this bot"}, status=404
+                )
+            return web.json_response(result)
+
+        @obs_action(parse_json=False)
+        async def screener_status(request: web.Request) -> web.Response:
+            result = await self.get_screener_status()
+            if result is None:
+                return web.json_response(
+                    {"detail": "screener not supported by this bot"}, status=404
+                )
+            return web.json_response(result)
+
+        @obs_action(parse_json=False)
+        async def screener_universe(request: web.Request) -> web.Response:
+            result = await self.get_screener_universe()
+            if result is None:
+                return web.json_response(
+                    {"detail": "screener not supported by this bot"}, status=404
+                )
+            return web.json_response(result)
+
+        @obs_action()
+        async def screener_universe_save(request: web.Request) -> web.Response:
+            body = request["obs_body"]
+            tickers = body.get("tickers")
+            if not isinstance(tickers, list) or not all(isinstance(t, str) for t in tickers):
+                return web.json_response(
+                    {"detail": "tickers must be a list of strings"}, status=422
+                )
+            result = await self.save_screener_universe(tickers)
+            if result is None:
+                return web.json_response(
+                    {"detail": "screener not supported by this bot"}, status=404
+                )
+            return web.json_response(result)
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
@@ -1223,6 +1308,10 @@ class TelegramBotBase:
         app.router.add_post("/executor-power", executor_power)
         app.router.add_post("/refresh-portfolio", refresh_portfolio)
         app.router.add_post("/stock-trend", stock_trend)
+        app.router.add_post("/screener-start", screener_start)
+        app.router.add_post("/screener-status", screener_status)
+        app.router.add_post("/screener-universe", screener_universe)
+        app.router.add_post("/screener-universe-save", screener_universe_save)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

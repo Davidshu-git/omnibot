@@ -286,6 +286,37 @@ export interface StockTrend {
   trades?: StockTrendTrade[];
 }
 
+export interface ScreenerResult {
+  ticker: string;
+  passed: true;
+  latest_price: number;
+  ma250_direction: "向上";
+  relative_strength_pct: number | null;
+  trend_duration_days: number;
+  trend_duration_capped: boolean;
+  deviation_percentile_ma60: number | null;
+  tag?: string | null;
+}
+
+export interface ScreenerSkipped {
+  ticker: string;
+  passed: false;
+  skip_reason: string;
+  tag?: string | null;
+}
+
+export interface ScreenerStatus {
+  status: "idle" | "running" | "done" | "error";
+  total?: number;
+  done?: number;
+  started_at?: string;
+  completed_at?: string;
+  results?: ScreenerResult[];
+  skipped?: ScreenerSkipped[];
+  passed_count?: number;
+  error?: string;
+}
+
 export const api = {
   projects: () => get<Project[]>("/api/projects"),
   overview: () => get<ProjectOverview[]>("/api/stats/overview"),
@@ -358,4 +389,11 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
   // 个股趋势分析（价格 + MA20/60/250）：仅 stock bot 支持，硬编码 project。
   stockTrend: (ticker: string) =>
     postJson<StockTrend>("/api/external/stock-bot/stock-trend", { ticker }),
+
+  // 选股筛股：仅 stock bot 支持，硬编码 project。
+  screenerUniverse: () => post<{ tickers: string[] }>("/api/external/stock-bot/screener-universe"),
+  screenerUniverseSave: (tickers: string[]) =>
+    postJson<{ tickers: string[] }>("/api/external/stock-bot/screener-universe-save", { tickers }),
+  screenerStart: () => post<{ status: string }>("/api/external/stock-bot/screener-start"),
+  screenerStatus: () => post<ScreenerStatus>("/api/external/stock-bot/screener-status"),
 };
