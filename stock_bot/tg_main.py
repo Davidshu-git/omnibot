@@ -163,7 +163,7 @@ class StockBot(TelegramBotBase):
 
         loop = asyncio.get_running_loop()
         try:
-            data = await loop.run_in_executor(None, fetch_stock_trend, ticker)
+            data = await loop.run_in_executor(None, lambda: fetch_stock_trend(ticker, memory_dir=MEMORY_DIR))
         except Exception as exc:  # 取价/计算任何异常都不冒泡成 500 裸栈
             logger.exception("[get_stock_trend] fetch_stock_trend 执行失败 ticker=%s", ticker)
             return {"status": "error", "detail": str(exc) or "trend fetch failed"}

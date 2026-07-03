@@ -10,6 +10,7 @@ import {
   type StockTrend,
   type StockTrendMaInfo,
   type StockTrendPoint,
+  type StockTrendTrade,
 } from "@/lib/api";
 import { fmtTime } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -633,7 +634,7 @@ function StockTrendModal({ ticker, onClose }: { ticker: string | null; onClose: 
               <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{data.latest_date}</span>
             </div>
 
-            <StockTrendChart series={data.series} visible={visible} />
+            <StockTrendChart series={data.series} visible={visible} trades={data.trades ?? []} />
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, marginBottom: 12 }}>
               <TrendLegendRow label="现价" color="var(--text)" active={visible.close} onToggle={() => toggleLine("close")} />
@@ -649,8 +650,13 @@ function StockTrendModal({ ticker, onClose }: { ticker: string | null; onClose: 
               </div>
             )}
 
+            {data.trades && data.trades.length > 0 && (
+              <TradeList trades={data.trades} />
+            )}
+
             <p style={{ color: "var(--text-dim)", fontSize: 11, margin: 0 }}>
               以上为价格相对均线位置的描述性指标（趋势方向 + 历史分位），不构成买卖建议，据此操作风险自负。
+              {data.trades && data.trades.length > 0 && "图上标记点按交易日实际收盘价定位，与你记录时手写的成交价可能有出入，以下方明细为准。"}
             </p>
           </>
         )}
@@ -708,17 +714,44 @@ function MaInfoRow({ label, color, info, active, onToggle }: {
   );
 }
 
+/** 历史买卖点明细（图上圆点对应的原始交易流水，含用户当时手写的自由文本）。 */
+function TradeList({ trades }: { trades: StockTrendTrade[] }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <span style={{
+        display: "block", color: "var(--text-muted)", fontSize: 11, fontWeight: 600,
+        letterSpacing: "0.04em", textTransform: "uppercase", marginBottom: "0.5rem",
+      }}>买卖记录（{trades.length}）</span>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {trades.slice().reverse().map((t, i) => (
+          <div key={i} style={{ display: "flex", gap: 8, fontSize: 12, alignItems: "baseline" }}>
+            <span style={{ color: t.side === "buy" ? "var(--red)" : "var(--green)", fontWeight: 600, minWidth: 32, flexShrink: 0 }}>
+              {t.side === "buy" ? "买入" : "卖出"}
+            </span>
+            <span style={{ color: "var(--text-dim)", fontFamily: "var(--font-mono)", flexShrink: 0 }}>{t.date}</span>
+            <span style={{ color: "var(--text-muted)" }}>{t.details}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const TREND_LINE_KEYS: TrendLineKey[] = ["close", "ma20", "ma60", "ma250"];
 
-/** 价格 + MA20/60/250 多线走势图（内联 SVG，无第三方图表库）。
+/** 价格 + MA20/60/250 多线走势图 + 历史买卖点（内联 SVG，无第三方图表库）。
  * MA 序列前段可能为 null（历史不足以计算），按连续非空段分别画 polyline，不整段连线。
- * 隐藏的线条既不参与 y 轴范围计算也不画出——隐藏 MA250 之类的长线后图会自动缩放聚焦到剩余线条。 */
-function StockTrendChart({ series, visible }: { series: StockTrendPoint[]; visible: Record<TrendLineKey, boolean> }) {
+ * 隐藏的线条既不参与 y 轴范围计算也不画出——隐藏 MA250 之类的长线后图会自动缩放聚焦到剩余线条。
+ * 买卖点始终参与 y 轴范围计算（不随 visible.close 隐藏而被裁切出可视区）。 */
+function StockTrendChart({ series, visible, trades }: {
+  series: StockTrendPoint[]; visible: Record<TrendLineKey, boolean>; trades: StockTrendTrade[];
+}) {
   const W = 640, H = 220, padT = 10, padB = 8;
   if (series.length < 2) return null;
 
   const visibleKeys = TREND_LINE_KEYS.filter((k) => visible[k]);
   const allVals = series.flatMap((p) => visibleKeys.map((k) => p[k]))
+    .concat(trades.map((t) => t.price))
     .filter((v): v is number => v !== null && v !== undefined);
   if (allVals.length === 0) return null; // 全部线条被隐藏，不渲染空图
 
@@ -744,6 +777,9 @@ function StockTrendChart({ series, visible }: { series: StockTrendPoint[]; visib
     return segments;
   };
 
+  // 买卖点按 date 字符串匹配到 series 里的下标（后端已把交易日对齐到最近的实际交易日）。
+  const dateIndex = new Map(series.map((p, i) => [p.date, i]));
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: H }}>
       {visible.ma250 && buildSegments("ma250").map((pts, i) => (
@@ -758,6 +794,26 @@ function StockTrendChart({ series, visible }: { series: StockTrendPoint[]; visib
       {visible.close && buildSegments("close").map((pts, i) => (
         <polyline key={`close-${i}`} points={pts} fill="none" stroke="var(--text)" strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
       ))}
+      {trades.map((t, i) => {
+        const idx = dateIndex.get(t.date);
+        if (idx === undefined) return null;
+        // 涨红跌绿（A 股语义，与本页 pnlColor 一致）：买入沿用"涨/主动"红，卖出沿用"跌/离场"绿。
+        const color = t.side === "buy" ? "var(--red)" : "var(--green)";
+        return (
+          <circle
+            key={`trade-${i}`}
+            cx={x(idx)}
+            cy={y(t.price)}
+            r={4}
+            fill={color}
+            stroke="var(--card)"
+            strokeWidth={1}
+            vectorEffect="non-scaling-stroke"
+          >
+            <title>{`${t.side === "buy" ? "买入" : "卖出"} ${t.date} @ ${t.price}`}</title>
+          </circle>
+        );
+      })}
     </svg>
   );
 }

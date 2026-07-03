@@ -265,6 +265,13 @@ export interface StockTrendMaInfo {
   deviation_percentile?: number | null;
 }
 
+export interface StockTrendTrade {
+  date: string;
+  price: number;
+  side: "buy" | "sell";
+  details: string;
+}
+
 export interface StockTrend {
   status: string;
   detail?: string;
@@ -276,6 +283,7 @@ export interface StockTrend {
   ma60?: StockTrendMaInfo;
   ma250?: StockTrendMaInfo;
   regime_note?: string;
+  trades?: StockTrendTrade[];
 }
 
 export const api = {

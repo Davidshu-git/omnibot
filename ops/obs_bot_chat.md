@@ -53,10 +53,11 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 
 - 鉴权:请求头 `X-OBS-Token` == `OBS_BOT_CHAT_TOKEN`。
 - 请求体:`{"ticker": "<代码>"}`(必须非空字符串,否则 422)。
-- 仅 stock bot 生效:由基类钩子 `TelegramBotBase.get_stock_trend()` 暴露,基类默认返回 `None` → **404**(ehs/mhxy 未覆写)。`StockBot` 覆写:`run_in_executor` 线程池跑 `valuation_engine.fetch_stock_trend()`(yfinance 取近 2 年日线 + 计算 MA20/60/250 + 偏离度历史分位),**不能在事件循环里直跑**。
+- 仅 stock bot 生效:由基类钩子 `TelegramBotBase.get_stock_trend()` 暴露,基类默认返回 `None` → **404**(ehs/mhxy 未覆写)。`StockBot` 覆写:`run_in_executor` 线程池跑 `valuation_engine.fetch_stock_trend()`(yfinance 取近 2 年日线 + 计算 MA20/60/250 + 偏离度历史分位 + 匹配 `transaction_logs.jsonl` 里该标的的历史买卖点),**不能在事件循环里直跑**。
 - **5 分钟内存缓存**(按格式化后 ticker 为 key,bot 侧惰性初始化,非 60s 冷却限流而是纯防抖):同一 ticker 5 分钟内重复请求直接返回缓存,不重复打 yfinance。无 cooldown 语义(不返回 429)。
-- 成功返回 `{"status":"ok","ticker","latest_price","latest_date","series"[{date,close,ma20,ma60,ma250}],"ma20"/"ma60"/"ma250":{available,value,direction,slope_pct,deviation_pct,deviation_percentile},"regime_note"}` → 200;取价/计算异常返回 `{"status":"error","detail"}` → 500。
+- 成功返回 `{"status":"ok","ticker","latest_price","latest_date","series"[{date,close,ma20,ma60,ma250}],"ma20"/"ma60"/"ma250":{available,value,direction,slope_pct,deviation_pct,deviation_percentile},"regime_note","trades"[{date,price,side,details}]}` → 200;取价/计算异常返回 `{"status":"error","detail"}` → 500。
 - 产出**仅为描述性指标**(均线方向 + 偏离度历史分位 + 一句 `regime_note` 观察),不产出任何买卖建议措辞,前端固定展示免责声明。
+- `trades` 字段:从 `transaction_logs.jsonl`(自由文本记忆)里筛出该 ticker 的买卖记录,`date`/`price` 取**该交易日的实际收盘价**(不信自由文本里用户手写的价格,避免解析错价格),仅 `action` 含"买入"/"卖出"字样的记录会入选(入金/转出/建仓计划等非成交动作被过滤),交易时间距最近交易日超过 7 天视为窗口外不返回。`details` 保留原始自由文本供前端展示核对。
 - obs 代理超时给 **20s**(单次 yfinance 拉取,比重估值轻),**不广播 SSE**(纯读查询,只对发起请求的客户端有意义)。
 
 `/switch-model` 契约:

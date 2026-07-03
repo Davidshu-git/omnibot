@@ -8,6 +8,7 @@
 4. 持仓估值计算
 """
 
+import json
 import socket
 import threading
 import yfinance as yf
@@ -836,7 +837,89 @@ def _build_regime_note(ma60: Dict[str, Any], ma250: Dict[str, Any]) -> str:
     return "大势向上，短期价格位于中期均线上方，暂未出现明显回调。"
 
 
-def fetch_stock_trend(ticker: str, period: str = "2y") -> Dict[str, Any]:
+# 交易流水 action 字段是自由文本（非受限枚举），用子串匹配归类买/卖；
+# "入金"/"转出"/"建仓计划"等非实际成交动作不在此列，天然被跳过。
+_TRADE_ACTION_SIDE = {"买入": "buy", "卖出": "sell"}
+
+# 交易时间戳跟收盘价序列最近交易日的容差（天）：超出则大概率是取数窗口没覆盖到
+# （如交易发生在 2 年前），而非数据错误，直接跳过该条，不勉强画到图上。
+_TRADE_DATE_MATCH_TOLERANCE_DAYS = 7
+
+
+def _load_ticker_trades(memory_dir: Path, formatted_ticker: str, close: "pd.Series") -> List[Dict[str, Any]]:
+    """从交易流水里筛出这只标的的买卖记录，价格用当天实际收盘价定位。
+
+    ``transaction_logs.jsonl`` 的 ``details`` 是 LLM 自由文本，价格/股数格式不统一
+    （见 ``core/tools/memory_tools.py::append_transaction_log``），正则解析价格风险
+    很大。这里刻意不信自由文本里的价格，只信 ``timestamp``（结构化、可靠），价格直接
+    取图表已经拉到的当天实际收盘价——保证点位一定落在价格线上，不会跟真实行情错位。
+
+    Args:
+        memory_dir: 记忆文件目录（含 transaction_logs.jsonl）。
+        formatted_ticker: 已格式化的目标 ticker（与 fetch_stock_trend 内部一致）。
+        close: 收盘价序列（DatetimeIndex），用于按最近交易日定位价格。
+
+    Returns:
+        List[Dict[str, Any]]: 每条 ``{date, price, side, details}``，按时间正序。
+    """
+    log_path = memory_dir / "transaction_logs.jsonl"
+    if not log_path.exists() or close.empty:
+        return []
+
+    try:
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.warning("[_load_ticker_trades] 读取 %s 失败", log_path)
+        return []
+
+    naive_index = close.index.tz_localize(None) if close.index.tz is not None else close.index
+
+    trades: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        action = entry.get("action", "")
+        side = next((v for k, v in _TRADE_ACTION_SIDE.items() if k in action), None)
+        if side is None:
+            continue
+
+        target = entry.get("target", "")
+        try:
+            if format_universal_ticker(target) != formatted_ticker:
+                continue
+        except Exception:
+            continue
+
+        ts = entry.get("timestamp")
+        if not isinstance(ts, (int, float)):
+            continue
+        trade_ts = pd.Timestamp(datetime.fromtimestamp(ts))
+
+        pos = naive_index.get_indexer([trade_ts], method="nearest")[0]
+        if pos == -1:
+            continue
+        matched_date = naive_index[pos]
+        if abs((matched_date - trade_ts).days) > _TRADE_DATE_MATCH_TOLERANCE_DAYS:
+            continue
+
+        trades.append({
+            "date": matched_date.strftime("%Y-%m-%d"),
+            "price": round(float(close.iloc[pos]), 4),
+            "side": side,
+            "details": entry.get("details", ""),
+        })
+
+    trades.sort(key=lambda t: t["date"])
+    return trades
+
+
+def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path] = None) -> Dict[str, Any]:
     """获取个股价格历史 + 多周期均线（MA20/60/250）+ 偏离度历史分位。
 
     供 obs 投资总控台「个股趋势分析」弹窗使用。产出仅为描述性指标（均线方向 +
@@ -847,11 +930,14 @@ def fetch_stock_trend(ticker: str, period: str = "2y") -> Dict[str, Any]:
         ticker: 股票/加密货币代码（原始或已格式化均可）。
         period: yfinance 合法 period 值，默认 "2y"（约 500 个交易日，
             足够计算 MA250 并留出约 250 个非 NaN 点用于偏离度历史分位）。
+        memory_dir: 记忆文件目录（含 transaction_logs.jsonl），提供则附带该标的
+            的历史买卖点（``trades``）；``None`` 时跳过（``trades`` 返回空列表）。
 
     Returns:
         Dict[str, Any]: 含 ``ticker``/``latest_price``/``latest_date``/
             ``series``（逐日 date/close/ma20/ma60/ma250）/``ma20``/``ma60``/
-            ``ma250``（各自的 ``_ma_trend_info`` 结果）/``regime_note``。
+            ``ma250``（各自的 ``_ma_trend_info`` 结果）/``regime_note``/
+            ``trades``（``_load_ticker_trades`` 结果）。
 
     Raises:
         IndexError: 未取到历史数据。
@@ -886,6 +972,8 @@ def fetch_stock_trend(ticker: str, period: str = "2y") -> Dict[str, Any]:
         for idx in close.index
     ]
 
+    trades = _load_ticker_trades(memory_dir, formatted_ticker, close) if memory_dir is not None else []
+
     return {
         "ticker": formatted_ticker,
         "latest_price": round(latest_price, 4),
@@ -895,6 +983,7 @@ def fetch_stock_trend(ticker: str, period: str = "2y") -> Dict[str, Any]:
         "ma60": ma60_info,
         "ma250": ma250_info,
         "regime_note": _build_regime_note(ma60_info, ma250_info),
+        "trades": trades,
     }
 
 
