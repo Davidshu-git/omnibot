@@ -1119,6 +1119,10 @@ def calculate_portfolio_valuation(
                 total_market_value_cny += result["market_value_cny"]
                 total_cost_cny += result["cost_value_cny"]
     
+    # 持仓（股票/ETF/加密货币）成本，先于现金入账前记下——百分比分母只认这个，
+    # 避免现金（成本=市值，收益恒为 0）摊薄进分母把真实持仓回报率拉低。
+    holdings_cost_cny = total_cost_cny
+
     # 现金/活动资金：按币种折 CNY 计入总净值。现金无盈亏，成本=市值，
     # 同时计入 market_value 与 cost，故不影响 total_profit_loss 绝对值。
     cash_holdings: List[Dict[str, Any]] = []
@@ -1137,7 +1141,7 @@ def calculate_portfolio_valuation(
     total_cost_cny += cash_total_cny
 
     total_profit_loss_cny = total_market_value_cny - total_cost_cny
-    total_profit_loss_percent = (total_profit_loss_cny / total_cost_cny * 100) if total_cost_cny != 0 else 0
+    total_profit_loss_percent = (total_profit_loss_cny / holdings_cost_cny * 100) if holdings_cost_cny != 0 else 0
 
     return {
         "total_market_value": round(total_market_value_cny, 2),

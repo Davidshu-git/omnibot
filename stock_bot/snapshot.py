@@ -67,8 +67,10 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         Dict[str, Any]: 快照字典，关键字段：
 
             - ``date`` / ``generated_at``：日期与生成时刻
-            - ``total_market_value`` / ``total_cost`` / ``total_profit_loss``
-              / ``profit_loss_percent``：组合整体（CNY 口径，含现金）
+            - ``total_market_value`` / ``total_cost`` / ``total_profit_loss``：
+              组合整体（CNY 口径，含现金）
+            - ``profit_loss_percent``：盈亏率，分母仅持仓成本（不含现金），
+              避免现金摊薄真实回报率
             - ``securities_total_cny`` / ``cash_total_cny``：证券 vs 现金拆分
             - ``currency_exposure``：按币种折 CNY 的敞口（证券 + 现金）
             - ``holdings`` / ``cash_holdings`` / ``exchange_rates``：明细透传
