@@ -396,4 +396,6 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
     postJson<{ tickers: string[] }>("/api/external/stock-bot/screener-universe-save", { tickers }),
   screenerStart: () => post<{ status: string }>("/api/external/stock-bot/screener-start"),
   screenerStatus: () => post<ScreenerStatus>("/api/external/stock-bot/screener-status"),
+  // 随代码库打包的预置美股股票池（静态资源，非用户自己保存的 universe）。
+  screenerPreset: () => post<{ tickers: string[] }>("/api/external/stock-bot/screener-preset"),
 };

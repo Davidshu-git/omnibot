@@ -72,6 +72,7 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
             - ``profit_loss_percent``：盈亏率，分母仅持仓成本（不含现金），
               避免现金摊薄真实回报率
             - ``securities_total_cny`` / ``cash_total_cny``：证券 vs 现金拆分
+            - ``has_pricing_error`` / ``errored_tickers``：快照质量标记，供净值走势过滤
             - ``currency_exposure``：按币种折 CNY 的敞口（证券 + 现金）
             - ``holdings`` / ``cash_holdings`` / ``exchange_rates``：明细透传
     """
@@ -84,6 +85,11 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     holdings: List[Dict[str, Any]] = valuation.get("holdings", [])
     cash_holdings: List[Dict[str, Any]] = valuation.get("cash_holdings", [])
     cash_total_cny: float = valuation.get("cash_total_cny", 0.0)
+    errored_tickers: List[str] = [
+        str(h.get("ticker", "UNKNOWN"))
+        for h in holdings
+        if isinstance(h, dict) and h.get("error")
+    ]
 
     # 资产分类汇总（均仅统计估值成功的持仓）：
     #   - 证券 = type≠crypto 的持仓（股票/ETF），加密货币单列，不再混入证券；
@@ -136,6 +142,8 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "securities_total_cny": securities_total_cny,
         "crypto_total_cny": crypto_total_cny,
         "cash_total_cny": cash_total_cny,
+        "has_pricing_error": bool(errored_tickers),
+        "errored_tickers": errored_tickers,
         "currency_exposure": currency_exposure,
         "fx_trend": fx_trend,
         "holdings": holdings,

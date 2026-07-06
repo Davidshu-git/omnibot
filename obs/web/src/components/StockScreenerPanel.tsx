@@ -70,6 +70,24 @@ export function StockScreenerPanel({ onSelectTicker }: { onSelectTicker: (ticker
       .finally(() => setSavingUniverse(false));
   }, [universeText]);
 
+  const [loadingPreset, setLoadingPreset] = useState(false);
+  const [presetMsg, setPresetMsg] = useState("");
+
+  // 只填文本框，不自动保存——用户仍需显式点「保存股票池」才会覆盖 universe.json，
+  // 给一次反悔/精简的机会（预置池约 4875 只，全量扫描耗时会很长）。
+  const loadPreset = useCallback(() => {
+    setLoadingPreset(true);
+    setPresetMsg("");
+    api.screenerPreset()
+      .then((r) => {
+        const tickers = r.tickers ?? [];
+        setUniverseText(tickers.join("\n"));
+        setPresetMsg(`✓ 已载入 ${tickers.length} 只预置美股到文本框，点「保存股票池」才会生效`);
+      })
+      .catch((e) => setPresetMsg(`载入失败：${String(e)}`))
+      .finally(() => setLoadingPreset(false));
+  }, []);
+
   const startScan = useCallback(() => {
     setStarting(true);
     setStartMsg("");
@@ -88,6 +106,7 @@ export function StockScreenerPanel({ onSelectTicker }: { onSelectTicker: (ticker
   const pct = running && total > 0 ? Math.round(((status?.done ?? 0) / total) * 100) : 0;
   const stalled = running && Date.now() - pollStartedAtRef.current > POLL_STALL_HINT_MS;
   const results = status?.results ?? []; // 后端已按相对强度降序排好
+  const universeCount = universeText.split("\n").map((t) => t.trim()).filter(Boolean).length;
 
   return (
     <div>
@@ -112,15 +131,30 @@ export function StockScreenerPanel({ onSelectTicker }: { onSelectTicker: (ticker
           }}
         />
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10, flexWrap: "wrap" }}>
+          <button
+            onClick={loadPreset}
+            disabled={loadingPreset}
+            className="tag-btn"
+            style={{ fontSize: 12 }}
+            title="约 4875 只美股普通股（NASDAQ+NYSE 官方代码目录，已排除 ETF/权证/优先股/SPAC 等），仅填文本框不自动保存"
+          >
+            {loadingPreset ? "载入中…" : "载入预置美股"}
+          </button>
           <button onClick={saveUniverse} disabled={savingUniverse} className="tag-btn" style={{ fontSize: 12 }}>
             {savingUniverse ? "保存中…" : "保存股票池"}
           </button>
           <button onClick={startScan} disabled={starting || running} className="tag-btn" style={{ fontSize: 12 }}>
             {running ? "扫描中…" : starting ? "启动中…" : "开始扫描"}
           </button>
+          {presetMsg && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{presetMsg}</span>}
           {saveMsg && <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{saveMsg}</span>}
           {startMsg && <span style={{ color: "var(--amber)", fontSize: 11 }}>{startMsg}</span>}
         </div>
+        {universeCount > 300 && (
+          <p style={{ color: "var(--amber)", fontSize: 11, margin: "8px 0 0" }}>
+            当前股票池 {universeCount} 只，扫描引擎无更细粒度限流，标的数较多时可能耗时数十分钟，也可能触发数据源限流导致部分标的取数失败——建议先精简再扫描，或耐心等待。
+          </p>
+        )}
       </div>
 
       {running && (

@@ -1081,6 +1081,19 @@ class TelegramBotBase:
         """
         return None
 
+    async def get_screener_preset(self) -> Optional[dict]:
+        """钩子：读取随代码库打包的预置股票池（obs 页面「载入预置」按钮用）。
+
+        与 `save_screener_universe` 不同：这是随版本库分发的静态资源，不是用户
+        自己保存的股票池，点按钮只是把它填进文本框，仍需用户显式点「保存股票池」
+        才会覆盖 `universe.json`。
+
+        Returns:
+            None: 该 bot 不支持选股扫描。
+            dict: ``{"tickers": [...]}``。
+        """
+        return None
+
     async def _start_obs_chat_http_server(self) -> None:
         """启动 obs 反向对话入口，与 Telegram polling 共用事件循环。"""
         token = os.getenv("OBS_BOT_CHAT_TOKEN", "")
@@ -1301,6 +1314,15 @@ class TelegramBotBase:
                 )
             return web.json_response(result)
 
+        @obs_action(parse_json=False)
+        async def screener_preset(request: web.Request) -> web.Response:
+            result = await self.get_screener_preset()
+            if result is None:
+                return web.json_response(
+                    {"detail": "screener not supported by this bot"}, status=404
+                )
+            return web.json_response(result)
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
@@ -1312,6 +1334,7 @@ class TelegramBotBase:
         app.router.add_post("/screener-status", screener_status)
         app.router.add_post("/screener-universe", screener_universe)
         app.router.add_post("/screener-universe-save", screener_universe_save)
+        app.router.add_post("/screener-preset", screener_preset)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

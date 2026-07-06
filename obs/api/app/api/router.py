@@ -905,6 +905,32 @@ async def proxy_screener_universe_save(project: str, body: dict):
     return r.json()
 
 
+@router.post("/external/{project}/screener-preset")
+async def proxy_screener_preset(project: str):
+    """Read the bundled preset ticker pool (static resource shipped with the bot, not user data)."""
+    import httpx as _httpx
+
+    bot_url = _screener_bot_url(project)
+    try:
+        async with _httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{bot_url}/screener-preset",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.json() or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    return r.json()
+
+
 @router.get("/external/mhxy-executor/status")
 async def mhxy_executor_status():
     path = Path(settings.mhxy_executor_status_file)

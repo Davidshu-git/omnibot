@@ -34,6 +34,27 @@ _SCAN_WORKERS = 15
 _RELATIVE_STRENGTH_WINDOW = 60  # 近 N 个交易日收益率，用于跟基准比强弱
 _SCAN_PERIOD = "2y"  # 与 fetch_stock_trend 同款窗口，兼顾 MA250 计算与批量扫描耗时
 
+# 预置美股股票池：随代码库打包的静态资源（非 data/ 下的运行时用户数据，随 git 版本控制），
+# 源自 nasdaqtrader.com 官方代码目录，已过滤 ETF/权证/权利/单位/优先股/SPAC 等非普通股。
+_PRESET_US_STOCKS_PATH = Path(__file__).parent / "screener_presets" / "us_common_stocks.json"
+
+
+def load_preset_us_stocks() -> List[str]:
+    """读取随代码库打包的预置美股股票池（"一键载入"按钮用）。
+
+    Returns:
+        List[str]: 代码列表；预置文件缺失或损坏返回空列表（不抛异常，前端优雅降级）。
+    """
+    if not _PRESET_US_STOCKS_PATH.exists():
+        return []
+    try:
+        data = json.loads(_PRESET_US_STOCKS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("[screener] 读取预置股票池失败：%s", _PRESET_US_STOCKS_PATH)
+        return []
+    tickers = data.get("tickers") if isinstance(data, dict) else None
+    return tickers if isinstance(tickers, list) else []
+
 
 def _universe_path(memory_dir: Path) -> Path:
     return memory_dir / "screener" / "universe.json"

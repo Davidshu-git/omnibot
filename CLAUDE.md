@@ -453,6 +453,22 @@ HTTP `/batch_tap` / `/batch_swipe` / `/batch_back` 端点仍是同步 `for ... t
 - **SSE 实时推送**：`/api/stream` 端点，ingest 完成后广播通知前端自动刷新。
 - **timeline 分页**：`GET /sessions/{id}/timeline?limit=200&offset=0`，默认 200 条，最大 500。
 
+### 投资总控台（portfolio dashboard，`obs/web/src/pages/portfolio.tsx`）
+
+stock-bot 组合快照的只读可视化页面，正从「只读看板」演进为「可交互面板」。
+
+**数据源（时间序列快照）**：`stock_bot/snapshot.py::write_snapshot()` 生成每日一条快照，落 `data/stock/snapshots/portfolio.jsonl`。**同日去重**：重复写覆盖当天最后一条，保证「一日一行」不膨胀。obs 以只读方式消费，暴露两个端点：
+- `GET /api/portfolio/latest` — 最新一条快照（当下持仓/现金/估值）；无快照返回 `{"available": False}`。
+- `GET /api/portfolio/history?days=N` — 最近 N 天精简序列 `{points:[{date,total_market_value,...}]}`，供净值走势曲线。
+
+**快照写入触发点（仅两处，改持仓本身不写）**：① `daily_job.py` 盘后 16:30；② 交互工具 `calculate_exact_portfolio_value`（用户问"盘点/总资产"时顺手落盘）；③ obs 面板「⟳ 重新估值」按钮（见下）。**只改 `user_profile.json` 持仓、当天不触发任何估值，则快照停在旧值直到 16:30。**
+
+**「⟳ 重新估值」= obs→bot 动作端点范式的首例**（`POST /api/external/stock-bot/refresh-portfolio`）：obs 只读、估值引擎 + 取价依赖只在 stock-bot 容器，故联网重算必须**跨容器委托 live bot**——bot 侧 `TelegramBotBase.refresh_portfolio_snapshot()` 钩子（基类 None→404，StockBot 覆写：`run_in_executor` 线程跑 `write_snapshot()` + 60s 冷却）。token 鉴权/JSON 解析已沉淀进 `core/tg_base.py::obs_action` 装饰器。**新增任何 obs→bot 动作端点，照 [ops/obs_bot_chat.md](ops/obs_bot_chat.md) 的「六步 checklist」，勿手抄样板。** 前端「刷新」（纯重读、秒回）与「重新估值」（联网重算）**语义两分**。
+
+**趋势窗分档（Ghostfolio 范式）**：① 已做——净值走势曲线（自然日等距、休市走平）+「今日」「累计」两窗，展示**净值变化额/率**（页面明确标注「≠ 投资收益，未扣入金/加仓」）。② 未做——MTD/YTD/1Y 需 **TWR 时间加权收益**，依赖**结构化现金流**；现有 `transaction_logs.jsonl` 是 LLM 自由文本无法解析金额，故留二档，等加结构化入金/加仓字段再上。**严禁用净值日间差冒充收益率**（会把充值算成盈利）。
+
+**持仓表列**：证券/加密共用 `HoldingsTable`，列含成本(CNY)（`cost_value_cny`，引擎 `valuation_engine.py` 落盘）；加密货币按 `type==="crypto"` 独立成组。
+
 ### obs 环境变量（`obs/.env`）
 
 ```env

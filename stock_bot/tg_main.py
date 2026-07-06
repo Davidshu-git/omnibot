@@ -30,6 +30,7 @@ from stock_bot.agent import (
 )
 from stock_bot.valuation_engine import fetch_stock_price_raw, fetch_stock_trend
 from stock_bot.screener import (
+    load_preset_us_stocks,
     load_universe,
     read_status,
     run_scan_and_write_status,
@@ -220,6 +221,10 @@ class StockBot(TelegramBotBase):
         """obs 页面「保存股票池」：整体覆盖保存。"""
         saved = save_universe(MEMORY_DIR, tickers)
         return {"tickers": [u["ticker"] for u in saved]}
+
+    async def get_screener_preset(self) -> dict:
+        """obs 页面「载入预置」按钮：读取随代码库打包的预置美股股票池。"""
+        return {"tickers": load_preset_us_stocks()}
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {
