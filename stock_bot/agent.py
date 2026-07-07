@@ -11,6 +11,7 @@ from core.tools.file_tools import make_file_tools
 from core.tools.memory_tools import make_memory_tools, get_user_profile
 from core.tools.job_tools import make_job_tools
 from stock_bot.tools.stock_tools import make_stock_tools
+from stock_bot.tools.trade_tools import make_trade_tools
 
 load_dotenv()
 
@@ -75,10 +76,17 @@ STOCK_SYSTEM_PROMPT = """你是一个极客风格的全栈量化分析师与系�
 - 判断标准：这个信息是"排他"的，新的状态会使旧的状态失效。
 - 例子："我现在手里有 200 股特斯拉"、"以后别给我生成图表了"。
 
-2. 📜 【交易与事件】 -> 调用 `append_transaction_log`
-- 触发条件：用户告知了一笔具体的动作或历史发生过的事件。
+2. 💱 【买入/卖出/入金/出金】 -> 调用 `record_trade`（唯一入口！）
+- 触发条件：用户告知了一笔具体的买入、卖出、入金、出金动作。
+- 它会一次性原子化完成：持仓均价重算 + 现金余额增减 + 交易流水追加。
+- **绝对禁止**改用 `update_user_memory` + `append_transaction_log` 手工组合记录交易，
+  也**绝对禁止**自己心算新均价/新余额——一切以工具返回的落库值为准。
+- 注意：用户说"146.16美元购入0.7485股"时，146.16 是**总花费**（total_amount），不是单价。
+- 例子："我今天早上卖了 50 股苹果"、"146美元买了0.7股NVDA"、"Neverless 入金 100 美元"。
+
+2b. 📜 【非买卖类事件】 -> 调用 `append_transaction_log`
+- 触发条件：分红、拆股、转托管等无法用 record_trade 表达的历史事件。
 - 判断标准：它是流水账，不能覆盖。
-- 例子："我今天早上卖了 50 股苹果"、"我昨天把特斯拉清仓了"。
 
 3. 📚 【深度知识】 -> 调用 `write_local_file`
 - 触发条件：你为用户生成了深度的长篇分析、总结了某个行业的长文。
@@ -97,6 +105,14 @@ STOCK_SYSTEM_PROMPT = """你是一个极客风格的全栈量化分析师与系�
 6. 💬 【短期闲聊】 -> 不调用任何记忆工具！
 - 触发条件：随口的提问、查当前价格、简单的问答。
 - 判断标准：信息时效性极短，交给底层默认的短期滑动窗口记忆处理即可。
+==============================
+🚨【写入诚实红线】（最高优先级，违反即为严重事故）：
+1. "已更新"、"已记录"、"已同步"、"记忆已刷新"等表述，**只允许在你真实调用了写入工具
+   （record_trade / update_user_memory / append_transaction_log / delete_user_memory）
+   并收到 ✅ 成功返回之后**出现在回复中。没调用工具就宣称已更新 = 欺骗用户 = 数据静默丢失。
+2. 回复中涉及持仓份额、成本、现金余额的数字，**必须原样引用工具返回的落库值**，
+   禁止自行心算后复述（你的心算结果没有落库，引用它会让用户看到假数据）。
+3. 系统会在每轮结束后自动校验"声称写入"与"实际工具调用"是否一致，虚报会被拦截并强制重试。
 ==============================
  工作流如下：
 1. 🔍 核心能力：遇到不知道的公司用 search_company_ticker，查本地资料用 analyze_local_document。
@@ -133,6 +149,7 @@ ALLOWED_TG_USERS = os.getenv("ALLOWED_TG_USERS", "")
 
 _tools = (
     make_stock_tools(SANDBOX_DIR, MEMORY_DIR, ALLOWED_TG_USERS)
+    + make_trade_tools(MEMORY_DIR)
     + make_file_tools(SANDBOX_DIR, KB_DIR, EMBEDDING_KEY, FAISS_DIR)
     + make_memory_tools(MEMORY_DIR)
     + make_job_tools("stock_bot.daily_job")

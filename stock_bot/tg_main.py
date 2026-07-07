@@ -233,6 +233,7 @@ class StockBot(TelegramBotBase):
             "draw_universal_stock_chart": "🎨 正在启动绘图引擎渲染 K 线...",
             "search_company_ticker": "🔍 正在全网检索股票代码...",
             "calculate_exact_portfolio_value": "🧮 正在使用程序精确核算财务数据...",
+            "record_trade": "🧾 正在原子化落库交易（持仓+现金+流水）...",
             "create_price_alert": "🔔 正在将盯盘预警挂载到后台引擎...",
             "list_price_alerts": "📋 正在读取当前盯盘预警列表...",
             "delete_price_alert": "🗑️ 正在删除指定盯盘预警...",

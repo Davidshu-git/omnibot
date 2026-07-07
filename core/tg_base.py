@@ -446,6 +446,52 @@ _DEFAULT_TOOL_STATUS_MAP: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 幻觉写入校验（memory write enforcement）
+# ---------------------------------------------------------------------------
+
+# 默认视为"记忆写入"的工具名集合。回复声称已写入但本轮未调用过其中任何一个，
+# 即判定为幻觉写入。子类可通过 get_memory_write_tool_names() 扩展。
+_MEMORY_WRITE_TOOLS: frozenset[str] = frozenset({
+    "update_user_memory",
+    "delete_user_memory",
+    "append_transaction_log",
+    "record_trade",
+})
+
+# 识别"声称已写入记忆/流水"的表述。刻意锚定名词（记忆/流水/档案/持仓/现金/台账），
+# 避免"预警已更新"这类合法但与记忆无关的表述误触发。
+_MEMORY_WRITE_CLAIM_PATTERN = re.compile(
+    r"(?:记忆|流水|档案|持仓|现金|台账)[^。！？\n]{0,10}已(?:安全)?(?:更新|写入|录入|记录|同步|落库|补录|变更|追加|录)"
+    r"|已(?:安全)?(?:更新|写入|录入|记录|同步|落库|补录)[^。！？\n]{0,10}(?:记忆|流水|档案|持仓|现金|台账)"
+    r"|已[^。！？\n]{0,10}(?:写入|存入|记入|同步到)[^。！？\n]{0,6}(?:记忆|流水|档案|台账)"
+)
+
+_WRITE_ENFORCEMENT_RETRY_PROMPT = (
+    "【系统自动校验】你上一条回复声称已更新记忆/流水，但系统监测到本轮实际没有发生"
+    "任何写入工具调用（record_trade / update_user_memory / append_transaction_log 等），"
+    "刚才的『已更新』是幻觉。请立即真正调用相应工具完成写入，然后只依据工具返回的"
+    "落库值重新汇报；如果确实无需写入，请如实向用户说明并撤回先前的表述。"
+)
+
+_WRITE_ENFORCEMENT_FAILED_WARNING = (
+    "\n\n⚠️ 【系统校验告警】以上回复声称已写入记忆/流水，但本轮实际未发生任何写入"
+    "工具调用，上述『已更新/已记录』不可信，数据并未落库。请重新下达明确指令。"
+)
+
+
+class _ToolCallAuditHandler(AsyncCallbackHandler):
+    """静默记录本轮 Agent 实际调用过的工具名，供写入校验使用。"""
+
+    def __init__(self) -> None:
+        self.called_tools: set[str] = set()
+
+    async def on_tool_start(self, serialized: dict, input_str: str, **kwargs) -> None:
+        name = (serialized or {}).get("name")
+        if name:
+            self.called_tools.add(name)
+
+
 class AsyncTelegramCallbackHandler(AsyncCallbackHandler):
     """拦截 Agent 异步执行流，将工具调用状态实时回传到 Telegram 屏幕。"""
 
@@ -592,6 +638,10 @@ class TelegramBotBase:
     def get_tool_status_map(self) -> dict[str, str]:
         """追加到默认工具状态映射的领域专属条目（子类重写）。"""
         return {}
+
+    def get_memory_write_tool_names(self) -> frozenset[str]:
+        """本 bot 视为"记忆写入"的工具名集合（写入校验用），子类可扩展。"""
+        return _MEMORY_WRITE_TOOLS
 
     def get_extra_status_text(self) -> str:
         """模型状态文本（子类重写），/status 命令显示内容。"""
@@ -980,22 +1030,53 @@ class TelegramBotBase:
         callbacks: list[AsyncCallbackHandler] = list(extra_callbacks or [])
         if obs is not None:
             callbacks.append(OmnibotObsCallbackHandler(obs, trace_id, provider=self.obs_provider))
+        audit = _ToolCallAuditHandler()
+        callbacks.append(audit)
 
         self.set_observability_context(obs)
         obs_token = push_current_observer(obs)
         try:
-            response = await self.agent.ainvoke(
-                {
-                    "input": user_msg,
-                    "user_profile": self.get_user_profile_fn(),
-                    "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
-                },
-                config={
-                    "configurable": {"session_id": memory_session_id},
-                    "callbacks": callbacks,
-                },
-            )
-            reply_text = response["output"]
+            invoke_config = {
+                "configurable": {"session_id": memory_session_id},
+                "callbacks": callbacks,
+            }
+
+            async def _invoke(text: str) -> str:
+                response = await self.agent.ainvoke(
+                    {
+                        "input": text,
+                        "user_profile": self.get_user_profile_fn(),
+                        "current_time": datetime.now().strftime("%Y年%m月%d日 %H:%M:%S"),
+                    },
+                    config=invoke_config,
+                )
+                return response["output"]
+
+            reply_text = await _invoke(user_msg)
+
+            # 幻觉写入校验：回复声称"已更新记忆/流水"但本轮零写入工具调用 → 强制重试一次。
+            # 兜底防线；第一道防线是 system prompt 的写入诚实红线 + record_trade 原子工具。
+            write_tools = self.get_memory_write_tool_names()
+
+            def _claims_write_without_write(text: str) -> bool:
+                visible = strip_think_blocks(text)
+                return bool(
+                    _MEMORY_WRITE_CLAIM_PATTERN.search(visible)
+                    and not (audit.called_tools & write_tools)
+                )
+
+            if _claims_write_without_write(reply_text):
+                logger.warning(
+                    f"[write-enforcement] {trace_id}: 回复声称已写入但零写入工具调用，强制重试"
+                )
+                if obs is not None:
+                    obs.log_message("user", _WRITE_ENFORCEMENT_RETRY_PROMPT, trace_id=trace_id)
+                reply_text = await _invoke(_WRITE_ENFORCEMENT_RETRY_PROMPT)
+                if _claims_write_without_write(reply_text):
+                    logger.error(
+                        f"[write-enforcement] {trace_id}: 重试后仍幻觉写入，追加用户可见告警"
+                    )
+                    reply_text += _WRITE_ENFORCEMENT_FAILED_WARNING
 
             if obs is not None:
                 for think_content in extract_think_blocks(reply_text):
