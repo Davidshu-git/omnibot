@@ -919,6 +919,19 @@ def _load_ticker_trades(memory_dir: Path, formatted_ticker: str, close: "pd.Seri
     return trades
 
 
+# 趋势弹窗显示窗口白名单：显示窗口 → (yfinance 取数 period, 显示交易日数)。
+# 取数比显示窗口多约一年（250 交易日）做均线预热——若按显示窗口原样取数，
+# 短窗口（6mo/1y）的 MA250 会整段 NaN。yfinance 无 3y/6y 档，故 2y 显示
+# 取 5y、5y 显示取 10y。"max" 无预热可加，年线头部 NaN 是其固有形态。
+TREND_WINDOWS: Dict[str, Tuple[str, Optional[int]]] = {
+    "6mo": ("2y", 126),
+    "1y": ("5y", 250),
+    "2y": ("5y", 500),
+    "5y": ("10y", 1250),
+    "max": ("max", None),
+}
+
+
 def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path] = None) -> Dict[str, Any]:
     """获取个股价格历史 + 多周期均线（MA20/60/250）+ 偏离度历史分位。
 
@@ -928,35 +941,46 @@ def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path
 
     Args:
         ticker: 股票/加密货币代码（原始或已格式化均可）。
-        period: yfinance 合法 period 值，默认 "2y"（约 500 个交易日，
-            足够计算 MA250 并留出约 250 个非 NaN 点用于偏离度历史分位）。
+        period: 显示窗口，须为 ``TREND_WINDOWS`` 之一（默认 "2y"）。实际取数
+            比显示窗口长（均线预热），均线与偏离度分位在全量取数上计算——
+            切换窗口只裁剪图上可见范围，不改变趋势结论。
         memory_dir: 记忆文件目录（含 transaction_logs.jsonl），提供则附带该标的
-            的历史买卖点（``trades``）；``None`` 时跳过（``trades`` 返回空列表）。
+            的历史买卖点（``trades``，仅显示窗口内的）；``None`` 时跳过。
 
     Returns:
-        Dict[str, Any]: 含 ``ticker``/``latest_price``/``latest_date``/
+        Dict[str, Any]: 含 ``ticker``/``period``/``latest_price``/``latest_date``/
             ``series``（逐日 date/close/ma20/ma60/ma250）/``ma20``/``ma60``/
             ``ma250``（各自的 ``_ma_trend_info`` 结果）/``regime_note``/
             ``trades``（``_load_ticker_trades`` 结果）。
 
     Raises:
+        ValueError: period 不在 ``TREND_WINDOWS`` 白名单内。
         IndexError: 未取到历史数据。
     """
+    if period not in TREND_WINDOWS:
+        raise ValueError(
+            f"period 必须是 {sorted(TREND_WINDOWS)} 之一，收到 '{period}'"
+        )
+    fetch_period, keep_days = TREND_WINDOWS[period]
+
     formatted_ticker = format_universal_ticker(ticker)
-    hist = yf.Ticker(formatted_ticker).history(period=period)
+    hist = yf.Ticker(formatted_ticker).history(period=fetch_period)
 
     if hist is None or hist.empty:
         raise IndexError(f"未找到 {formatted_ticker} 的历史数据，无法计算趋势")
 
-    close = hist["Close"].dropna()
-    ma20 = close.rolling(20).mean()
-    ma60 = close.rolling(60).mean()
-    ma250 = close.rolling(250).mean()
-    latest_price = float(close.iloc[-1])
+    close_full = hist["Close"].dropna()
+    ma20 = close_full.rolling(20).mean()
+    ma60 = close_full.rolling(60).mean()
+    ma250 = close_full.rolling(250).mean()
+    latest_price = float(close_full.iloc[-1])
+    # 显示窗口裁剪只作用于 series/trades；均线方向与分位用全量数据，
+    # 保证同一标的在不同窗口下的趋势结论一致。
+    close = close_full.iloc[-keep_days:] if keep_days is not None else close_full
 
-    ma20_info = _ma_trend_info(ma20, close, latest_price, _MA_TREND_LOOKBACK["ma20"])
-    ma60_info = _ma_trend_info(ma60, close, latest_price, _MA_TREND_LOOKBACK["ma60"])
-    ma250_info = _ma_trend_info(ma250, close, latest_price, _MA_TREND_LOOKBACK["ma250"])
+    ma20_info = _ma_trend_info(ma20, close_full, latest_price, _MA_TREND_LOOKBACK["ma20"])
+    ma60_info = _ma_trend_info(ma60, close_full, latest_price, _MA_TREND_LOOKBACK["ma60"])
+    ma250_info = _ma_trend_info(ma250, close_full, latest_price, _MA_TREND_LOOKBACK["ma250"])
 
     def _num_or_none(v: float) -> Optional[float]:
         return round(float(v), 4) if pd.notna(v) else None
@@ -976,6 +1000,7 @@ def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path
 
     return {
         "ticker": formatted_ticker,
+        "period": period,
         "latest_price": round(latest_price, 4),
         "latest_date": close.index[-1].strftime("%Y-%m-%d"),
         "series": series,

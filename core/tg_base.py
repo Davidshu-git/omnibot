@@ -1104,7 +1104,7 @@ class TelegramBotBase:
         """
         return None
 
-    async def get_stock_trend(self, ticker: str) -> Optional[dict]:
+    async def get_stock_trend(self, ticker: str, period: str = "2y") -> Optional[dict]:
         """钩子：个股价格 + 多周期均线趋势（obs 总控台「趋势分析」弹窗触发）。
 
         基类默认不支持，返回 ``None`` → HTTP 404。持仓类 bot（如 StockBot）覆写，
@@ -1112,6 +1112,8 @@ class TelegramBotBase:
 
         Args:
             ticker: 股票/加密货币代码（原始或已格式化均可）。
+            period: 显示窗口（如 "6mo"/"1y"/"2y"/"5y"/"max"），白名单由
+                覆写方（估值引擎 ``TREND_WINDOWS``）校验。
 
         Returns:
             None: 该 bot 不支持个股趋势查询（非持仓类，如 EHS）。
@@ -1344,8 +1346,13 @@ class TelegramBotBase:
                 return web.json_response(
                     {"detail": "ticker must be a non-empty string"}, status=422
                 )
+            period = body.get("period", "2y")
+            if not isinstance(period, str) or not period.strip():
+                return web.json_response(
+                    {"detail": "period must be a non-empty string"}, status=422
+                )
 
-            result = await self.get_stock_trend(ticker.strip())
+            result = await self.get_stock_trend(ticker.strip(), period=period.strip())
             if result is None:
                 return web.json_response(
                     {"detail": "stock trend not supported by this bot"}, status=404

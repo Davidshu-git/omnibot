@@ -279,6 +279,8 @@ export interface StockTrend {
   status: string;
   detail?: string;
   ticker?: string;
+  /** 本次结果对应的显示窗口（6mo/1y/2y/5y/max）。 */
+  period?: string;
   latest_price?: number;
   latest_date?: string;
   series?: StockTrendPoint[];
@@ -390,8 +392,9 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
       "/api/external/stock-bot/refresh-portfolio",
     ),
   // 个股趋势分析（价格 + MA20/60/250）：仅 stock bot 支持，硬编码 project。
-  stockTrend: (ticker: string) =>
-    postJson<StockTrend>("/api/external/stock-bot/stock-trend", { ticker }),
+  // period 为显示窗口（6mo/1y/2y/5y/max，白名单在估值引擎 TREND_WINDOWS）。
+  stockTrend: (ticker: string, period: string) =>
+    postJson<StockTrend>("/api/external/stock-bot/stock-trend", { ticker, period }),
 
   // 选股筛股：仅 stock bot 支持，硬编码 project。
   screenerUniverse: () => post<{ tickers: string[] }>("/api/external/stock-bot/screener-universe"),

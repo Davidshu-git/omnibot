@@ -149,12 +149,16 @@ class StockBot(TelegramBotBase):
 
     _STOCK_TREND_CACHE_TTL_S: int = 300
 
-    async def get_stock_trend(self, ticker: str) -> dict:
+    async def get_stock_trend(self, ticker: str, period: str = "2y") -> dict:
         """obs 面板「趋势分析」弹窗：线程池取价 + 计算均线（5 分钟缓存）。
 
         ``fetch_stock_trend`` 同步且联网（yfinance 取价），必须丢进
         ``run_in_executor`` 线程池，避免阻塞与 Telegram polling 共用的事件循环。
         惰性初始化缓存字典（而非可变类属性默认值），避免被同类所有实例共享。
+
+        Args:
+            ticker: 股票/加密货币代码。
+            period: 显示窗口（``TREND_WINDOWS`` 白名单，引擎内校验）。
 
         Returns:
             dict: ``status=ok`` 附趋势数据；``status=error`` 附 ``detail``。
@@ -162,7 +166,7 @@ class StockBot(TelegramBotBase):
         if not hasattr(self, "_stock_trend_cache"):
             self._stock_trend_cache: dict[str, tuple[float, dict]] = {}
 
-        cache_key = ticker.strip().upper()
+        cache_key = f"{ticker.strip().upper()}|{period}"
         now = time.monotonic()
         cached = self._stock_trend_cache.get(cache_key)
         if cached and (now - cached[0]) < self._STOCK_TREND_CACHE_TTL_S:
@@ -170,9 +174,11 @@ class StockBot(TelegramBotBase):
 
         loop = asyncio.get_running_loop()
         try:
-            data = await loop.run_in_executor(None, lambda: fetch_stock_trend(ticker, memory_dir=MEMORY_DIR))
+            data = await loop.run_in_executor(
+                None, lambda: fetch_stock_trend(ticker, period=period, memory_dir=MEMORY_DIR)
+            )
         except Exception as exc:  # 取价/计算任何异常都不冒泡成 500 裸栈
-            logger.exception("[get_stock_trend] fetch_stock_trend 执行失败 ticker=%s", ticker)
+            logger.exception("[get_stock_trend] fetch_stock_trend 执行失败 ticker=%s period=%s", ticker, period)
             return {"status": "error", "detail": str(exc) or "trend fetch failed"}
 
         result = {"status": "ok", **data}

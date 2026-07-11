@@ -13,11 +13,24 @@ import { fmtPct, pnlColor } from "@/lib/format";
 type TrendLineKey = "close" | "ma20" | "ma60" | "ma250";
 const ALL_LINES_VISIBLE: Record<TrendLineKey, boolean> = { close: true, ma20: true, ma60: true, ma250: true };
 
+// 显示窗口档位——须与估值引擎 TREND_WINDOWS 白名单一致（后端多取一年做均线预热，
+// 短窗口下 MA250 依然有效；切窗口只裁剪可见范围，均线方向/分位结论不变）。
+const TREND_PERIODS = [
+  { value: "6mo", label: "6月" },
+  { value: "1y", label: "1年" },
+  { value: "2y", label: "2年" },
+  { value: "5y", label: "5年" },
+  { value: "max", label: "全部" },
+] as const;
+type TrendPeriod = (typeof TREND_PERIODS)[number]["value"];
+const DEFAULT_PERIOD: TrendPeriod = "2y";
+
 export function StockTrendModal({ ticker, onClose }: { ticker: string | null; onClose: () => void }) {
   const [data, setData] = useState<StockTrend | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [visible, setVisible] = useState<Record<TrendLineKey, boolean>>(ALL_LINES_VISIBLE);
+  const [period, setPeriod] = useState<TrendPeriod>(DEFAULT_PERIOD);
   const toggleLine = (key: TrendLineKey) => setVisible((v) => ({ ...v, [key]: !v[key] }));
 
   useEffect(() => {
@@ -26,7 +39,7 @@ export function StockTrendModal({ ticker, onClose }: { ticker: string | null; on
     setErr("");
     setData(null);
     setVisible(ALL_LINES_VISIBLE); // 每次换标的重置线条可见性，避免带着上一个 ticker 的隐藏状态
-    api.stockTrend(ticker)
+    api.stockTrend(ticker, period)
       .then((d) => {
         if (d.status !== "ok") {
           setErr(d.detail || "查询失败");
@@ -36,7 +49,7 @@ export function StockTrendModal({ ticker, onClose }: { ticker: string | null; on
       })
       .catch((e) => setErr(String(e)))
       .finally(() => setLoading(false));
-  }, [ticker]);
+  }, [ticker, period]);
 
   useEffect(() => {
     if (!ticker) return;
@@ -66,6 +79,21 @@ export function StockTrendModal({ ticker, onClose }: { ticker: string | null; on
             {ticker} 趋势分析
           </h2>
           <button onClick={onClose} className="tag-btn" style={{ marginLeft: "auto", fontSize: 12 }}>✕ 关闭</button>
+        </div>
+
+        {/* 显示窗口切换：切换即重新拉取（bot 侧按 ticker+period 各缓存 5 分钟） */}
+        <div style={{ display: "flex", gap: 6, marginBottom: "0.75rem" }}>
+          {TREND_PERIODS.map((p) => (
+            <button
+              key={p.value}
+              onClick={() => setPeriod(p.value)}
+              disabled={loading}
+              className={`tag-btn${period === p.value ? " active" : ""}`}
+              style={{ fontSize: 11 }}
+            >
+              {p.label}
+            </button>
+          ))}
         </div>
 
         {loading && <p style={{ color: "var(--text-dim)", fontSize: 13 }}>加载中…</p>}

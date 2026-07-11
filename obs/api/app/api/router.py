@@ -753,6 +753,13 @@ async def proxy_stock_trend(project: str, body: dict):
     ticker = body.get("ticker")
     if not isinstance(ticker, str) or not ticker.strip():
         raise HTTPException(status_code=422, detail="ticker must be a non-empty string")
+    payload = {"ticker": ticker.strip()}
+    # 显示窗口（可选）：透传给 bot，白名单由估值引擎 TREND_WINDOWS 校验。
+    period = body.get("period")
+    if period is not None:
+        if not isinstance(period, str) or not period.strip():
+            raise HTTPException(status_code=422, detail="period must be a non-empty string")
+        payload["period"] = period.strip()
 
     bot_url = urls[project].rstrip("/")
     try:
@@ -761,7 +768,7 @@ async def proxy_stock_trend(project: str, body: dict):
             r = await client.post(
                 f"{bot_url}/stock-trend",
                 headers={"X-OBS-Token": settings.obs_bot_chat_token},
-                json={"ticker": ticker.strip()},
+                json=payload,
             )
     except _httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
