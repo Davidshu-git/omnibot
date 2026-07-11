@@ -52,9 +52,10 @@ class TestBuy:
         assert data["现金·Neverless"] == "799.95 美元"
         # 回执必须回显落库值
         assert "3.0033 股" in out and "799.95 美元" in out
-        # 流水已追加
+        # 流水已追加，含结构化字段但买入不产生已实现盈亏
         logs = _log_lines(memory_dir)
         assert len(logs) == 1 and logs[0]["action"] == "买入" and logs[0]["target"] == "NVDA"
+        assert logs[0]["currency"] == "USD" and "realized_pnl" not in logs[0]
         # 引擎解析器能读回
         pos = parse_user_profile_to_positions(data)
         assert pos["NVDA"]["shares"] == 3.0033 and pos["NVDA"]["cost_basis"] == 198.15
@@ -99,6 +100,11 @@ class TestSell:
         data = _profile(memory_dir)
         assert data["NVDA"] == "英伟达，1.2548 股，成本 199.10"
         assert data["现金·Neverless"] == "1141.66 美元"
+        # 已实现盈亏落进流水结构化字段：195.55 − 199.10×1 = −3.55（原生币种）
+        log = _log_lines(memory_dir)[0]
+        assert log["realized_pnl"] == -3.55 and log["currency"] == "USD"
+        assert log["ticker"] == "NVDA" and log["shares"] == 1.0
+        assert "已实现盈亏" in out
 
     def test_sell_all_deletes_position(self, memory_dir):
         out = _tool(memory_dir).invoke({
@@ -106,6 +112,9 @@ class TestSell:
         })
         assert out.startswith("✅") and "清仓" in out
         assert "BTC" not in _profile(memory_dir)
+        # 清仓后浮盈唯一去处是流水的 realized_pnl：555.0 − 60438.90×0.009197 ≈ −0.86
+        log = _log_lines(memory_dir)[0]
+        assert log["realized_pnl"] == -0.86 and log["currency"] == "USD"
 
     def test_oversell_rejected(self, memory_dir):
         out = _tool(memory_dir).invoke({

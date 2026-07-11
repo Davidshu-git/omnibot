@@ -236,6 +236,9 @@ export interface PortfolioSnapshot {
   total_cost?: number;
   total_profit_loss?: number;
   profit_loss_percent?: number;
+  /** 累计已实现盈亏（平仓落袋，按快照当日汇率折 CNY）；旧快照无此字段。 */
+  realized_pnl_total_cny?: number;
+  realized_pnl_by_currency?: Record<string, number>;
   securities_total_cny?: number;
   crypto_total_cny?: number;
   cash_total_cny?: number;

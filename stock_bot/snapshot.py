@@ -21,7 +21,7 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from stock_bot.valuation_engine import (
     calculate_portfolio_valuation,
@@ -36,6 +36,7 @@ BASE_DIR: Path = Path(__file__).resolve().parent.parent
 STOCK_MEMORY_DIR: Path = BASE_DIR / "data/stock/memory"
 SNAPSHOT_DIR: Path = BASE_DIR / "data/stock/snapshots"
 SNAPSHOT_FILE: Path = SNAPSHOT_DIR / "portfolio.jsonl"
+TRANSACTION_LOG_FILE: Path = STOCK_MEMORY_DIR / "transaction_logs.jsonl"
 
 
 def _load_user_profile() -> Dict[str, Any]:
@@ -56,6 +57,49 @@ def _load_user_profile() -> Dict[str, Any]:
         return {}
 
 
+def _aggregate_realized_pnl(
+    exchange_rates: Dict[str, float],
+) -> Tuple[Dict[str, float], float]:
+    """汇总交易流水中的累计已实现盈亏（减仓/清仓落袋部分）。
+
+    只统计带结构化 ``realized_pnl`` 字段的流水行（``record_trade`` 卖出时写入；
+    早期自由文本流水无此字段，天然跳过）。已实现盈亏以**原生币种**记账——
+    用户卖出后通常不换汇（如港币回款仍留在港币现金池），锁定卖出日汇率反而
+    虚构了一笔不存在的结售汇，故折 CNY 统一用**快照当时汇率**：CNY 口径的
+    已实现数字会随汇率轻微浮动，这正是未换汇的真实敞口。
+
+    Args:
+        exchange_rates: 估值引擎汇率表（如 ``{"HKD_CNY": 0.87, "USD_CNY": 7.2}``）。
+
+    Returns:
+        Tuple[Dict[str, float], float]: ``(按币种原生金额汇总, 折 CNY 总额)``。
+    """
+    by_currency: Dict[str, float] = {}
+    if TRANSACTION_LOG_FILE.exists():
+        try:
+            with open(TRANSACTION_LOG_FILE, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue  # 坏行跳过，不拖垮快照
+                    pnl = row.get("realized_pnl")
+                    if not isinstance(pnl, (int, float)) or isinstance(pnl, bool):
+                        continue
+                    cur = str(row.get("currency", "CNY"))
+                    by_currency[cur] = by_currency.get(cur, 0.0) + float(pnl)
+        except OSError as exc:
+            logger.warning("读取交易流水失败，已实现盈亏按 0 计：%s", exc)
+    total_cny = sum(
+        amount * exchange_rates.get(f"{cur}_CNY", 1.0)
+        for cur, amount in by_currency.items()
+    )
+    return {k: round(v, 2) for k, v in by_currency.items()}, round(total_cny, 2)
+
+
 def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """构建一条组合快照（含派生汇总字段）。
 
@@ -71,6 +115,8 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
               组合整体（CNY 口径，含现金）
             - ``profit_loss_percent``：盈亏率，分母仅持仓成本（不含现金），
               避免现金摊薄真实回报率
+            - ``realized_pnl_total_cny`` / ``realized_pnl_by_currency``：
+              累计已实现盈亏（来自流水结构化字段，按快照当时汇率折 CNY）
             - ``securities_total_cny`` / ``cash_total_cny``：证券 vs 现金拆分
             - ``has_pricing_error`` / ``errored_tickers``：快照质量标记，供净值走势过滤
             - ``currency_exposure``：按币种折 CNY 的敞口（证券 + 现金）
@@ -130,6 +176,12 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     fx_currencies = [c for c in currency_exposure if c != "CNY"]
     fx_trend = fetch_fx_trend(fx_currencies) if fx_currencies else {}
 
+    # 累计已实现盈亏：持仓清仓后浮盈从 total_profit_loss 消失，由此字段承接。
+    # 历史快照无此字段，obs 前端须 ?? 0 兜底。
+    realized_by_currency, realized_total_cny = _aggregate_realized_pnl(
+        valuation.get("exchange_rates", {})
+    )
+
     now = datetime.now()
     return {
         "date": now.strftime("%Y-%m-%d"),
@@ -139,6 +191,8 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "total_cost": valuation.get("total_cost", 0.0),
         "total_profit_loss": valuation.get("total_profit_loss", 0.0),
         "profit_loss_percent": valuation.get("profit_loss_percent", 0.0),
+        "realized_pnl_total_cny": realized_total_cny,
+        "realized_pnl_by_currency": realized_by_currency,
         "securities_total_cny": securities_total_cny,
         "crypto_total_cny": crypto_total_cny,
         "cash_total_cny": cash_total_cny,

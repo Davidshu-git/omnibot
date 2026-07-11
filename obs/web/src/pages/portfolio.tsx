@@ -92,6 +92,12 @@ export default function PortfolioPage() {
   const securities = holdings.filter((h) => h.type !== "crypto");
   const cryptos = holdings.filter((h) => h.type === "crypto");
   const cryptoTotal = snap?.crypto_total_cny ?? 0;
+  // 已实现盈亏（平仓落袋，按快照当日汇率折 CNY）；历史快照无此字段，?? 0 兜底。
+  const realizedPnl = snap?.realized_pnl_total_cny ?? 0;
+  const combinedPnl =
+    snap?.total_profit_loss === undefined || snap?.total_profit_loss === null
+      ? undefined
+      : snap.total_profit_loss + realizedPnl;
   const errored = (snap?.holdings ?? []).filter((h) => h.error);
   // 现金原序为 user_profile.json 书写顺序，同样按折 CNY 降序，与证券持仓口径一致。
   const cash = (snap?.cash_holdings ?? [])
@@ -206,12 +212,22 @@ export default function PortfolioPage() {
               </span>
             </KpiCard>
 
-            <KpiCard title="累计盈亏">
-              <span style={{ fontSize: 26, fontWeight: 800, color: pnlColor(snap?.total_profit_loss), fontVariantNumeric: "tabular-nums" }}>
-                {fmtCny(snap?.total_profit_loss)}
+            <KpiCard title="累计盈亏（浮动 + 已实现）">
+              <span style={{ fontSize: 26, fontWeight: 800, color: pnlColor(combinedPnl), fontVariantNumeric: "tabular-nums" }}>
+                {fmtCny(combinedPnl)}
               </span>
-              <span style={{ color: pnlColor(snap?.profit_loss_percent), fontSize: 13, fontWeight: 600, marginTop: 4 }}>
-                {fmtPct(snap?.profit_loss_percent)}
+              <span style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 4 }}>
+                浮动{" "}
+                <span style={{ color: pnlColor(snap?.total_profit_loss), fontWeight: 600 }}>
+                  {fmtCny(snap?.total_profit_loss)}（{fmtPct(snap?.profit_loss_percent)}）
+                </span>
+                {" · "}已实现{" "}
+                <span
+                  style={{ color: pnlColor(realizedPnl), fontWeight: 600 }}
+                  title="历史减仓/清仓落袋部分，按快照当日汇率折算；未换汇的外币回款会随汇率微动"
+                >
+                  {fmtCny(realizedPnl)}
+                </span>
               </span>
             </KpiCard>
           </div>

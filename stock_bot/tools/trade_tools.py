@@ -16,7 +16,11 @@ from typing import Any, Dict, Optional, Tuple
 from filelock import FileLock
 from langchain_core.tools import tool
 
-from stock_bot.valuation_engine import is_crypto_ticker
+from stock_bot.valuation_engine import (
+    detect_ticker_currency,
+    format_universal_ticker,
+    is_crypto_ticker,
+)
 
 import logging
 
@@ -159,6 +163,14 @@ def make_trade_tools(memory_dir: Path) -> list:
                 # ---- 第一步：全部校验与计算（不写盘）----
                 new_position_value: Optional[str] = None
                 position_cleared = False
+                # 卖出时的已实现盈亏（原生币种）。落进流水的结构化字段，供
+                # snapshot 汇总进总控台「累计收益」——清仓后持仓条目被删除，
+                # 浮盈若不在此刻转为已实现记录就会凭空蒸发（3033.HK 事故）。
+                realized_pnl: Optional[float] = None
+                trade_currency = (
+                    detect_ticker_currency(format_universal_ticker(ticker))
+                    if is_trade else ""
+                )
                 if is_trade:
                     old = _parse_position(str(data[ticker])) if ticker in data else None
                     if ticker in data and old is None:
@@ -193,6 +205,7 @@ def make_trade_tools(memory_dir: Path) -> list:
                                 f"❌ 卖出失败：[{ticker}] 当前仅持有 {_fmt_shares(old_shares)} {unit}，"
                                 f"不足以卖出 {_fmt_shares(shares)} {unit}。"
                             )
+                        realized_pnl = total_amount - old_cost * shares
                         remaining = old_shares - shares
                         if remaining < _CLEARED_THRESHOLD:
                             position_cleared = True
@@ -259,20 +272,40 @@ def make_trade_tools(memory_dir: Path) -> list:
                     f"单价约 {_fmt_cost(unit_price)}"
                     + (f"，{cash_account} 账户{'回款' if action == '卖出' else '支付'}"
                        if cash_account.strip() else "")
+                    + (f"，已实现盈亏 {realized_pnl:+.2f} {trade_currency}"
+                       if realized_pnl is not None else "")
                 )
                 log_target = ticker
             else:
                 details = f"{action} {total_amount:.2f}，账户余额变更为 '{new_cash_value}'"
                 log_target = cash_key or f"现金·{cash_account.strip()}"
-            entry = json.dumps({
+            record: Dict[str, Any] = {
                 "timestamp": time.time(),
                 "action": action,
                 "target": log_target,
                 "details": details,
-            }, ensure_ascii=False)
+            }
+            if is_trade:
+                # 结构化字段（details 之外的机器可读口径）：snapshot 汇总
+                # realized_pnl 折算进总控台；ticker/shares/total_amount 为
+                # 后续 TWR 时间加权收益的现金流地基。金额均为标的原生币种。
+                record.update({
+                    "ticker": ticker,
+                    "shares": shares,
+                    "total_amount": round(total_amount, 2),
+                    "currency": trade_currency,
+                })
+                if realized_pnl is not None:
+                    record["realized_pnl"] = round(realized_pnl, 2)
+            entry = json.dumps(record, ensure_ascii=False)
             with open(log_path, 'a', encoding='utf-8') as f:
                 f.write(entry + "\n")
             receipt_lines.append(f"流水已追加：{action} {log_target}（{details}）")
+            if realized_pnl is not None:
+                receipt_lines.append(
+                    f"本笔已实现盈亏：{realized_pnl:+.2f} {trade_currency}"
+                    f"（已计入流水，总控台累计收益按最新汇率折算展示）"
+                )
 
             receipt = "\n".join(f"- {line}" for line in receipt_lines)
             suffix = ("\n" + "\n".join(warnings)) if warnings else ""
