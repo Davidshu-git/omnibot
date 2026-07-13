@@ -9,6 +9,7 @@
 """
 
 import json
+import re
 import socket
 import threading
 import yfinance as yf
@@ -37,6 +38,28 @@ class AkshareTimeoutError(Exception):
 # （如某次 BTC 因代码格式问题被当美股取到 $26.47 → -99.96%），而非真实行情。
 # 命中则在报告中标"待人工核实"并提示勿据此给加减仓建议，防止坏数据变成灾难报告。
 _SUSPECT_PNL_PCT = 90.0
+
+# ── user_profile.json 解析共享契约 ──────────────────────────────────
+# daily_job.audit_user_profile_parsing 的"疑似漏算"判定必须与本模块解析器
+# 使用完全相同的口径，否则审计会静默漂移（漏报或误报），故集中在此导出。
+# 非持仓的固定偏好类 key，解析与审计都直接跳过。
+PROFILE_SKIP_KEYS = frozenset({"风险偏好", "投资目标", "备注", "持仓策略"})
+# 股票代码只含 ASCII 字母/数字/点/连字符（AAPL、600519、3033.HK、BRK-B）。
+# 含中文等非此格式的键（如"持仓信息"汇总、"价格提醒"备注）不是持仓。
+TICKER_KEY_PATTERN = re.compile(r'^[A-Za-z0-9.\-]{1,12}$')
+
+
+def normalize_cash_platform(key: str) -> str:
+    """把现金条目 key（如 `现金·汇丰`）归一化为平台名。
+
+    Args:
+        key: user_profile.json 中以"现金"开头的原始 key。
+
+    Returns:
+        str: 平台名；剥离后为空则原样返回 key。
+    """
+    return key.replace("现金·", "").replace("现金", "").strip("·： :") or key
+
 
 DEFAULT_EXCHANGE_RATES = {
     "USD_CNY": 7.20,
@@ -1201,17 +1224,11 @@ def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict
                 "513180": {"shares": 10000, "cost_basis": 0.677, "type": "etf", "company_name": "-"}
             }
     """
-    import re
-    
     positions = {}
-    skip_keys = {"风险偏好", "投资目标", "备注", "持仓策略"}
-    # 股票代码只含 ASCII 字母/数字/点/连字符（AAPL、600519、3033.HK、BRK-B）。
-    # 含中文等非此格式的键（如"持仓信息"汇总、"价格提醒"备注）不是持仓，直接跳过，
-    # 避免把自然语言备注误当 ticker 去查价、产生熔断报错行。
-    ticker_pattern = re.compile(r'^[A-Za-z0-9.\-]{1,12}$')
 
     for key, value in user_data.items():
-        if key in skip_keys or not ticker_pattern.match(str(key)):
+        # 非持仓 key 直接跳过，避免把自然语言备注误当 ticker 去查价、产生熔断报错行。
+        if key in PROFILE_SKIP_KEYS or not TICKER_KEY_PATTERN.match(str(key)):
             continue
 
         try:
@@ -1274,8 +1291,6 @@ def parse_cash_assets(user_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         List[Dict]: 每项含 platform / amount / currency（USD/HKD/CNY）。
         无法解析金额的条目跳过。
     """
-    import re
-
     cash_list: List[Dict[str, Any]] = []
     for key, value in user_data.items():
         if not str(key).startswith("现金"):
@@ -1298,7 +1313,7 @@ def parse_cash_assets(user_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             currency = "CNY"
 
         cash_list.append({
-            "platform": str(key).replace("现金·", "").replace("现金", "").strip("·： :") or str(key),
+            "platform": normalize_cash_platform(str(key)),
             "amount": amount,
             "currency": currency,
         })

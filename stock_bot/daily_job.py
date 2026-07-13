@@ -35,7 +35,10 @@ from core.model_registry import make_standard_registry
 
 socket.setdefaulttimeout(30)
 from stock_bot.valuation_engine import (
+    PROFILE_SKIP_KEYS,
+    TICKER_KEY_PATTERN,
     fetch_stock_price_raw,
+    normalize_cash_platform,
     parse_user_profile_to_positions,
     parse_cash_assets,
     calculate_portfolio_valuation,
@@ -55,12 +58,16 @@ load_dotenv()
 
 class ReportState(TypedDict):
     """多智能体共享的会议桌状态结构"""
-    news_text: str
     user_memory: str
     indices_data: str
     portfolio_metrics: Dict[str, Any]
-    bull_analysis: str
-    bear_analysis: str
+    portfolio_context: Dict[str, Any]
+    market_context: Dict[str, Any]
+    data_quality: Dict[str, Any]
+    advice_policy: Dict[str, Any]
+    portfolio_analysis: str
+    market_analysis: str
+    risk_analysis: str
     final_report: str
 
 
@@ -337,8 +344,314 @@ def fetch_global_market_news() -> str:
     return "\n".join(news_items)
 
 
-def generate_market_report(news_text: str, user_memory: str, indices_data: str, portfolio_metrics: Dict[str, Any]) -> str:
-    """基于 LangGraph 的多智能体研报辩论引擎。
+def _round_money(value: Any) -> float:
+    """把数值安全转成两位小数 float。
+
+    Args:
+        value: 任意可能为数值的对象。
+
+    Returns:
+        float: 转换失败返回 0.0。
+    """
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pct(part: float, total: float) -> float:
+    """计算百分比，分母为 0 时返回 0。
+
+    Args:
+        part: 分子。
+        total: 分母。
+
+    Returns:
+        float: 百分比，两位小数。
+    """
+    return round(part / total * 100, 2) if total else 0.0
+
+
+def audit_user_profile_parsing(
+    user_data: Dict[str, Any],
+    positions: Dict[str, Dict[str, Any]],
+    cash_assets: List[Dict[str, Any]],
+) -> List[str]:
+    """审计用户记忆里疑似持仓/现金但未被解析的条目。
+
+    Args:
+        user_data: 原始 user_profile.json 内容。
+        positions: 已成功解析出的持仓。
+        cash_assets: 已成功解析出的现金条目。
+
+    Returns:
+        List[str]: 数据质量警告。为空表示未发现明显解析风险。
+    """
+    warnings: List[str] = []
+    parsed_cash_platforms = {str(c.get("platform", "")) for c in cash_assets}
+    # 教训/纠错类记忆经常复述"成本/股数"字样（如"曾把总成本当单价"），
+    # 不是持仓条目，不能触发漏算告警把日报打成 restricted。
+    lesson_markers = ("教训", "纠错", "错误", "复盘", "提醒")
+
+    for key, raw_value in user_data.items():
+        key_str = str(key)
+        value = str(raw_value)
+        if key_str in PROFILE_SKIP_KEYS or any(m in key_str for m in lesson_markers):
+            continue
+
+        if key_str.startswith("现金"):
+            if normalize_cash_platform(key_str) not in parsed_cash_platforms:
+                warnings.append(f"现金条目可能未解析：{key_str} -> {value}")
+            continue
+
+        looks_like_position = (
+            "成本" in value and any(unit in value for unit in ("股", "枚", "个"))
+        )
+        if looks_like_position and key_str not in positions:
+            reason = "key 非标准 ticker" if not TICKER_KEY_PATTERN.match(key_str) else "value 格式不符合解析器"
+            warnings.append(f"疑似持仓未入估值：{key_str} -> {value}（{reason}）")
+
+    return warnings
+
+
+def build_portfolio_context(
+    valuation: Dict[str, Any],
+    profile_warnings: List[str],
+) -> Dict[str, Any]:
+    """把估值结果整理成 PM 可用的结构化组合画像。
+
+    Args:
+        valuation: calculate_portfolio_valuation 的返回值。
+        profile_warnings: 用户记忆解析审计警告。
+
+    Returns:
+        Dict[str, Any]: 包含仓位、分类、现金、风险集中度等结构化字段。
+    """
+    total_value = _round_money(valuation.get("total_market_value", 0.0))
+    cash_total = _round_money(valuation.get("cash_total_cny", 0.0))
+    holdings = valuation.get("holdings", [])
+    successful_holdings = [h for h in holdings if isinstance(h, dict) and "error" not in h]
+    errored_holdings = [h for h in holdings if isinstance(h, dict) and h.get("error")]
+
+    enriched_holdings: List[Dict[str, Any]] = []
+    asset_groups: Dict[str, float] = {"stock": 0.0, "etf": 0.0, "crypto": 0.0, "cash": cash_total}
+    currency_exposure: Dict[str, float] = {}
+
+    for h in successful_holdings:
+        market_value = _round_money(h.get("market_value_cny", 0.0))
+        asset_type = str(h.get("type", "stock"))
+        asset_groups[asset_type] = asset_groups.get(asset_type, 0.0) + market_value
+
+        currency = str(h.get("currency", "CNY"))
+        if asset_type != "crypto":
+            currency_exposure[currency] = currency_exposure.get(currency, 0.0) + market_value
+
+        enriched_holdings.append({
+            "ticker": h.get("ticker"),
+            "company_name": h.get("company_name", "-"),
+            "type": asset_type,
+            "currency": currency,
+            "market_value_cny": market_value,
+            "weight_pct": _pct(market_value, total_value),
+            "cost_value_cny": _round_money(h.get("cost_value_cny", 0.0)),
+            "profit_loss_cny": _round_money(h.get("profit_loss_cny", 0.0)),
+            "profit_loss_percent": _round_money(h.get("profit_loss_percent", 0.0)),
+            "current_price": h.get("current_price"),
+            "suspect": bool(h.get("suspect")),
+        })
+
+    for cash in valuation.get("cash_holdings", []):
+        if not isinstance(cash, dict):
+            continue
+        currency = str(cash.get("currency", "CNY"))
+        currency_exposure[currency] = currency_exposure.get(currency, 0.0) + _round_money(cash.get("cny_value", 0.0))
+
+    enriched_holdings.sort(key=lambda x: x["market_value_cny"], reverse=True)
+    asset_group_weights = {
+        k: {"value_cny": round(v, 2), "weight_pct": _pct(v, total_value)}
+        for k, v in sorted(asset_groups.items())
+        if abs(v) > 0.01
+    }
+
+    max_holding = enriched_holdings[0] if enriched_holdings else None
+    top3_weight = round(sum(h["weight_pct"] for h in enriched_holdings[:3]), 2)
+    suspect_tickers = [str(h.get("ticker")) for h in successful_holdings if h.get("suspect")]
+
+    risk_flags: List[str] = []
+    if max_holding and max_holding["weight_pct"] >= 35:
+        risk_flags.append(f"单一标的 {max_holding['ticker']} 占比 {max_holding['weight_pct']:.2f}%，集中度偏高")
+    if top3_weight >= 70:
+        risk_flags.append(f"前三大持仓合计占比 {top3_weight:.2f}%，组合分散度不足")
+    if _pct(cash_total, total_value) < 5 and total_value > 0:
+        risk_flags.append("现金比例低于 5%，调仓/补仓弹性不足")
+    crypto_weight = asset_group_weights.get("crypto", {}).get("weight_pct", 0.0)
+    if crypto_weight >= 20:
+        risk_flags.append(f"加密货币占比 {crypto_weight:.2f}%，波动敞口较高")
+
+    return {
+        "total_market_value_cny": total_value,
+        "total_cost_cny": _round_money(valuation.get("total_cost", 0.0)),
+        "total_profit_loss_cny": _round_money(valuation.get("total_profit_loss", 0.0)),
+        "profit_loss_percent": _round_money(valuation.get("profit_loss_percent", 0.0)),
+        "cash_total_cny": cash_total,
+        "cash_weight_pct": _pct(cash_total, total_value),
+        "asset_groups": asset_group_weights,
+        "currency_exposure": {
+            k: {"value_cny": round(v, 2), "weight_pct": _pct(v, total_value)}
+            for k, v in sorted(currency_exposure.items())
+        },
+        "currency_exposure_note": "加密货币作为独立资产类别统计在 asset_groups，不计入币种敞口，故各币种加总可能小于总市值。",
+        "holdings": enriched_holdings,
+        "top_holdings": enriched_holdings[:5],
+        "max_single_position": max_holding,
+        "top3_weight_pct": top3_weight,
+        "errored_tickers": [str(h.get("ticker", "UNKNOWN")) for h in errored_holdings],
+        "suspect_tickers": suspect_tickers,
+        "profile_warnings": profile_warnings,
+        "risk_flags": risk_flags,
+    }
+
+
+def build_market_context(news_text: str, indices_data: str) -> Dict[str, Any]:
+    """整理市场新闻上下文，避免 PM 直接被 200 条快讯淹没。
+
+    Args:
+        news_text: 已聚合去重的新闻文本。
+        indices_data: 核心指数文本。
+
+    Returns:
+        Dict[str, Any]: 新闻数量、核心指数、精选头条等。
+    """
+    news_lines = [line.strip() for line in news_text.splitlines() if line.strip()]
+    # 新闻按时间倒序排列，只取头部会偏向收盘前最后一两个小时的快讯、
+    # 丢掉全天叙事，故超量时按等距抽样覆盖整个时间范围。
+    max_sample = 80
+    if len(news_lines) <= max_sample:
+        headline_sample = news_lines
+    else:
+        step = len(news_lines) / max_sample
+        headline_sample = [news_lines[int(i * step)] for i in range(max_sample)]
+    return {
+        "indices": indices_data,
+        "news_count": len(news_lines),
+        "headline_sample": headline_sample,
+        "sample_note": "样本按时间等距抽取以覆盖全天，非仅最新快讯。",
+        "source_note": "新闻来自新浪/东财财经快讯；当主源产出不足时可能混入 DuckDuckGo 兜底结果。",
+    }
+
+
+def build_data_quality(
+    market_context: Dict[str, Any],
+    portfolio_context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """根据行情、新闻、估值结果生成数据质量门禁。
+
+    Args:
+        market_context: build_market_context 的结果。
+        portfolio_context: build_portfolio_context 的结果。
+
+    Returns:
+        Dict[str, Any]: status 为 ok/restricted。
+    """
+    issues: List[str] = []
+    restrictions: List[str] = []
+
+    if market_context.get("news_count", 0) < _MIN_NEWS_ITEMS:
+        issues.append(f"新闻样本仅 {market_context.get('news_count', 0)} 条，市场叙事可信度下降")
+        restrictions.append("不得基于单日新闻给出激进买卖建议")
+
+    errored_tickers = portfolio_context.get("errored_tickers", [])
+    if errored_tickers:
+        issues.append("以下标的取价失败：" + "、".join(errored_tickers))
+        restrictions.append("不得对取价失败标的给出加仓/减仓/清仓建议")
+
+    suspect_tickers = portfolio_context.get("suspect_tickers", [])
+    if suspect_tickers:
+        issues.append("以下标的盈亏率异常，疑似价格或成本数据问题：" + "、".join(suspect_tickers))
+        restrictions.append("不得对异常标的给出任何交易动作，只能要求人工核实")
+
+    profile_warnings = portfolio_context.get("profile_warnings", [])
+    if profile_warnings:
+        issues.extend(profile_warnings)
+        restrictions.append("在记忆解析警告未处理前，不得声称组合数据完整")
+
+    # 目前每类 issue 都伴随硬性限制，status 只有 ok / restricted 两态；
+    # 若未来出现"仅提示不限制"的 issue，再在此引入 warning 中间态。
+    status = "restricted" if restrictions else "ok"
+
+    return {
+        "status": status,
+        "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "issues": issues,
+        "restrictions": restrictions,
+    }
+
+
+def build_advice_policy(portfolio_context: Dict[str, Any], data_quality: Dict[str, Any]) -> Dict[str, Any]:
+    """生成日报最终建议的硬约束。
+
+    Args:
+        portfolio_context: 组合画像。
+        data_quality: 数据质量门禁。
+
+    Returns:
+        Dict[str, Any]: 给 PM 节点使用的建议规则。
+    """
+    max_position = portfolio_context.get("max_single_position") or {}
+    max_ticker = max_position.get("ticker")
+    max_weight = max_position.get("weight_pct", 0)
+
+    hard_rules = [
+        "所有操作建议必须写成：动作 / 对象 / 触发条件 / 建议幅度 / 依据 / 主要风险 / 置信度。",
+        "没有明确证据时，默认建议为观察，不得为了显得有用而强行交易。",
+        "不得建议一次性满仓、清仓或追涨杀跌；仓位调整必须给出百分比上限。",
+        "不得修改系统提供的财务表格数字。",
+        "若数据质量 status != ok，必须先输出数据限制，并降低建议强度。",
+    ]
+    if max_ticker and max_weight >= 35:
+        hard_rules.append(f"{max_ticker} 已是最大持仓且占比 {max_weight:.2f}%，除非给出强证据，否则不得继续加仓。")
+    if data_quality.get("restrictions"):
+        hard_rules.extend(str(r) for r in data_quality["restrictions"])
+
+    return {
+        "default_action": "观察",
+        "max_single_trade_weight_pct": 5,
+        "confidence_levels": ["低", "中", "高"],
+        "hard_rules": hard_rules,
+        "required_output_schema": {
+            "action": "观察/减仓/加仓/再平衡/核实数据",
+            "target": "标的或资产类别",
+            "condition": "触发条件；不能无条件交易",
+            "size": "建议幅度，如 总净值 1%-3%，或 无操作",
+            "evidence": "必须引用组合画像、指数或新闻样本中的事实",
+            "risk": "该建议最大的反向风险",
+            "confidence": "低/中/高",
+        },
+    }
+
+
+def _to_prompt_json(data: Dict[str, Any]) -> str:
+    """把结构化上下文稳定序列化为中文 prompt 友好的 JSON。
+
+    Args:
+        data: 待序列化字典。
+
+    Returns:
+        str: ensure_ascii=False 的缩进 JSON。
+    """
+    return json.dumps(data, ensure_ascii=False, indent=2, default=str)
+
+
+def generate_market_report(
+    user_memory: str,
+    indices_data: str,
+    portfolio_metrics: Dict[str, Any],
+    portfolio_context: Dict[str, Any],
+    market_context: Dict[str, Any],
+    data_quality: Dict[str, Any],
+    advice_policy: Dict[str, Any],
+) -> str:
+    """基于 LangGraph 的多智能体日报决策约束引擎。
 
     LLM 选择跟随 ``data/stock/daily_model_settings.json``（盘后日报专属，与交互 bot 的
     主控模型 ``model_settings.json`` 解耦）。在 obs 主界面「日报模型」chip 或 Telegram
@@ -379,52 +692,97 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str, 
             kwargs["extra_body"] = cfg.extra_body
         return cfg.llm_class(**kwargs)
 
-    llm = _build_llm(0.7)     # 牛熊辩论节点：激进发散，挖掘极端多空逻辑
-    pm_llm = _build_llm(0.1)  # PM 裁判节点：保守收敛，确保最终结论严谨客观
+    analyst_llm = _build_llm(0.2)  # 分析节点：低温，强调事实提炼而非情绪发散
+    risk_llm = _build_llm(0.1)     # 风控节点：低温，强调约束和禁止动作
+    pm_llm = _build_llm(0.1)       # PM 节点：保守收敛，输出可执行但受限的建议
 
-    def bull_node(state: ReportState):
-        console.print("[bold green]🐂 [Agent 1] 激进策略师正在挖掘利好与翻倍逻辑...[/bold green]")
+    def portfolio_node(state: ReportState):
+        console.print("[bold green]📊 [Agent 1] 组合分析师正在计算仓位画像与盈亏归因...[/bold green]")
         prompt = ChatPromptTemplate.from_template(
-            "你是一位极度乐观的激进策略师（The Bull）。你的任务是从以下信息中死命挖掘利好、技术突破、翻倍逻辑和政策支持。忽略一切风险因素！\n"
-            "【今日指数】：{indices_data}\n"
-            "【全球资讯】：{news_text}\n"
-            "【用户持仓】：{user_memory}\n"
-            "请输出一份针对该用户持仓的【激进看多分析】（限 400 字以内，语气要充满激情、带点华尔街狼性的煽动性）。"
+            "你是组合分析师，只能基于【结构化组合画像】和【精准财务表格】分析，不得编造估值、目标价或新闻。\n"
+            "输出要求：\n"
+            "1. 列出组合最重要的 3 个事实：仓位集中度、现金比例、资产类别/币种敞口。\n"
+            "2. 解释累计盈亏主要来自哪些持仓或资产类别。\n"
+            "3. 标出需要 PM 注意的组合层面风险。\n"
+            "4. 不给买卖建议，只给事实判断。限 450 字。\n\n"
+            "【结构化组合画像 JSON】\n{portfolio_context_json}\n\n"
+            "【精准财务表格】\n{markdown_report}"
         )
-        chain = prompt | llm
-        res = chain.invoke(state)
-        return {"bull_analysis": res.content}
+        chain = prompt | analyst_llm
+        res = chain.invoke({
+            "portfolio_context_json": _to_prompt_json(state["portfolio_context"]),
+            "markdown_report": state["portfolio_metrics"].get("markdown_report", "暂无明细数据"),
+        })
+        return {"portfolio_analysis": res.content}
 
-    def bear_node(state: ReportState):
-        console.print("[bold red]🐻 [Agent 2] 首席风控官正在嗅探黑天鹅与危机...[/bold red]")
+    def market_node(state: ReportState):
+        console.print("[bold cyan]🌍 [Agent 2] 市场分析师正在提炼指数与新闻相关性...[/bold cyan]")
         prompt = ChatPromptTemplate.from_template(
-            "你是一位极度悲观、甚至有被迫害妄想症的首席风控官（The Bear）。你的任务是从以下信息中专门挖掘地缘政治、泡沫、供应链断裂等一切可能导致用户亏钱的隐患。对利好视而不见！\n"
-            "【今日指数】：{indices_data}\n"
-            "【全球资讯】：{news_text}\n"
-            "【用户持仓】：{user_memory}\n"
-            "请输出一份针对该用户持仓的【极度看空与风险警告】（限 400 字以内，语气要极其严厉、警惕）。"
+            "你是市场分析师。你的任务是把市场信息和用户组合相关联，而不是写泛泛宏观评论。\n"
+            "输出要求：\n"
+            "1. 总结核心指数表现。\n"
+            "2. 从新闻样本中提炼最多 5 条与用户持仓/资产类别可能相关的线索。\n"
+            "3. 明确说明哪些新闻只是背景噪声，不足以支持交易。\n"
+            "4. 不给买卖建议，只给市场证据强弱判断。限 500 字。\n\n"
+            "【市场上下文 JSON】\n{market_context_json}\n\n"
+            "【用户长期记忆】\n{user_memory}\n\n"
+            "【结构化组合画像 JSON】\n{portfolio_context_json}"
         )
-        chain = prompt | llm
-        res = chain.invoke(state)
-        return {"bear_analysis": res.content}
+        chain = prompt | analyst_llm
+        res = chain.invoke({
+            "market_context_json": _to_prompt_json(state["market_context"]),
+            "user_memory": state["user_memory"],
+            "portfolio_context_json": _to_prompt_json(state["portfolio_context"]),
+        })
+        return {"market_analysis": res.content}
+
+    def risk_node(state: ReportState):
+        console.print("[bold red]🛡️ [Agent 3] 风控官正在生成建议边界和禁止动作...[/bold red]")
+        prompt = ChatPromptTemplate.from_template(
+            "你是风控官。你的任务不是预测涨跌，而是规定今天哪些建议可以给、哪些必须禁止。\n"
+            "输出要求：\n"
+            "1. 先检查 data_quality.status；若不是 ok，必须列出限制。\n"
+            "2. 根据组合画像列出风险预算：单笔最大调仓、是否允许加仓最大持仓、是否允许处理异常标的。\n"
+            "3. 给 PM 一组明确的禁止动作和允许动作。\n"
+            "4. 不写情绪化语言。限 450 字。\n\n"
+            "【数据质量 JSON】\n{data_quality_json}\n\n"
+            "【建议策略约束 JSON】\n{advice_policy_json}\n\n"
+            "【结构化组合画像 JSON】\n{portfolio_context_json}"
+        )
+        chain = prompt | risk_llm
+        res = chain.invoke({
+            "data_quality_json": _to_prompt_json(state["data_quality"]),
+            "advice_policy_json": _to_prompt_json(state["advice_policy"]),
+            "portfolio_context_json": _to_prompt_json(state["portfolio_context"]),
+        })
+        return {"risk_analysis": res.content}
 
     def pm_node(state: ReportState):
-        console.print("[bold magenta]👨‍⚖️ [Agent 3] 投资总监正在进行多空对决裁决与最终排版...[/bold magenta]")
-        system_prompt = """你是一位顶级的华尔街投资总监（PM）。你需要审视激进策略师（Bull）和首席风控官（Bear）的辩论，结合用户的【精准财务明细】，输出最终的盘后研报。
+        console.print("[bold magenta]👨‍⚖️ [Agent 4] 投资总监正在按风控约束生成最终日报...[/bold magenta]")
+        system_prompt = """你是一位顶级的华尔街投资总监（PM）。你需要审视组合分析师、市场分析师和风控官的结论，结合用户的【精准财务明细】，输出最终的盘后研报。
 
-你的回复必须严格采用 Markdown 格式，并强制包含以下三大核心模块：
+你的真正职责不是每天强行交易，而是把市场信息、组合画像、数据质量和风险预算整合成可执行但克制的投资备忘录。
 
-### 1. 🌍 宏观与多空博弈复盘
+你的回复必须严格采用 Markdown 格式，并强制包含以下四大核心模块：
+
+### 1. 🌍 市场证据与今日结论
 - 综合今日核心指数表现。
-- 提炼 Bull 和 Bear 的核心观点冲突，并给出你作为投资总监的最终客观评判（当前市场是该贪婪还是该恐惧？）。
+- 只保留和用户组合有关的市场线索；明确区分"强证据"与"背景噪声"。
+- 给出今日总判断：进攻 / 防守 / 观察（三选一），并说明原因。
 
-### 2. 💰 专属市值与盈亏归因分析
+### 2. 💰 组合画像与盈亏归因
 （在此处原封不动地插入系统提供的【精准财务数据】表格）
-（在此处结合多空双方的观点，对用户的【累计盈亏】进行深度归因分析）
+（在表格后结合组合分析师观点，解释仓位集中度、现金比例、资产类别/币种敞口和累计盈亏来源）
 
-### 3. ⚠️ 最终决断与调仓建议
-- 明确指出当前持仓最大的风险敞口在哪里。
-- 给出明确的、可操作的调仓建议（如：保持观望、降低某赛道仓位、逢低建仓等）。
+### 3. 🛡️ 数据质量与风控边界
+- 若 data_quality.status 不是 ok，必须把限制写在最前面。
+- 明确指出哪些标的不能给交易建议、哪些建议强度必须下调。
+
+### 4. ⚠️ 最终决断与行动清单
+- 必须使用 Markdown 表格，列名固定为：| 动作 | 对象 | 触发条件 | 建议幅度 | 依据 | 主要风险 | 置信度 |。
+- 每条建议都必须有触发条件；不得输出无条件加仓、无条件清仓。
+- 没有足够证据时，动作必须是"观察"或"核实数据"。
+- 建议幅度必须尊重 advice_policy.max_single_trade_weight_pct。
 
 ==============================
 🚨【系统内部潜规则】（绝对禁止输出以下任何文字到最终报告中）：
@@ -434,8 +792,13 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str, 
 """
         user_prompt = f"""
 【今日核心指数】：{state['indices_data']}
-【激进策略师观点】：\n{state['bull_analysis']}
-【首席风控官观点】：\n{state['bear_analysis']}
+【结构化组合画像 JSON】：\n{_to_prompt_json(state['portfolio_context'])}
+【市场上下文 JSON】：\n{_to_prompt_json(state['market_context'])}
+【数据质量 JSON】：\n{_to_prompt_json(state['data_quality'])}
+【建议策略约束 JSON】：\n{_to_prompt_json(state['advice_policy'])}
+【组合分析师观点】：\n{state['portfolio_analysis']}
+【市场分析师观点】：\n{state['market_analysis']}
+【风控官边界】：\n{state['risk_analysis']}
 【精准财务数据 - 持仓明细对账单】：\n{state['portfolio_metrics'].get("markdown_report", "暂无明细数据")}
 
 请生成今日全球盘后报告：
@@ -445,25 +808,31 @@ def generate_market_report(news_text: str, user_memory: str, indices_data: str, 
 
     workflow = StateGraph(ReportState)
     
-    workflow.add_node("bull", bull_node)
-    workflow.add_node("bear", bear_node)
+    workflow.add_node("portfolio", portfolio_node)
+    workflow.add_node("market", market_node)
+    workflow.add_node("risk", risk_node)
     workflow.add_node("pm", pm_node)
     
-    workflow.add_edge(START, "bull")
-    workflow.add_edge("bull", "bear")
-    workflow.add_edge("bear", "pm")
+    workflow.add_edge(START, "portfolio")
+    workflow.add_edge("portfolio", "market")
+    workflow.add_edge("market", "risk")
+    workflow.add_edge("risk", "pm")
     workflow.add_edge("pm", END)
     
     app = workflow.compile()
     
-    console.print("\n[bold cyan]🧠 启动华尔街虚拟交易室 (Multi-Agent Debate) ...[/bold cyan]")
+    console.print("\n[bold cyan]🧠 启动日报决策约束引擎 (Portfolio / Market / Risk / PM) ...[/bold cyan]")
     final_state = app.invoke({
-        "news_text": news_text,
         "user_memory": user_memory,
         "indices_data": indices_data,
         "portfolio_metrics": portfolio_metrics,
-        "bull_analysis": "",
-        "bear_analysis": "",
+        "portfolio_context": portfolio_context,
+        "market_context": market_context,
+        "data_quality": data_quality,
+        "advice_policy": advice_policy,
+        "portfolio_analysis": "",
+        "market_analysis": "",
+        "risk_analysis": "",
         "final_report": ""
     })
     
@@ -532,6 +901,7 @@ def job_routine() -> None:
 
     positions = parse_user_profile_to_positions(user_memory_dict)
     cash_assets = parse_cash_assets(user_memory_dict)
+    profile_warnings = audit_user_profile_parsing(user_memory_dict, positions, cash_assets)
     valuation = {}
     markdown_report = "暂无持仓数据"
     if positions or cash_assets:
@@ -557,8 +927,25 @@ def job_routine() -> None:
     indices_data: str = fetch_global_indices()
     console.print(f"[bold dim]📊 [指数数据] {indices_data}[/bold dim]")
 
+    portfolio_context = build_portfolio_context(valuation, profile_warnings)
+    market_context = build_market_context(news_text, indices_data)
+    data_quality = build_data_quality(market_context, portfolio_context)
+    advice_policy = build_advice_policy(portfolio_context, data_quality)
+    console.print(
+        f"[bold dim]🧭 [日报上下文] data_quality={data_quality['status']}, "
+        f"风险提示 {len(portfolio_context['risk_flags'])} 条，限制 {len(data_quality['restrictions'])} 条[/bold dim]"
+    )
+
     try:
-        report_content: str = generate_market_report(news_text, user_memory, indices_data, portfolio_metrics)
+        report_content: str = generate_market_report(
+            user_memory,
+            indices_data,
+            portfolio_metrics,
+            portfolio_context,
+            market_context,
+            data_quality,
+            advice_policy,
+        )
     except ValueError as e:
         console.print(f"[bold red]❌ [报告生成] {str(e)}[/bold red]")
         return
