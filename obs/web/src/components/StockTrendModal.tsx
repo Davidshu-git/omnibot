@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   api,
   type StockFundamentals,
@@ -17,6 +17,7 @@ const ALL_LINES_VISIBLE: Record<TrendLineKey, boolean> = { close: true, ma20: tr
 // 显示窗口档位——须与估值引擎 TREND_WINDOWS 白名单一致（后端多取一年做均线预热，
 // 短窗口下 MA250 依然有效；切窗口只裁剪可见范围，均线方向/分位结论不变）。
 const TREND_PERIODS = [
+  { value: "3mo", label: "3月" },
   { value: "6mo", label: "6月" },
   { value: "1y", label: "1年" },
   { value: "2y", label: "2年" },
@@ -325,14 +326,27 @@ function TradeList({ trades }: { trades: StockTrendTrade[] }) {
 
 const TREND_LINE_KEYS: TrendLineKey[] = ["close", "ma20", "ma60", "ma250"];
 
+/** 单条线的显示色（现价用主文本色，MA 用各自图表色）。 */
+function lineColor(key: TrendLineKey): string {
+  return key === "close" ? "var(--text)" : `var(--chart-${key})`;
+}
+
 /** 价格 + MA20/60/250 多线走势图 + 历史买卖点（内联 SVG，无第三方图表库）。
  * MA 序列前段可能为 null（历史不足以计算），按连续非空段分别画 polyline，不整段连线。
  * 隐藏的线条既不参与 y 轴范围计算也不画出——隐藏 MA250 之类的长线后图会自动缩放聚焦到剩余线条。
- * 买卖点始终参与 y 轴范围计算（不随 visible.close 隐藏而被裁切出可视区）。 */
+ * 买卖点始终参与 y 轴范围计算（不随 visible.close 隐藏而被裁切出可视区）。
+ *
+ * 十字光标读数：桌面 hover 跟随、触屏 tap/拖动 scrub（touchAction:none 防页面滚动），
+ * 定位为"读数游标"——小窗只给当日原始数值（日期 + 各可见线值），指标解读仍交下方图例。
+ * 指针 x → series 下标的映射必须用容器实测像素宽（getBoundingClientRect），
+ * 不能用 SVG 内部的 W——preserveAspectRatio="none" 把 x 横向拉伸了，两者不成比例。 */
 function StockTrendChart({ series, visible, trades }: {
   series: StockTrendPoint[]; visible: Record<TrendLineKey, boolean>; trades: StockTrendTrade[];
 }) {
   const W = 640, H = 220, padT = 10, padB = 8;
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [hoverIdx, setHoverIdx] = useState<number | null>(null);
+
   if (series.length < 2) return null;
 
   const visibleKeys = TREND_LINE_KEYS.filter((k) => visible[k]);
@@ -366,40 +380,117 @@ function StockTrendChart({ series, visible, trades }: {
   // 买卖点按 date 字符串匹配到 series 里的下标（后端已把交易日对齐到最近的实际交易日）。
   const dateIndex = new Map(series.map((p, i) => [p.date, i]));
 
+  // 指针 → 最近数据点下标（用容器实测宽度反算横向比例，clamp 到有效区间）。
+  const handlePointer = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0) return;
+    const frac = (e.clientX - rect.left) / rect.width;
+    const idx = Math.max(0, Math.min(series.length - 1, Math.round(frac * (series.length - 1))));
+    setHoverIdx(idx);
+  };
+
+  const hoverPoint = hoverIdx !== null ? series[hoverIdx] : null;
+  const hoverFrac = hoverIdx !== null ? hoverIdx / (series.length - 1) : 0;
+  const flipTip = hoverFrac > 0.6; // 靠右半区时小窗翻到光标左侧，避免撞出容器右缘
+
   return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: H }}>
-      {visible.ma250 && buildSegments("ma250").map((pts, i) => (
-        <polyline key={`ma250-${i}`} points={pts} fill="none" stroke="var(--chart-ma250)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
-      ))}
-      {visible.ma60 && buildSegments("ma60").map((pts, i) => (
-        <polyline key={`ma60-${i}`} points={pts} fill="none" stroke="var(--chart-ma60)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
-      ))}
-      {visible.ma20 && buildSegments("ma20").map((pts, i) => (
-        <polyline key={`ma20-${i}`} points={pts} fill="none" stroke="var(--chart-ma20)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
-      ))}
-      {visible.close && buildSegments("close").map((pts, i) => (
-        <polyline key={`close-${i}`} points={pts} fill="none" stroke="var(--text)" strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
-      ))}
-      {trades.map((t, i) => {
-        const idx = dateIndex.get(t.date);
-        if (idx === undefined) return null;
-        // 涨红跌绿（A 股语义，与本页 pnlColor 一致）：买入沿用"涨/主动"红，卖出沿用"跌/离场"绿。
-        const color = t.side === "buy" ? "var(--red)" : "var(--green)";
-        return (
-          <circle
-            key={`trade-${i}`}
-            cx={x(idx)}
-            cy={y(t.price)}
-            r={4}
-            fill={color}
-            stroke="var(--card)"
-            strokeWidth={1}
-            vectorEffect="non-scaling-stroke"
-          >
-            <title>{`${t.side === "buy" ? "买入" : "卖出"} ${t.date} @ ${t.price}`}</title>
-          </circle>
-        );
-      })}
-    </svg>
+    <div
+      ref={wrapRef}
+      onPointerMove={handlePointer}
+      onPointerDown={handlePointer}
+      onPointerLeave={() => setHoverIdx(null)}
+      style={{ position: "relative", touchAction: "none", cursor: "crosshair" }}
+    >
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: H }}>
+        {visible.ma250 && buildSegments("ma250").map((pts, i) => (
+          <polyline key={`ma250-${i}`} points={pts} fill="none" stroke="var(--chart-ma250)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+        ))}
+        {visible.ma60 && buildSegments("ma60").map((pts, i) => (
+          <polyline key={`ma60-${i}`} points={pts} fill="none" stroke="var(--chart-ma60)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+        ))}
+        {visible.ma20 && buildSegments("ma20").map((pts, i) => (
+          <polyline key={`ma20-${i}`} points={pts} fill="none" stroke="var(--chart-ma20)" strokeWidth={1.2} vectorEffect="non-scaling-stroke" />
+        ))}
+        {visible.close && buildSegments("close").map((pts, i) => (
+          <polyline key={`close-${i}`} points={pts} fill="none" stroke="var(--text)" strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+        ))}
+
+        {/* 十字光标竖线（画在数据线之上、买卖点之下） */}
+        {hoverIdx !== null && (
+          <line
+            x1={x(hoverIdx)} y1={padT} x2={x(hoverIdx)} y2={H - padB}
+            stroke="var(--border-hi)" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke"
+          />
+        )}
+
+        {trades.map((t, i) => {
+          const idx = dateIndex.get(t.date);
+          if (idx === undefined) return null;
+          // 涨红跌绿（A 股语义，与本页 pnlColor 一致）：买入沿用"涨/主动"红，卖出沿用"跌/离场"绿。
+          const color = t.side === "buy" ? "var(--red)" : "var(--green)";
+          return (
+            <circle
+              key={`trade-${i}`}
+              cx={x(idx)}
+              cy={y(t.price)}
+              r={4}
+              fill={color}
+              stroke="var(--card)"
+              strokeWidth={1}
+              vectorEffect="non-scaling-stroke"
+            >
+              <title>{`${t.side === "buy" ? "买入" : "卖出"} ${t.date} @ ${t.price}`}</title>
+            </circle>
+          );
+        })}
+
+        {/* 光标处各可见线的定位点（画在最上层） */}
+        {hoverIdx !== null && visibleKeys.map((k) => {
+          const v = series[hoverIdx][k];
+          if (v === null || v === undefined) return null;
+          return (
+            <circle
+              key={`hover-${k}`}
+              cx={x(hoverIdx)} cy={y(v)} r={3}
+              fill={lineColor(k)} stroke="var(--card)" strokeWidth={1} vectorEffect="non-scaling-stroke"
+            />
+          );
+        })}
+      </svg>
+
+      {/* 跟随读数小窗：绝对定位于容器内，pointerEvents:none 防遮挡指针命中 */}
+      {hoverPoint && (
+        <div
+          style={{
+            position: "absolute", top: 4, pointerEvents: "none", zIndex: 2,
+            left: flipTip ? undefined : `calc(${(hoverFrac * 100).toFixed(2)}% + 10px)`,
+            right: flipTip ? `calc(${((1 - hoverFrac) * 100).toFixed(2)}% + 10px)` : undefined,
+            background: "var(--card)", border: "1px solid var(--border-hi)", borderRadius: 6,
+            padding: "6px 8px", minWidth: 118, boxShadow: "0 2px 10px rgba(0,0,0,0.35)",
+          }}
+        >
+          <div style={{ color: "var(--text-dim)", fontSize: 10, marginBottom: 4, fontFamily: "var(--font-mono)" }}>
+            {hoverPoint.date}
+          </div>
+          {visibleKeys.map((k) => {
+            const v = hoverPoint[k];
+            const label = k === "close" ? "现价" : k.toUpperCase();
+            return (
+              <div key={k} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, fontSize: 11, lineHeight: 1.6 }}>
+                <span style={{ display: "flex", alignItems: "center", gap: 5, color: "var(--text-muted)" }}>
+                  <span style={{ width: 8, height: 2, background: lineColor(k), flexShrink: 0 }} />
+                  {label}
+                </span>
+                <span style={{ color: "var(--text)", fontVariantNumeric: "tabular-nums" }}>
+                  {v === null || v === undefined ? "—" : v.toLocaleString("en-US", { maximumFractionDigits: 2 })}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }

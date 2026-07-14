@@ -947,6 +947,7 @@ def _load_ticker_trades(memory_dir: Path, formatted_ticker: str, close: "pd.Seri
 # 短窗口（6mo/1y）的 MA250 会整段 NaN。yfinance 无 3y/6y 档，故 2y 显示
 # 取 5y、5y 显示取 10y。"max" 无预热可加，年线头部 NaN 是其固有形态。
 TREND_WINDOWS: Dict[str, Tuple[str, Optional[int]]] = {
+    "3mo": ("2y", 63),
     "6mo": ("2y", 126),
     "1y": ("5y", 250),
     "2y": ("5y", 500),
