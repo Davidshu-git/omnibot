@@ -231,7 +231,7 @@ export function StockScreenerPanel({
 
           {status?.skipped && status.skipped.length > 0 && (
             <p style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 10 }}>
-              {status.skipped.length} 只被过滤/跳过：{status.skipped.map((s) => `${s.ticker}(${s.skip_reason})`).join("、")}
+              {status.skipped.length} 只被过滤/跳过：{status.skipped.map((s) => `${s.ticker}${s.name ? "·" + s.name : ""}(${s.skip_reason})`).join("、")}
             </p>
           )}
         </>
@@ -257,13 +257,14 @@ function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, p
   pendingTickers: Record<string, boolean>;
 }) {
   const showWatch = !!onAddWatch;
-  const headers = ["代码", "现价", "相对强度", "趋势持续天数", "偏离度历史分位(MA60)", "标签"];
+  const headers = ["代码", "名称", "现价", "相对强度", "趋势持续天数", "偏离度历史分位(MA60)", "标签"];
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? (showWatch ? 820 : 720) : (showWatch ? 900 : 800), tableLayout: "fixed" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? (showWatch ? 980 : 880) : (showWatch ? 1060 : 960), tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: 110 }} />
+            <col style={{ width: 160 }} />
             <col style={{ width: 100 }} />
             <col style={{ width: 120 }} />
             <col style={{ width: 140 }} />
@@ -274,7 +275,7 @@ function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, p
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
               {headers.map((h, i) => (
-                <th key={h} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+                <th key={h} style={{ padding: "8px 12px", textAlign: i <= 1 ? "left" : "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
               ))}
               {showWatch && (
                 <th style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>观察</th>
@@ -292,6 +293,9 @@ function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, p
                 style={{ borderBottom: i < results.length - 1 ? "1px solid var(--border)" : undefined, cursor: "pointer" }}
               >
                 <td style={{ padding: "8px 12px", color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{r.ticker}</td>
+                <td style={{ padding: "8px 12px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={r.name || undefined}>
+                  {r.name || "—"}
+                </td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
                   {r.latest_price?.toLocaleString("en-US", { maximumFractionDigits: 2 })}
                 </td>

@@ -11,6 +11,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -37,6 +38,32 @@ _SCAN_PERIOD = "2y"  # 与 fetch_stock_trend 同款窗口，兼顾 MA250 计算�
 # 预置美股股票池：随代码库打包的静态资源（非 data/ 下的运行时用户数据，随 git 版本控制），
 # 源自 nasdaqtrader.com 官方代码目录，已过滤 ETF/权证/权利/单位/优先股/SPAC 等非普通股。
 _PRESET_US_STOCKS_PATH = Path(__file__).parent / "screener_presets" / "us_common_stocks.json"
+
+# 代码→常用名 静态映射：构建期由 screener_presets/gen_ticker_names.py 离线生成，
+# 运行时纯查表补名（美股英文名 / A 股中文名 / 港股名），零网络成本、零限流风险。
+_TICKER_NAMES_PATH = Path(__file__).parent / "screener_presets" / "ticker_names.json"
+
+
+@lru_cache(maxsize=1)
+def _load_ticker_names() -> Dict[str, str]:
+    """加载「格式化代码→常用名」映射（进程内缓存一次）。
+
+    文件缺失或损坏返回空 dict（前端回退显示代码，永不阻塞筛选）。
+    """
+    if not _TICKER_NAMES_PATH.exists():
+        return {}
+    try:
+        data = json.loads(_TICKER_NAMES_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        logger.warning("[screener] 读取常用名映射失败：%s", _TICKER_NAMES_PATH)
+        return {}
+    names = data.get("names") if isinstance(data, dict) else None
+    return names if isinstance(names, dict) else {}
+
+
+def _name_of(formatted_ticker: str) -> Optional[str]:
+    """查单只常用名，未收录返回 None（前端显示 ``—``）。"""
+    return _load_ticker_names().get(formatted_ticker)
 
 
 def load_preset_us_stocks() -> List[str]:
@@ -149,13 +176,14 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
         原因），``passed=True`` 时附完整信号字段。
     """
     if is_crypto_ticker(ticker):
-        return {"ticker": ticker, "passed": False, "skip_reason": "不支持加密货币"}
+        return {"ticker": ticker, "name": _name_of(ticker), "passed": False, "skip_reason": "不支持加密货币"}
 
     try:
         formatted = format_universal_ticker(ticker)
+        name = _name_of(formatted)
         hist = yf.Ticker(formatted).history(period=_SCAN_PERIOD)
         if hist is None or hist.empty:
-            return {"ticker": formatted, "passed": False, "skip_reason": "无历史数据"}
+            return {"ticker": formatted, "name": name, "passed": False, "skip_reason": "无历史数据"}
 
         close = hist["Close"].dropna()
         ma60 = close.rolling(60).mean()
@@ -164,9 +192,9 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
 
         ma250_info = _ma_trend_info(ma250, close, latest_price, _MA_TREND_LOOKBACK["ma250"])
         if not ma250_info.get("available"):
-            return {"ticker": formatted, "passed": False, "skip_reason": "历史数据不足（算不出年线）"}
+            return {"ticker": formatted, "name": name, "passed": False, "skip_reason": "历史数据不足（算不出年线）"}
         if ma250_info["direction"] != "向上":
-            return {"ticker": formatted, "passed": False, "skip_reason": f"年线{ma250_info['direction']}，不符合硬性过滤"}
+            return {"ticker": formatted, "name": name, "passed": False, "skip_reason": f"年线{ma250_info['direction']}，不符合硬性过滤"}
 
         ma60_info = _ma_trend_info(ma60, close, latest_price, _MA_TREND_LOOKBACK["ma60"])
 
@@ -193,6 +221,7 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
 
         return {
             "ticker": formatted,
+            "name": name,
             "passed": True,
             "latest_price": round(latest_price, 4),
             "ma250_direction": ma250_info["direction"],
@@ -205,7 +234,7 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
         }
     except Exception as exc:
         logger.warning("[screener] 扫描 %s 失败：%s", ticker, exc)
-        return {"ticker": ticker, "passed": False, "skip_reason": f"取数异常：{type(exc).__name__}"}
+        return {"ticker": ticker, "name": _name_of(ticker), "passed": False, "skip_reason": f"取数异常：{type(exc).__name__}"}
 
 
 def screen_universe(

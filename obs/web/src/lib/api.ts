@@ -317,6 +317,7 @@ export interface StockTrend {
 
 export interface ScreenerResult {
   ticker: string;
+  name?: string | null;
   passed: true;
   latest_price: number;
   ma250_direction: "向上";
@@ -329,6 +330,7 @@ export interface ScreenerResult {
 
 export interface ScreenerSkipped {
   ticker: string;
+  name?: string | null;
   passed: false;
   skip_reason: string;
   tag?: string | null;
