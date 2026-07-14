@@ -1,8 +1,8 @@
 """构建期一次性生成 ticker→常用名 静态映射（``ticker_names.json``）。
 
 选股结果只显示代码对人不友好，此脚本预先把「代码→常用名」离线固化成随 git 版本控制
-的静态资源，运行时（``screener.py``）纯查表、零网络成本、零限流风险——延续
-``us_common_stocks.json`` 的「预置资源打包」范式。
+的静态资源，运行时（``screener.py``）纯查表、零网络成本、零限流风险——遵循
+``preset_pool.json`` 同款「预置资源打包」范式。
 
 数据源（各市场用最稳的免费源）：
   - 美股：nasdaqtrader.com 官方代码目录（``nasdaqlisted``/``otherlisted``，自带

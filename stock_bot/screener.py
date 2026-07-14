@@ -35,9 +35,17 @@ _SCAN_WORKERS = 15
 _RELATIVE_STRENGTH_WINDOW = 60  # 近 N 个交易日收益率，用于跟基准比强弱
 _SCAN_PERIOD = "2y"  # 与 fetch_stock_trend 同款窗口，兼顾 MA250 计算与批量扫描耗时
 
-# 预置美股股票池：随代码库打包的静态资源（非 data/ 下的运行时用户数据，随 git 版本控制），
-# 源自 nasdaqtrader.com 官方代码目录，已过滤 ETF/权证/权利/单位/优先股/SPAC 等非普通股。
-_PRESET_US_STOCKS_PATH = Path(__file__).parent / "screener_presets" / "us_common_stocks.json"
+# 「逆小势」回调观察阈值：在「顺大势」（年线向上，硬过滤已保证）前提下，若现价已跌破
+# 中期线 MA60、但仍在年线 MA250 上方（回调而非趋势破位），且 MA60 偏离度处于该标的自身
+# 历史低位分位（恐慌情绪钟摆摆到底），标记为「回调观察」。仅缩小盯盘范围、绝不构成买入建议
+# ——延续本模块「只做仪表盘、不产出买卖建议」的免责基调（接飞刀风险仍在，年线可能后续破位）。
+_PULLBACK_PANIC_PERCENTILE = 20.0
+
+# 预置精选池：随代码库打包的静态资源（非 data/ 下运行时用户数据，随 git 版本控制），
+# = 标普 500 + 恒生科技指数 成分股（构建期由 screener_presets/gen_preset_pool.py 离线
+# 生成，「静态快照 + 手动定期重生成」）。收窄自旧「4875 只全市场美股」，大幅缩小检索范围
+# 并补齐港股空白。
+_PRESET_POOL_PATH = Path(__file__).parent / "screener_presets" / "preset_pool.json"
 
 # 代码→常用名 静态映射：构建期由 screener_presets/gen_ticker_names.py 离线生成，
 # 运行时纯查表补名（美股英文名 / A 股中文名 / 港股名），零网络成本、零限流风险。
@@ -66,18 +74,18 @@ def _name_of(formatted_ticker: str) -> Optional[str]:
     return _load_ticker_names().get(formatted_ticker)
 
 
-def load_preset_us_stocks() -> List[str]:
-    """读取随代码库打包的预置美股股票池（"一键载入"按钮用）。
+def load_preset_pool() -> List[str]:
+    """读取随代码库打包的预置精选池（标普 500 + 恒生科技，"一键载入"按钮用）。
 
     Returns:
         List[str]: 代码列表；预置文件缺失或损坏返回空列表（不抛异常，前端优雅降级）。
     """
-    if not _PRESET_US_STOCKS_PATH.exists():
+    if not _PRESET_POOL_PATH.exists():
         return []
     try:
-        data = json.loads(_PRESET_US_STOCKS_PATH.read_text(encoding="utf-8"))
+        data = json.loads(_PRESET_POOL_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        logger.warning("[screener] 读取预置股票池失败：%s", _PRESET_US_STOCKS_PATH)
+        logger.warning("[screener] 读取预置股票池失败：%s", _PRESET_POOL_PATH)
         return []
     tickers = data.get("tickers") if isinstance(data, dict) else None
     return tickers if isinstance(tickers, list) else []
@@ -219,6 +227,18 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
                 break
             duration += 1
 
+        # 「逆小势」回调观察：顺大势（年线向上）+ 跌破 MA60 + 仍在年线上方 + MA60 偏离度
+        # 处历史低位（恐慌钟摆）。四条件全真才标记，任一字段缺失即视为 False（不误报）。
+        dev_pct_ma60 = ma60_info.get("deviation_pct") if ma60_info.get("available") else None
+        dev_pctile_ma60 = ma60_info.get("deviation_percentile") if ma60_info.get("available") else None
+        pullback_watch = (
+            dev_pct_ma60 is not None
+            and dev_pct_ma60 < 0
+            and ma250_info["deviation_pct"] > 0
+            and dev_pctile_ma60 is not None
+            and dev_pctile_ma60 <= _PULLBACK_PANIC_PERCENTILE
+        )
+
         return {
             "ticker": formatted,
             "name": name,
@@ -228,9 +248,8 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
             "relative_strength_pct": relative_strength,
             "trend_duration_days": duration,
             "trend_duration_capped": capped,
-            "deviation_percentile_ma60": (
-                ma60_info.get("deviation_percentile") if ma60_info.get("available") else None
-            ),
+            "deviation_percentile_ma60": dev_pctile_ma60,
+            "pullback_watch": bool(pullback_watch),
         }
     except Exception as exc:
         logger.warning("[screener] 扫描 %s 失败：%s", ticker, exc)

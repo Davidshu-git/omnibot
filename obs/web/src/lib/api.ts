@@ -325,6 +325,8 @@ export interface ScreenerResult {
   trend_duration_days: number;
   trend_duration_capped: boolean;
   deviation_percentile_ma60: number | null;
+  /** 「逆小势」回调观察：顺大势下跌破 MA60、仍在年线上方、MA60 偏离度处历史低位（恐慌钟摆）。仅盯盘信号，非买入建议。 */
+  pullback_watch?: boolean;
   tag?: string | null;
 }
 
