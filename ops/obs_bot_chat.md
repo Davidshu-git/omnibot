@@ -34,6 +34,10 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 | `/screener-status` | POST | `/api/external/{project}/screener-status` | obs 轮询扫描进度/结果(仅 stock) |
 | `/screener-universe` | POST | `/api/external/{project}/screener-universe` | obs 页面加载时读取当前股票池(仅 stock) |
 | `/screener-universe-save` | POST | `/api/external/{project}/screener-universe-save` | obs「保存股票池」,整体覆盖保存(仅 stock) |
+| `/watchlist-add` | POST | `/api/external/{project}/watchlist-add` | obs 总控台「+ 观察」/「手动添加」,加入自选观察清单(仅 stock) |
+| `/watchlist-remove` | POST | `/api/external/{project}/watchlist-remove` | obs 观察行「移除」,从自选观察清单删除(仅 stock) |
+
+> 观察清单的**读取**不走动作端点,obs 直读挂载文件 `GET /api/portfolio/watchlist`(同 portfolio 快照范式,秒回、不依赖 live bot);只有**增删**是写操作,obs 只读故委托 live bot 走上面两个端点。
 
 > 所有 POST 动作端点共用 `core/tg_base.py::_start_obs_chat_http_server` 内的 `obs_action` 装饰器统一做 token 鉴权 + JSON 解析 + 错误短路,handler 只写业务逻辑,请求体从 `request["obs_body"]` 取。**新增动作端点一律套用此装饰器,勿再手抄鉴权/解析样板。**
 
@@ -75,6 +79,17 @@ bot 内嵌 HTTP 服务(`core/tg_base.py::_start_obs_chat_http_server`)暴露以�
 - 扫描逻辑(`stock_bot/screener.py::screen_universe`):硬性过滤 MA250 方向必须"向上"(不满足直接排除,记入 `skipped` 并附 `skip_reason`);加密货币不纳入筛选(直接跳过,`skip_reason="不支持加密货币"`);按标的原生货币匹配基准指数(`^GSPC`/`^HSI`/`000300.SS`,与 `daily_job.py::fetch_global_indices` 同款已验证符号)算相对强度,**每次扫描每个基准只拉一次**,不随标的数量重复请求;`ThreadPoolExecutor(max_workers=15)` 并发扫描,无更细粒度限流(akshare/yfinance 高并发下的真实限流表现未做防御,大股票池扫描若遇批量超时属已知限制)。
 - 产出**多维信号列,无单一黑箱评分**:`relative_strength_pct`(相对强度)/`trend_duration_days`+`trend_duration_capped`(趋势持续天数,`capped=true` 表示只知道"至少这么久")/`deviation_percentile_ma60`(偏离度历史分位)。默认按相对强度降序,不产出买卖建议。
 - obs 代理超时:`/screener-start` 10s、`/screener-status` 5s(高频轮询,只读文件)、`/screener-universe` 10s、`/screener-universe-save` 10s。均**不广播 SSE**(前端靠自己的 `setInterval` 轮询 `/screener-status`,同 `executor-instances.tsx` 的开关轮询范式)。
+
+`/watchlist-add` / `/watchlist-remove` 契约(自选观察清单):
+
+- 鉴权:同上,请求头 `X-OBS-Token` == `OBS_BOT_CHAT_TOKEN`。
+- 仅 stock bot 生效:由基类钩子 `add_watchlist_item()` / `remove_watchlist_item()` 暴露(`core/tg_base.py`),基类默认返回 `None` → **404**。`StockBot` 覆写(`stock_bot/tg_main.py`),存储逻辑在 `stock_bot/watchlist.py`,落 `data/stock/memory/watchlist.json`(一个 JSON 数组)。
+- **观察清单是 0 持仓的纯跟踪位,与估值引擎/净值彻底解耦**——绝不进 `user_profile.json` 持仓解析链路(那条正则强依赖 "X 股,成本 Y",塞观察位会被静默漏算或污染净值)。纯文件 I/O,无联网、无重活,故子类直接同步调用,**无需** `run_in_executor`。
+- **`/watchlist-add`**:请求体 `{"ticker":"NVDA","note":"等回踩MA60"}`(`ticker` 必须非空字符串否则 422;`note` 可选字符串)。按代码大小写不敏感去重:已存在仅更新备注返回 `{"status":"exists"}`;新增返回 `{"status":"ok"}`;达上限(100)返回 `{"status":"full"}` → HTTP **409**;`invalid` → 422。均附 `items`(全量清单)。
+- **`/watchlist-remove`**:请求体 `{"ticker":"NVDA"}`,命中返回 `{"status":"ok","items":[...]}`;未命中 `{"status":"not_found"}` → HTTP **404**。
+- **读取不走这两个端点**:obs-api 直读挂载文件 `GET /api/portfolio/watchlist` 返回 `{"items":[{"ticker","note","added_at"}]}`(`data/stock` 只读挂载到 `/runtime/stock-bot`,同 portfolio 快照直读范式)。增删后前端重读此端点刷新。
+- 均**不广播 SSE**(改的是发起方自己的面板,前端本地更新 + 重读即可)。obs 代理超时 10s。
+- 前端:「选股」页结果表每行「+ 观察」→ `watchlist-add`;「持仓」页「👀 观察清单」分组(置于 `available` 门控外,**0 持仓也显示**)行点击复用 `StockTrendModal` 看趋势,行尾「移除」→ `watchlist-remove`,分组顶部输入框「手动添加」。
 
 `/switch-model` 契约:
 

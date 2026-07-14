@@ -346,6 +346,12 @@ export interface ScreenerStatus {
   error?: string;
 }
 
+export interface WatchlistItem {
+  ticker: string;
+  note: string;
+  added_at: string;
+}
+
 export const api = {
   projects: () => get<Project[]>("/api/projects"),
   overview: () => get<ProjectOverview[]>("/api/stats/overview"),
@@ -428,4 +434,17 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
   screenerStatus: () => post<ScreenerStatus>("/api/external/stock-bot/screener-status"),
   // 随代码库打包的预置美股股票池（静态资源，非用户自己保存的 universe）。
   screenerPreset: () => post<{ tickers: string[] }>("/api/external/stock-bot/screener-preset"),
+
+  // 自选观察清单：读走 obs 直读挂载文件（秒回、不依赖 live bot）；增删走 live bot 代理。
+  watchlist: () => get<{ items: WatchlistItem[] }>("/api/portfolio/watchlist"),
+  watchlistAdd: (ticker: string, note = "") =>
+    postJson<{ status: string; items: WatchlistItem[] }>(
+      "/api/external/stock-bot/watchlist-add",
+      { ticker, note },
+    ),
+  watchlistRemove: (ticker: string) =>
+    postJson<{ status: string; items: WatchlistItem[] }>(
+      "/api/external/stock-bot/watchlist-remove",
+      { ticker },
+    ),
 };

@@ -8,9 +8,42 @@ const POLL_INTERVAL_MS = 3000;
 const POLL_STALL_HINT_MS = 90_000;
 
 /** 选股筛股面板：股票池编辑 + 启动扫描 + 进度轮询 + 结果列表。
- * 嵌入投资总控台「选股」tab；命中的标的点击后交由调用方复用共享的 StockTrendModal。 */
-export function StockScreenerPanel({ onSelectTicker }: { onSelectTicker: (ticker: string) => void }) {
+ * 嵌入投资总控台「选股」tab；命中的标的点击后交由调用方复用共享的 StockTrendModal；
+ * 每行「+ 观察」把标的加入自选观察清单（onAddWatch 由持仓页提供，落 watchlist.json）。 */
+export function StockScreenerPanel({
+  onSelectTicker,
+  onAddWatch,
+}: {
+  onSelectTicker: (ticker: string) => void;
+  /** 加入观察清单；返回后端状态（ok/exists/full/…）供行内反馈。缺省则不显示「+ 观察」列。 */
+  onAddWatch?: (ticker: string) => Promise<string>;
+}) {
   const isMobile = useIsMobile();
+  // 已加入 / 正在加入的标的（行内按钮反馈），随本次扫描结果生命周期存在。
+  const [addedTickers, setAddedTickers] = useState<Record<string, boolean>>({});
+  const [pendingTickers, setPendingTickers] = useState<Record<string, boolean>>({});
+
+  const handleAddWatch = useCallback(
+    async (ticker: string) => {
+      if (!onAddWatch) return;
+      setPendingTickers((p) => ({ ...p, [ticker]: true }));
+      try {
+        const status = await onAddWatch(ticker);
+        if (status === "ok" || status === "exists") {
+          setAddedTickers((a) => ({ ...a, [ticker]: true }));
+        }
+      } catch {
+        // 失败提示交由父组件的 toast，行内按钮恢复可点。
+      } finally {
+        setPendingTickers((p) => {
+          const next = { ...p };
+          delete next[ticker];
+          return next;
+        });
+      }
+    },
+    [onAddWatch],
+  );
   const [universeText, setUniverseText] = useState("");
   const [savingUniverse, setSavingUniverse] = useState(false);
   const [saveMsg, setSaveMsg] = useState("");
@@ -186,7 +219,14 @@ export function StockScreenerPanel({ onSelectTicker }: { onSelectTicker: (ticker
           {results.length === 0 ? (
             <p style={{ color: "var(--text-dim)", fontSize: 12 }}>无标的通过硬性过滤（年线向上）</p>
           ) : (
-            <ResultsTable results={results} isMobile={isMobile} onSelect={onSelectTicker} />
+            <ResultsTable
+              results={results}
+              isMobile={isMobile}
+              onSelect={onSelectTicker}
+              onAddWatch={onAddWatch ? handleAddWatch : undefined}
+              addedTickers={addedTickers}
+              pendingTickers={pendingTickers}
+            />
           )}
 
           {status?.skipped && status.skipped.length > 0 && (
@@ -208,13 +248,20 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   );
 }
 
-function ResultsTable({ results, isMobile, onSelect }: {
-  results: ScreenerResult[]; isMobile: boolean; onSelect: (ticker: string) => void;
+function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, pendingTickers }: {
+  results: ScreenerResult[];
+  isMobile: boolean;
+  onSelect: (ticker: string) => void;
+  onAddWatch?: (ticker: string) => void;
+  addedTickers: Record<string, boolean>;
+  pendingTickers: Record<string, boolean>;
 }) {
+  const showWatch = !!onAddWatch;
+  const headers = ["代码", "现价", "相对强度", "趋势持续天数", "偏离度历史分位(MA60)", "标签"];
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? 720 : 800, tableLayout: "fixed" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? (showWatch ? 820 : 720) : (showWatch ? 900 : 800), tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: 110 }} />
             <col style={{ width: 100 }} />
@@ -222,16 +269,23 @@ function ResultsTable({ results, isMobile, onSelect }: {
             <col style={{ width: 140 }} />
             <col style={{ width: 160 }} />
             <col style={{ width: 90 }} />
+            {showWatch && <col style={{ width: 100 }} />}
           </colgroup>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              {["代码", "现价", "相对强度", "趋势持续天数", "偏离度历史分位(MA60)", "标签"].map((h, i) => (
+              {headers.map((h, i) => (
                 <th key={h} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
               ))}
+              {showWatch && (
+                <th style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>观察</th>
+              )}
             </tr>
           </thead>
           <tbody>
-            {results.map((r, i) => (
+            {results.map((r, i) => {
+              const added = addedTickers[r.ticker];
+              const pending = pendingTickers[r.ticker];
+              return (
               <tr
                 key={r.ticker}
                 onClick={() => onSelect(r.ticker)}
@@ -252,8 +306,22 @@ function ResultsTable({ results, isMobile, onSelect }: {
                     ? "—" : `${r.deviation_percentile_ma60.toFixed(0)}%`}
                 </td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-dim)" }}>{r.tag || "—"}</td>
+                {showWatch && (
+                  <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); if (!added && !pending) onAddWatch!(r.ticker); }}
+                      disabled={added || pending}
+                      className="tag-btn"
+                      style={{ fontSize: 11, opacity: added ? 0.6 : 1, cursor: added ? "default" : "pointer" }}
+                      title={added ? "已在观察清单" : "加入观察清单"}
+                    >
+                      {added ? "✓ 已加入" : pending ? "…" : "+ 观察"}
+                    </button>
+                  </td>
+                )}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

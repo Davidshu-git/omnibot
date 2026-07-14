@@ -1177,6 +1177,37 @@ class TelegramBotBase:
         """
         return None
 
+    async def add_watchlist_item(self, ticker: str, note: str = "") -> Optional[dict]:
+        """钩子：向自选观察清单新增标的（obs 总控台「+ 观察」/「手动添加」触发）。
+
+        基类默认不支持，返回 ``None`` → HTTP 404。持仓类 bot（如 StockBot）覆写，
+        写入 ``data/stock/memory/watchlist.json``。观察清单是 0 持仓的纯跟踪位，
+        与估值引擎彻底解耦，绝不进持仓解析链路。纯文件 I/O，无联网、无重活。
+
+        Args:
+            ticker: 股票 / 加密货币代码（原始输入即可）。
+            note: 可选备注。
+
+        Returns:
+            None: 该 bot 不支持观察清单（非持仓类，如 EHS）。
+            dict: ``{"status": "ok"|"exists"|"invalid"|"full", "items": [...]}``。
+        """
+        return None
+
+    async def remove_watchlist_item(self, ticker: str) -> Optional[dict]:
+        """钩子：从自选观察清单移除标的（obs 总控台观察行「移除」触发）。
+
+        基类默认不支持，返回 ``None`` → HTTP 404。持仓类 bot 覆写。
+
+        Args:
+            ticker: 要移除的代码。
+
+        Returns:
+            None: 该 bot 不支持观察清单。
+            dict: ``{"status": "ok"|"not_found", "items": [...]}``。
+        """
+        return None
+
     async def _start_obs_chat_http_server(self) -> None:
         """启动 obs 反向对话入口，与 Telegram polling 共用事件循环。"""
         token = os.getenv("OBS_BOT_CHAT_TOKEN", "")
@@ -1411,6 +1442,45 @@ class TelegramBotBase:
                 )
             return web.json_response(result)
 
+        @obs_action()
+        async def watchlist_add(request: web.Request) -> web.Response:
+            body = request["obs_body"]
+            ticker = body.get("ticker")
+            if not isinstance(ticker, str) or not ticker.strip():
+                return web.json_response(
+                    {"detail": "ticker must be a non-empty string"}, status=422
+                )
+            note = body.get("note", "")
+            if not isinstance(note, str):
+                return web.json_response(
+                    {"detail": "note must be a string"}, status=422
+                )
+            result = await self.add_watchlist_item(ticker.strip(), note)
+            if result is None:
+                return web.json_response(
+                    {"detail": "watchlist not supported by this bot"}, status=404
+                )
+            status = {"ok": 200, "exists": 200, "invalid": 422, "full": 409}.get(
+                result.get("status", "ok"), 200
+            )
+            return web.json_response(result, status=status)
+
+        @obs_action()
+        async def watchlist_remove(request: web.Request) -> web.Response:
+            body = request["obs_body"]
+            ticker = body.get("ticker")
+            if not isinstance(ticker, str) or not ticker.strip():
+                return web.json_response(
+                    {"detail": "ticker must be a non-empty string"}, status=422
+                )
+            result = await self.remove_watchlist_item(ticker.strip())
+            if result is None:
+                return web.json_response(
+                    {"detail": "watchlist not supported by this bot"}, status=404
+                )
+            status = {"ok": 200, "not_found": 404}.get(result.get("status", "ok"), 200)
+            return web.json_response(result, status=status)
+
         app = web.Application()
         app.router.add_get("/healthz", healthz)
         app.router.add_post("/chat", chat)
@@ -1423,6 +1493,8 @@ class TelegramBotBase:
         app.router.add_post("/screener-universe", screener_universe)
         app.router.add_post("/screener-universe-save", screener_universe_save)
         app.router.add_post("/screener-preset", screener_preset)
+        app.router.add_post("/watchlist-add", watchlist_add)
+        app.router.add_post("/watchlist-remove", watchlist_remove)
 
         self._obs_chat_runner = web.AppRunner(app)
         await self._obs_chat_runner.setup()

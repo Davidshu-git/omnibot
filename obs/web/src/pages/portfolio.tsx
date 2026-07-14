@@ -8,6 +8,7 @@ import {
   type PortfolioCashHolding,
   type PortfolioHistoryPoint,
   type FxTrend,
+  type WatchlistItem,
 } from "@/lib/api";
 import { fmtTime, fmtPct, pnlColor } from "@/lib/format";
 import { useIsMobile } from "@/lib/useIsMobile";
@@ -42,6 +43,10 @@ export default function PortfolioPage() {
   const [revaluing, setRevaluing] = useState(false);
   const [revalMsg, setRevalMsg] = useState("");
   const [selectedTicker, setSelectedTicker] = useState<string | null>(null);
+  const [watchlist, setWatchlist] = useState<WatchlistItem[]>([]);
+  const [watchMsg, setWatchMsg] = useState("");
+  const [watchAddText, setWatchAddText] = useState("");
+  const [watchAdding, setWatchAdding] = useState(false);
 
   // 支持从总览页深链直接落到「选股」tab（?tab=screener），仅用于设置初始态。
   useEffect(() => {
@@ -80,7 +85,45 @@ export default function PortfolioPage() {
       .finally(() => setRevaluing(false));
   }, [load]);
 
-  useEffect(() => { load(); }, [load]);
+  // 观察清单读走 obs 直读挂载文件（秒回、不依赖 live bot），与快照分开加载，
+  // 便于选股页加入后单独刷新，不必重拉整份组合快照。
+  const loadWatchlist = useCallback(() => {
+    api.watchlist()
+      .then((r) => setWatchlist(r.items ?? []))
+      .catch(() => {});
+  }, []);
+
+  // 加入观察清单（选股页「+ 观察」与本页「手动添加」共用）：写走 live bot 代理，
+  // 成功后刷新本页观察清单。返回后端状态供选股页行内反馈。
+  const addWatch = useCallback(
+    async (ticker: string): Promise<string> => {
+      const r = await api.watchlistAdd(ticker);
+      setWatchlist(r.items ?? []);
+      if (r.status === "full") setWatchMsg("观察清单已达上限（100），请先移除部分标的");
+      else if (r.status === "invalid") setWatchMsg("代码无效");
+      else setWatchMsg("");
+      return r.status;
+    },
+    [],
+  );
+
+  const removeWatch = useCallback((ticker: string) => {
+    api.watchlistRemove(ticker)
+      .then((r) => setWatchlist(r.items ?? []))
+      .catch((e) => setWatchMsg(`移除失败：${String(e)}`));
+  }, []);
+
+  const manualAddWatch = useCallback(() => {
+    const t = watchAddText.trim();
+    if (!t) return;
+    setWatchAdding(true);
+    addWatch(t)
+      .then((status) => { if (status === "ok" || status === "exists") setWatchAddText(""); })
+      .catch((e) => setWatchMsg(`添加失败：${String(e)}`))
+      .finally(() => setWatchAdding(false));
+  }, [watchAddText, addWatch]);
+
+  useEffect(() => { load(); loadWatchlist(); }, [load, loadWatchlist]);
 
   const available = snap?.available;
   // 快照 holdings 原序由引擎并发取价的返回先后决定（非确定性），
@@ -144,7 +187,7 @@ export default function PortfolioPage() {
         </button>
       </div>
 
-      {tab === "screener" && <StockScreenerPanel onSelectTicker={setSelectedTicker} />}
+      {tab === "screener" && <StockScreenerPanel onSelectTicker={setSelectedTicker} onAddWatch={addWatch} />}
 
       {tab === "holdings" && (
         <>
@@ -293,6 +336,34 @@ export default function PortfolioPage() {
           </p>
         </>
       )}
+
+      {/* 👀 观察清单：0 持仓的纯跟踪位，与净值/估值解耦，故置于 available 门控之外——
+          就算没有任何持仓快照也能浏览关注的公司。点击行进入趋势分析（复用 StockTrendModal）。 */}
+      <div style={{ marginTop: available ? "2rem" : 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "1.25rem 0 0.75rem", flexWrap: "wrap" }}>
+          <span style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600 }}>
+            👀 观察清单（{watchlist.length}）
+          </span>
+          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>未持仓，不计入净值 · 点击查看趋势分析</span>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
+            <input
+              value={watchAddText}
+              onChange={(e) => setWatchAddText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") manualAddWatch(); }}
+              placeholder="代码，如 NVDA / 0700.HK"
+              style={{
+                width: 168, background: "var(--bg)", color: "var(--text)", border: "1px solid var(--border)",
+                borderRadius: "var(--r-sm)", padding: "5px 8px", fontSize: 12, fontFamily: "var(--font-mono)",
+              }}
+            />
+            <button onClick={manualAddWatch} disabled={watchAdding || !watchAddText.trim()} className="tag-btn" style={{ fontSize: 12 }}>
+              {watchAdding ? "添加中…" : "+ 添加"}
+            </button>
+          </div>
+        </div>
+        {watchMsg && <p style={{ color: "var(--amber)", fontSize: 11, margin: "0 0 8px" }}>{watchMsg}</p>}
+        <WatchlistTable items={watchlist} onSelect={setSelectedTicker} onRemove={removeWatch} />
+      </div>
         </>
       )}
 
@@ -560,6 +631,60 @@ function HoldingsTable({ holdings, isMobile, onSelect }: {
                 </tr>
               );
             })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** 观察清单表：代码 + 备注 + 加入日期，点击行进入趋势分析，行尾可移除。 */
+function WatchlistTable({ items, onSelect, onRemove }: {
+  items: WatchlistItem[];
+  onSelect: (ticker: string) => void;
+  onRemove: (ticker: string) => void;
+}) {
+  if (items.length === 0) {
+    return (
+      <p style={{ color: "var(--text-dim)", fontSize: 12 }}>
+        暂无观察标的。在「选股」页命中的标的点「+ 观察」，或用上方输入框手动添加。
+      </p>
+    );
+  }
+  return (
+    <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 420 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid var(--border)" }}>
+              {["代码", "备注", "加入日期", ""].map((h, i) => (
+                <th key={i} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : i === 3 ? "right" : "left", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((it, i) => (
+              <tr
+                key={it.ticker}
+                onClick={() => onSelect(it.ticker)}
+                style={{ borderBottom: i < items.length - 1 ? "1px solid var(--border)" : undefined, cursor: "pointer" }}
+                title="点击查看趋势分析"
+              >
+                <td style={{ padding: "8px 12px", color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{it.ticker}</td>
+                <td style={{ padding: "8px 12px", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>{it.note || "—"}</td>
+                <td style={{ padding: "8px 12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{it.added_at || "—"}</td>
+                <td style={{ padding: "8px 12px", textAlign: "right" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); onRemove(it.ticker); }}
+                    className="tag-btn"
+                    style={{ fontSize: 11 }}
+                    title="从观察清单移除"
+                  >
+                    移除
+                  </button>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
       </div>

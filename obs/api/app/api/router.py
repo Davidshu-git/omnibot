@@ -393,6 +393,33 @@ async def portfolio_history(days: int = Query(default=90, ge=1, le=730)):
     }
 
 
+def _watchlist_path() -> Path:
+    """自选观察清单 JSON 在 obs 容器内的只读路径（同 portfolio 快照，直读挂载文件）。"""
+    base = Path(os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot")
+    return base / "memory" / "watchlist.json"
+
+
+@router.get("/portfolio/watchlist")
+async def portfolio_watchlist():
+    """返回自选观察清单（投资总控台「👀 观察清单」数据源，直读挂载文件）。
+
+    观察清单是 0 持仓的纯跟踪位，与估值 / 净值无关。**读**走 obs 直读文件（不依赖
+    live bot），**增删**走 ``/external/{project}/watchlist-add|remove`` 代理 live bot。
+
+    Returns:
+        dict: ``{"items": [{"ticker", "note", "added_at"}, ...]}``；文件缺失 / 损坏返回空列表。
+    """
+    path = _watchlist_path()
+    if not path.is_file():
+        return {"items": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("读取观察清单失败：%s", exc)
+        return {"items": []}
+    return {"items": data if isinstance(data, list) else []}
+
+
 # ---------------------------------------------------------------------------
 # External service status
 # ---------------------------------------------------------------------------
@@ -923,6 +950,71 @@ async def proxy_screener_preset(project: str):
             r = await client.post(
                 f"{bot_url}/screener-preset",
                 headers={"X-OBS-Token": settings.obs_bot_chat_token},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.json() or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    return r.json()
+
+
+@router.post("/external/{project}/watchlist-add")
+async def proxy_watchlist_add(project: str, body: dict):
+    """Add a ticker to the stock bot's watchlist via the live bot (obs is read-only)."""
+    import httpx as _httpx
+
+    bot_url = _screener_bot_url(project)
+    ticker = body.get("ticker")
+    if not isinstance(ticker, str) or not ticker.strip():
+        raise HTTPException(status_code=422, detail="ticker must be a non-empty string")
+    note = body.get("note", "")
+    if not isinstance(note, str):
+        raise HTTPException(status_code=422, detail="note must be a string")
+
+    try:
+        async with _httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{bot_url}/watchlist-add",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+                json={"ticker": ticker.strip(), "note": note},
+            )
+    except _httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")
+
+    if r.status_code >= 400:
+        detail: object
+        try:
+            detail = r.json().get("detail") or r.json() or r.text
+        except Exception:
+            detail = r.text
+        raise HTTPException(status_code=r.status_code, detail=detail)
+
+    return r.json()
+
+
+@router.post("/external/{project}/watchlist-remove")
+async def proxy_watchlist_remove(project: str, body: dict):
+    """Remove a ticker from the stock bot's watchlist via the live bot (obs is read-only)."""
+    import httpx as _httpx
+
+    bot_url = _screener_bot_url(project)
+    ticker = body.get("ticker")
+    if not isinstance(ticker, str) or not ticker.strip():
+        raise HTTPException(status_code=422, detail="ticker must be a non-empty string")
+
+    try:
+        async with _httpx.AsyncClient(timeout=10) as client:
+            r = await client.post(
+                f"{bot_url}/watchlist-remove",
+                headers={"X-OBS-Token": settings.obs_bot_chat_token},
+                json={"ticker": ticker.strip()},
             )
     except _httpx.RequestError as exc:
         raise HTTPException(status_code=502, detail=f"Cannot reach bot chat service: {exc}")

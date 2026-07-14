@@ -36,6 +36,7 @@ from stock_bot.screener import (
     run_scan_and_write_status,
     save_universe,
 )
+from stock_bot.watchlist import add_to_watchlist, remove_from_watchlist
 
 OBS_DIR = (Path(__file__).parent.parent / "data" / "stock" / "observability" / "sessions").resolve()
 OBS_DIR.mkdir(parents=True, exist_ok=True)
@@ -231,6 +232,18 @@ class StockBot(TelegramBotBase):
     async def get_screener_preset(self) -> dict:
         """obs 页面「载入预置」按钮：读取随代码库打包的预置美股股票池。"""
         return {"tickers": load_preset_us_stocks()}
+
+    async def add_watchlist_item(self, ticker: str, note: str = "") -> dict:
+        """obs 总控台「+ 观察」/「手动添加」：写入自选观察清单。
+
+        纯文件 I/O（读改写 watchlist.json），无联网、无 CPU 重活，直接同步调用，
+        无需 run_in_executor。观察清单与估值引擎彻底解耦，不进持仓解析链路。
+        """
+        return add_to_watchlist(MEMORY_DIR, ticker, note)
+
+    async def remove_watchlist_item(self, ticker: str) -> dict:
+        """obs 总控台观察行「移除」：从自选观察清单删除标的。"""
+        return remove_from_watchlist(MEMORY_DIR, ticker)
 
     def get_tool_status_map(self) -> dict[str, str]:
         return {
