@@ -1,7 +1,8 @@
-"""自选观察清单存储（投资总控台「👀 观察清单」数据地基）。
+"""自选观察清单存储（投资总控台「观察清单」数据地基）。
 
 与持仓 / 估值引擎**彻底解耦**：观察清单是 0 持仓的纯跟踪位，只记
-``{ticker, note, added_at}``，**绝不**参与任何财务计算，也绝不进 ``user_profile.json``
+``{ticker, name, note, added_at}``（``name`` 为写入时固化的常用名，纯展示），**绝不**
+参与任何财务计算，也绝不进 ``user_profile.json``
 的持仓解析链路（那条链路的正则强依赖 "X 股，成本 Y" 格式，塞进观察位会被静默漏算
 或污染净值）。
 
@@ -90,8 +91,12 @@ def add_to_watchlist(memory_dir: Path, ticker: str, note: str = "") -> Dict[str,
     if len(items) >= MAX_WATCHLIST_SIZE:
         return {"status": "full", "items": items}
 
+    # 写入时固化常用名（obs 侧只读直读文件，无法访问静态名称映射，故取名必须在 bot 写入侧完成）。
+    from stock_bot.screener import resolve_ticker_name
+
     entry = {
         "ticker": clean,
+        "name": resolve_ticker_name(clean),
         "note": note.strip(),
         "added_at": datetime.now().strftime("%Y-%m-%d"),
     }

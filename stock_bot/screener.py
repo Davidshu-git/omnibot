@@ -2,9 +2,16 @@
 选股筛股引擎——按"顺大势"方法论批量筛选股票池。
 
 只做"仪表盘式"多维度展示，不产出单一黑箱评分：展示可拆解、可核实的信号列
-（MA250 方向硬性过滤 + 相对强度 + 趋势持续天数 + 偏离度历史分位），排序不代替
-用户下判断，也绝不产出买卖建议——延续 valuation_engine.fetch_stock_trend 的
-免责基调。加密货币不纳入筛选（大盘/行业联动等概念对 crypto 没有对应意义）。
+（MA250 方向硬性过滤 + 相对强度 + 逆市抗跌强度 + 真实趋势年限 + 偏离度历史分位
++ 逆小势回调观察），排序不代替用户下判断，也绝不产出买卖建议——延续
+valuation_engine.fetch_stock_trend 的免责基调。加密货币不纳入筛选（大盘/行业
+联动等概念对 crypto 没有对应意义）。
+
+「势能」加分维度（呼应"顺势而为，势=强度"）：① 逆市抗跌强度——只在大盘下跌日
+衡量个股日超额收益均值，抗跌/逆势才是难被操纵的真信号；② 真实趋势年限——取数
+窗口 6 年，MA250 连涨可数到 ~5 年，区分长寿趋势 vs 刚涨两三年。「大盘股优先」由
+精选池（标普 500 + 恒生科技，皆大盘股）天然覆盖，不再逐只拉 .info 市值；「板块/
+产业链龙头联动」为定性判断、无法可靠自动化，留给用户手动做基本面。
 """
 
 import json
@@ -15,6 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import pandas as pd
 import yfinance as yf
 
 from stock_bot.valuation_engine import (
@@ -33,7 +41,11 @@ _BENCHMARK_BY_CURRENCY: Dict[str, str] = {"USD": "^GSPC", "HKD": "^HSI", "CNY": 
 
 _SCAN_WORKERS = 15
 _RELATIVE_STRENGTH_WINDOW = 60  # 近 N 个交易日收益率，用于跟基准比强弱
-_SCAN_PERIOD = "2y"  # 与 fetch_stock_trend 同款窗口，兼顾 MA250 计算与批量扫描耗时
+# 取数窗口 6 年：为「长寿趋势」——趋势持续天数原被 2y 窗口截断（涨 5 年和涨 2 年都
+# 显示 500+ 日，分不出来），拉长到 6y 后 MA250 上升可连续数到 ~5 年，真正区分长寿趋势
+# vs 刚涨两三年。代价是每只取数更重、批量扫描更慢。
+_SCAN_PERIOD = "6y"
+_TRADING_DAYS_PER_YEAR = 250  # 交易日→年的换算（趋势持续天数→真实趋势年限）
 
 # 「逆小势」回调观察阈值：在「顺大势」（年线向上，硬过滤已保证）前提下，若现价已跌破
 # 中期线 MA60、但仍在年线 MA250 上方（回调而非趋势破位），且 MA60 偏离度处于该标的自身
@@ -72,6 +84,21 @@ def _load_ticker_names() -> Dict[str, str]:
 def _name_of(formatted_ticker: str) -> Optional[str]:
     """查单只常用名，未收录返回 None（前端显示 ``—``）。"""
     return _load_ticker_names().get(formatted_ticker)
+
+
+def resolve_ticker_name(raw_ticker: str) -> Optional[str]:
+    """把用户原始代码归一化后查常用名（观察清单等展示场景复用），查不到/异常返回 None。
+
+    Args:
+        raw_ticker: 用户原始输入（如 ``AAPL`` / ``0700`` / ``600519`` / ``BTC``）。
+
+    Returns:
+        Optional[str]: 常用名；未收录（含加密货币等未进静态映射的）返回 None。
+    """
+    try:
+        return _name_of(format_universal_ticker(raw_ticker.strip()))
+    except Exception:  # noqa: BLE001 —— 取名是纯展示增强，任何异常都降级为无名
+        return None
 
 
 def load_preset_pool() -> List[str]:
@@ -150,13 +177,17 @@ def read_status(memory_dir: Path) -> Dict[str, Any]:
         return {"status": "idle"}
 
 
-def _fetch_benchmark_returns(currencies: List[str]) -> Dict[str, Optional[float]]:
-    """按用到的币种各拉一次基准指数近 N 交易日收益率，一次扫描内每个基准只拉一次。
+def _fetch_benchmark_data(currencies: List[str]) -> Dict[str, Dict[str, Any]]:
+    """按用到的币种各拉一次基准指数，一次扫描内每个基准只拉一次。
 
-    单一基准取数失败只让该币种下所有标的的相对强度列标 None（不可用），不影响
-    其余市场的筛选结果与硬性过滤——不能因为一个指数没拉到就拖垮整次扫描。
+    每个币种返回 ``{"return": 近 N 交易日收益率 or None, "daily": 日收益率序列 or None}``：
+      - ``return`` 供「相对强度」（笼统跑赢/跑输幅度）。
+      - ``daily`` 供「逆市强度」（只在大盘下跌日衡量个股抗跌能力）。
+
+    单一基准取数失败只让该币种下所有标的的相关列标 None（不可用），不影响其余市场的
+    筛选结果与硬性过滤——不能因为一个指数没拉到就拖垮整次扫描。
     """
-    returns: Dict[str, Optional[float]] = {}
+    data: Dict[str, Dict[str, Any]] = {}
     for cur in currencies:
         benchmark = _BENCHMARK_BY_CURRENCY.get(cur)
         if not benchmark:
@@ -165,19 +196,22 @@ def _fetch_benchmark_returns(currencies: List[str]) -> Dict[str, Optional[float]
             hist = yf.Ticker(benchmark).history(period=_SCAN_PERIOD)
             close = hist["Close"].dropna()
             if len(close) <= _RELATIVE_STRENGTH_WINDOW:
-                returns[cur] = None
+                data[cur] = {"return": None, "daily": None}
                 continue
-            returns[cur] = float(
-                (close.iloc[-1] / close.iloc[-_RELATIVE_STRENGTH_WINDOW - 1] - 1) * 100
-            )
+            data[cur] = {
+                "return": float(
+                    (close.iloc[-1] / close.iloc[-_RELATIVE_STRENGTH_WINDOW - 1] - 1) * 100
+                ),
+                "daily": close.pct_change().dropna(),
+            }
         except Exception:
             logger.warning("[screener] 基准指数 %s 取数失败", benchmark)
-            returns[cur] = None
-    return returns
+            data[cur] = {"return": None, "daily": None}
+    return data
 
 
-def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> Dict[str, Any]:
-    """单只标的的筛选逻辑：MA250 方向硬性过滤 + 相对强度/趋势持续天数/偏离度分位。
+def _screen_one(ticker: str, benchmark_data: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """单只标的的筛选逻辑：MA250 方向硬性过滤 + 相对强度/逆市强度/趋势持续天数/偏离度分位。
 
     Returns:
         Dict[str, Any]: ``passed=False`` 表示被过滤或取数失败（``skip_reason`` 说明
@@ -207,13 +241,29 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
         ma60_info = _ma_trend_info(ma60, close, latest_price, _MA_TREND_LOOKBACK["ma60"])
 
         currency = detect_ticker_currency(formatted)
-        bench_return = benchmark_returns.get(currency)
+        bench = benchmark_data.get(currency) or {}
+        bench_return = bench.get("return")
+        bench_daily = bench.get("daily")
+
         relative_strength: Optional[float] = None
         if bench_return is not None and len(close) > _RELATIVE_STRENGTH_WINDOW:
             stock_return = float(
                 (close.iloc[-1] / close.iloc[-_RELATIVE_STRENGTH_WINDOW - 1] - 1) * 100
             )
             relative_strength = round(stock_return - bench_return, 2)
+
+        # 逆市抗跌强度：只在「基准下跌日」衡量个股日超额收益的均值——大盘跌的时候还能
+        # 抗跌甚至逆势上涨，才是「势能强、难被操纵」的真信号（区别于笼统相对强度）。
+        # 为正=下跌市里跑赢大盘（抗跌/逆势），越大越抗跌；样本对齐取交易日交集。
+        counter_trend_strength: Optional[float] = None
+        if bench_daily is not None:
+            stock_daily = close.pct_change().dropna().iloc[-_RELATIVE_STRENGTH_WINDOW:]
+            aligned = pd.concat([stock_daily, bench_daily], axis=1, join="inner").dropna()
+            if not aligned.empty:
+                aligned.columns = ["s", "b"]
+                down = aligned[aligned["b"] < 0]
+                if not down.empty:
+                    counter_trend_strength = round(float((down["s"] - down["b"]).mean()) * 100, 3)
 
         # 趋势持续天数：MA250 逐日一阶差分连续为正的交易日数，从最新一天往回数；
         # 数到取数窗口起点仍未转负，标 capped=True——诚实说明"至少这么久"，不假装
@@ -246,7 +296,9 @@ def _screen_one(ticker: str, benchmark_returns: Dict[str, Optional[float]]) -> D
             "latest_price": round(latest_price, 4),
             "ma250_direction": ma250_info["direction"],
             "relative_strength_pct": relative_strength,
+            "counter_trend_strength": counter_trend_strength,
             "trend_duration_days": duration,
+            "trend_duration_years": round(duration / _TRADING_DAYS_PER_YEAR, 1),
             "trend_duration_capped": capped,
             "deviation_percentile_ma60": dev_pctile_ma60,
             "pullback_watch": bool(pullback_watch),
@@ -284,13 +336,13 @@ def screen_universe(
             currencies_needed.add(detect_ticker_currency(format_universal_ticker(t)))
         except Exception:
             continue
-    benchmark_returns = _fetch_benchmark_returns(list(currencies_needed))
+    benchmark_data = _fetch_benchmark_data(list(currencies_needed))
 
     results: List[Dict[str, Any]] = []
     skipped: List[Dict[str, Any]] = []
     done = 0
     with ThreadPoolExecutor(max_workers=_SCAN_WORKERS) as executor:
-        futures = {executor.submit(_screen_one, t, benchmark_returns): t for t in tickers}
+        futures = {executor.submit(_screen_one, t, benchmark_data): t for t in tickers}
         for future in as_completed(futures):
             item = future.result()
             item["tag"] = tags.get(futures[future])

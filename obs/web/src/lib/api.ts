@@ -322,7 +322,11 @@ export interface ScreenerResult {
   latest_price: number;
   ma250_direction: "向上";
   relative_strength_pct: number | null;
+  /** 逆市抗跌强度：只在大盘下跌日衡量的个股日超额收益均值(%)。为正=下跌市里跑赢大盘（抗跌/逆势），越大越抗跌。 */
+  counter_trend_strength?: number | null;
   trend_duration_days: number;
+  /** 真实趋势年限：MA250 连续上升的年数（取数窗口 6 年，可数到 ~5 年）。 */
+  trend_duration_years?: number;
   trend_duration_capped: boolean;
   deviation_percentile_ma60: number | null;
   /** 「逆小势」回调观察：顺大势下跌破 MA60、仍在年线上方、MA60 偏离度处历史低位（恐慌钟摆）。仅盯盘信号，非买入建议。 */
@@ -352,6 +356,7 @@ export interface ScreenerStatus {
 
 export interface WatchlistItem {
   ticker: string;
+  name?: string | null;
   note: string;
   added_at: string;
 }

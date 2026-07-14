@@ -337,12 +337,12 @@ export default function PortfolioPage() {
         </>
       )}
 
-      {/* 👀 观察清单：0 持仓的纯跟踪位，与净值/估值解耦，故置于 available 门控之外——
+      {/* 观察清单：0 持仓的纯跟踪位，与净值/估值解耦，故置于 available 门控之外——
           就算没有任何持仓快照也能浏览关注的公司。点击行进入趋势分析（复用 StockTrendModal）。 */}
       <div style={{ marginTop: available ? "2rem" : 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "1.25rem 0 0.75rem", flexWrap: "wrap" }}>
           <span style={{ color: "var(--text-muted)", fontSize: 13, fontWeight: 600 }}>
-            👀 观察清单（{watchlist.length}）
+            观察清单（{watchlist.length}）
           </span>
           <span style={{ color: "var(--text-dim)", fontSize: 11 }}>未持仓，不计入净值 · 点击查看趋势分析</span>
           <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
@@ -638,7 +638,7 @@ function HoldingsTable({ holdings, isMobile, onSelect }: {
   );
 }
 
-/** 观察清单表：代码 + 备注 + 加入日期，点击行进入趋势分析，行尾可移除。 */
+/** 观察清单表：代码 + 名称 + 备注 + 加入日期，点击行进入趋势分析，行尾可移除。 */
 function WatchlistTable({ items, onSelect, onRemove }: {
   items: WatchlistItem[];
   onSelect: (ticker: string) => void;
@@ -654,11 +654,11 @@ function WatchlistTable({ items, onSelect, onRemove }: {
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 420 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: 520 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              {["代码", "备注", "加入日期", ""].map((h, i) => (
-                <th key={i} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : i === 3 ? "right" : "left", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
+              {["代码", "名称", "备注", "加入日期", ""].map((h, i) => (
+                <th key={i} style={{ padding: "8px 12px", textAlign: i === 0 ? "left" : i === 4 ? "right" : "left", color: "var(--text-muted)", fontWeight: 600, whiteSpace: "nowrap" }}>{h}</th>
               ))}
             </tr>
           </thead>
@@ -671,6 +671,7 @@ function WatchlistTable({ items, onSelect, onRemove }: {
                 title="点击查看趋势分析"
               >
                 <td style={{ padding: "8px 12px", color: "var(--text)", fontWeight: 600, fontFamily: "var(--font-mono)" }}>{it.ticker}</td>
+                <td style={{ padding: "8px 12px", color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }} title={it.name || undefined}>{it.name || "—"}</td>
                 <td style={{ padding: "8px 12px", color: "var(--text-dim)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>{it.note || "—"}</td>
                 <td style={{ padding: "8px 12px", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{it.added_at || "—"}</td>
                 <td style={{ padding: "8px 12px", textAlign: "right" }}>

@@ -50,6 +50,8 @@ export function StockScreenerPanel({
   const [status, setStatus] = useState<ScreenerStatus | null>(null);
   // 「逆小势」收敛：默认只看回调观察标的（顺大势入围里正在被错杀的短名单），一键切回全量。
   const [onlyPullback, setOnlyPullback] = useState(true);
+  // 「势能优先」排序：先看逆市抗跌强度、同强度再看真实趋势年限（呼应"顺势而为"中的"势=强度"）。
+  const [sortByPotential, setSortByPotential] = useState(false);
   const [starting, setStarting] = useState(false);
   const [startMsg, setStartMsg] = useState("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -142,7 +144,14 @@ export function StockScreenerPanel({
   const stalled = running && Date.now() - pollStartedAtRef.current > POLL_STALL_HINT_MS;
   const results = status?.results ?? []; // 后端已按相对强度降序排好
   const pullbackCount = results.filter((r) => r.pullback_watch).length;
-  const shownResults = onlyPullback ? results.filter((r) => r.pullback_watch) : results;
+  const filteredResults = onlyPullback ? results.filter((r) => r.pullback_watch) : results;
+  // 势能优先：逆市强度降序（None 垫底），同强度按真实趋势年限降序；否则保留后端相对强度降序。
+  const shownResults = sortByPotential
+    ? [...filteredResults].sort((a, b) => {
+        const cs = (b.counter_trend_strength ?? -Infinity) - (a.counter_trend_strength ?? -Infinity);
+        return cs !== 0 ? cs : (b.trend_duration_days ?? -1) - (a.trend_duration_days ?? -1);
+      })
+    : filteredResults;
   // 跳过项按原因归类成一行汇总（533 池会跳过数百只，逐只铺开是噪音，明细收进折叠区）。
   const skippedReasonSummary = Object.entries(
     (status?.skipped ?? []).reduce<Record<string, number>>((acc, s) => {
@@ -159,7 +168,8 @@ export function StockScreenerPanel({
     <div>
       <p style={{ color: "var(--text-dim)", fontSize: 12, marginBottom: "1rem", lineHeight: 1.7 }}>
         硬性过滤：长周期均线（MA250）必须向上（"大钟摆昂首向上"）。通过后按相对强度（近 60 个交易日跑赢/跑输对应基准指数的幅度）降序展示，
-        附趋势持续天数、偏离度历史分位。「回调观察」列标记"顺大势逆小势"特征——年线向上前提下现价跌破 MA60、仍在年线上方、且 MA60 偏离度处自身历史低位（恐慌钟摆到底）。
+        附「逆市强度」（只在大盘下跌日衡量的抗跌/逆势能力）、「真实趋势年限」（MA250 连涨年数，取数窗口 6 年）、偏离度历史分位——「势能优先」开关按"顺势而为（势=强度）"重排。
+        「回调观察」列标记"顺大势逆小势"特征——年线向上前提下现价跌破 MA60、仍在年线上方、且 MA60 偏离度处自身历史低位（恐慌钟摆到底）。
         仅供缩小候选范围与盯盘，<b>不构成买卖建议</b>（回调也可能一路破位、接飞刀风险仍在），选出来的标的仍需自行做基本面研究。加密货币不纳入筛选（大盘/行业联动等概念对其无对应意义）。
       </p>
 
@@ -237,9 +247,17 @@ export function StockScreenerPanel({
                 : `筛选结果（${status?.passed_count ?? 0} / ${total}）`}
             </span>
             <button
+              onClick={() => setSortByPotential((v) => !v)}
+              className={`tag-btn${sortByPotential ? " active" : ""}`}
+              style={{ fontSize: 11, marginLeft: "auto" }}
+              title="势能优先：先按逆市抗跌强度降序、同强度再按真实趋势年限降序（『顺势而为』——势=强度）。关闭则按相对强度降序。"
+            >
+              {sortByPotential ? "✓ 势能优先" : "势能优先"}
+            </button>
+            <button
               onClick={() => setOnlyPullback((v) => !v)}
               className={`tag-btn${onlyPullback ? " active" : ""}`}
-              style={{ fontSize: 11, marginLeft: "auto" }}
+              style={{ fontSize: 11 }}
               title="只保留『顺大势』入围里正在回调被错杀的短名单（跌破 MA60、仍在年线上方、MA60 偏离度处历史低位）"
             >
               {onlyPullback ? "✓ 只看回调观察" : "只看回调观察"}
@@ -287,20 +305,20 @@ function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, p
   pendingTickers: Record<string, boolean>;
 }) {
   const showWatch = !!onAddWatch;
-  const headers = ["代码", "名称", "现价", "相对强度", "趋势持续天数", "偏离度历史分位(MA60)", "回调观察", "标签"];
+  const headers = ["代码", "名称", "现价", "相对强度", "逆市强度", "真实趋势年限", "偏离度历史分位(MA60)", "回调观察"];
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? (showWatch ? 1080 : 980) : (showWatch ? 1160 : 1060), tableLayout: "fixed" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12, minWidth: isMobile ? (showWatch ? 1110 : 1010) : (showWatch ? 1190 : 1090), tableLayout: "fixed" }}>
           <colgroup>
             <col style={{ width: 110 }} />
             <col style={{ width: 160 }} />
             <col style={{ width: 100 }} />
             <col style={{ width: 120 }} />
-            <col style={{ width: 140 }} />
+            <col style={{ width: 120 }} />
+            <col style={{ width: 130 }} />
             <col style={{ width: 160 }} />
             <col style={{ width: 100 }} />
-            <col style={{ width: 90 }} />
             {showWatch && <col style={{ width: 100 }} />}
           </colgroup>
           <thead>
@@ -333,8 +351,14 @@ function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, p
                 <td style={{ padding: "8px 12px", textAlign: "right", color: pnlColor(r.relative_strength_pct), fontFamily: "var(--font-mono)", fontWeight: 600 }}>
                   {r.relative_strength_pct === null ? "—" : fmtPct(r.relative_strength_pct)}
                 </td>
+                <td
+                  style={{ padding: "8px 12px", textAlign: "right", color: pnlColor(r.counter_trend_strength ?? null), fontFamily: "var(--font-mono)", fontWeight: 600 }}
+                  title="逆市抗跌强度：只在大盘下跌日衡量的日超额收益均值。为正=下跌市里还能跑赢大盘（抗跌/逆势），越大势能越强"
+                >
+                  {r.counter_trend_strength === null || r.counter_trend_strength === undefined ? "—" : fmtPct(r.counter_trend_strength)}
+                </td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                  {r.trend_duration_days}{r.trend_duration_capped ? "+" : ""} 日
+                  {r.trend_duration_years ?? (r.trend_duration_days / 250).toFixed(1)}{r.trend_duration_capped ? "+" : ""} 年
                 </td>
                 <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-dim)" }}>
                   {r.deviation_percentile_ma60 === null || r.deviation_percentile_ma60 === undefined
@@ -356,7 +380,6 @@ function ResultsTable({ results, isMobile, onSelect, onAddWatch, addedTickers, p
                     <span style={{ color: "var(--text-dim)" }}>—</span>
                   )}
                 </td>
-                <td style={{ padding: "8px 12px", textAlign: "right", color: "var(--text-dim)" }}>{r.tag || "—"}</td>
                 {showWatch && (
                   <td style={{ padding: "8px 12px", textAlign: "right" }}>
                     <button
