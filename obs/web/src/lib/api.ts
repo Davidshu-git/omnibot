@@ -275,6 +275,28 @@ export interface StockTrendTrade {
   details: string;
 }
 
+/** 基本面快照。后端 `.info` 端点整体降级——取不到时 fundamentals 为 null。
+ * 每个字段本身也可能为 null（yfinance 该标的缺该项）。dividend_yield 是小数分数
+ * （0.0052 = 0.52%），前端负责 ×100 呈现；crypto（is_crypto=true）只有市值 + 24h 量。 */
+export interface StockFundamentals {
+  is_crypto: boolean;
+  currency?: string | null;
+  market_cap?: number | null;
+  // 证券字段
+  pe_ttm?: number | null;
+  /** 动态市盈率（基于未来盈利预测）；亏损股无 TTM 时的替代指标。 */
+  forward_pe?: number | null;
+  /** TTM 市盈率成因：ok=有效数值 / loss=当前亏损无意义 / missing=数据源暂缺。
+   * 用于把「—」的原因显式化，区分「亏损」与「抓取不到」。 */
+  pe_ttm_status?: "ok" | "loss" | "missing";
+  pb?: number | null;
+  dividend_yield?: number | null;
+  week52_low?: number | null;
+  week52_high?: number | null;
+  // 加密货币字段
+  volume_24h?: number | null;
+}
+
 export interface StockTrend {
   status: string;
   detail?: string;
@@ -289,6 +311,8 @@ export interface StockTrend {
   ma250?: StockTrendMaInfo;
   regime_note?: string;
   trades?: StockTrendTrade[];
+  /** 基本面快照；后端取不到时为 null（整块不渲染）。 */
+  fundamentals?: StockFundamentals | null;
 }
 
 export interface ScreenerResult {

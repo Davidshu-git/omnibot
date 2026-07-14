@@ -955,7 +955,107 @@ TREND_WINDOWS: Dict[str, Tuple[str, Optional[int]]] = {
 }
 
 
-def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path] = None) -> Dict[str, Any]:
+@retry(stop=stop_after_attempt(3), wait=wait_fixed(2),
+       retry=retry_if_exception_type(
+           (ConnectionError, TimeoutError,
+            requests.exceptions.Timeout, requests.exceptions.ConnectionError)))
+def _fetch_ticker_info(formatted_ticker: str) -> Dict[str, Any]:
+    """拉取 yfinance ``.info`` 基本面快照。
+
+    ``.info`` 是独立于 ``.history`` 的端点，明显更慢、更易被限流/返回空，故与价格+
+    均线主流程隔离、单独重试，失败由上层整体降级（见 ``_build_fundamentals``）。
+
+    Args:
+        formatted_ticker: 已经过 ``format_universal_ticker`` 的代码。
+
+    Returns:
+        Dict[str, Any]: yfinance 原始 info 字典；非字典时返回空字典。
+
+    Raises:
+        ConnectionError / TimeoutError / requests 网络异常: 触发 tenacity 重试。
+    """
+    info = yf.Ticker(formatted_ticker).info
+    return info if isinstance(info, dict) else {}
+
+
+def _build_fundamentals(formatted_ticker: str, is_crypto: bool) -> Optional[Dict[str, Any]]:
+    """组装基本面快照（PE/PB/市值/股息率/52周区间；加密货币仅市值 + 24h 成交量）。
+
+    与价格+均线主流程解耦：``.info`` 慢且易失败，此处**整体降级**——任何异常或全字段
+    为空只返回 ``None``，绝不让基本面拖垮已稳的趋势主体。字段类型全部做数值校验，
+    避免 yfinance 偶发返回字符串/``None`` 污染前端。
+
+    Args:
+        formatted_ticker: 已格式化代码（``format_universal_ticker`` 产物）。
+        is_crypto: 是否加密货币（决定字段集——crypto 无市盈率/市净率语义）。
+
+    Returns:
+        Optional[Dict[str, Any]]: 含 ``is_crypto`` 标记与 ``currency`` 的基本面字典；
+            取数失败或关键数值字段全空时返回 ``None``。``dividend_yield`` 为小数分数
+            （如 0.0052），前端负责 ×100 呈现。证券另含 ``forward_pe``（动态市盈率）与
+            ``pe_ttm_status``（``ok``/``loss``/``missing``——区分 TTM 市盈率是有效、亏损
+            无意义、还是数据源暂缺，供前端把「—」的成因显式化）。
+    """
+    try:
+        info = _fetch_ticker_info(formatted_ticker)
+    except (ConnectionError, TimeoutError, requests.exceptions.RequestException) as exc:
+        logger.warning("基本面取数失败 %s：%s", formatted_ticker, type(exc).__name__)
+        return None
+    except Exception as exc:  # yfinance 内部可能抛非网络异常（解析/KeyError 等）
+        logger.warning("基本面解析异常 %s：%s - %s", formatted_ticker, type(exc).__name__, exc)
+        return None
+
+    if not info:
+        return None
+
+    def _num(key: str) -> Optional[float]:
+        v = info.get(key)
+        # bool 是 int 子类，须显式排除，避免 True/False 被当 1/0 混入
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return float(v)
+        return None
+
+    result: Dict[str, Any] = {"is_crypto": is_crypto, "currency": info.get("currency")}
+
+    if is_crypto:
+        result["market_cap"] = _num("marketCap")
+        result["volume_24h"] = (
+            _num("volume24Hr") or _num("volume") or _num("regularMarketVolume")
+        )
+        meaningful_keys = ["market_cap", "volume_24h"]
+    else:
+        trailing_pe = _num("trailingPE")
+        result["pe_ttm"] = trailing_pe
+        result["forward_pe"] = _num("forwardPE")  # 动态市盈率（预测），亏损股无 TTM 时的替代
+        # 市盈率缺失归因：区分「亏损」（EPS<0，TTM PE 数学上无意义）与「数据源暂缺」，
+        # 供前端区分显示，避免用户把「—」误读成抓取失败。
+        if trailing_pe is not None:
+            result["pe_ttm_status"] = "ok"
+        else:
+            eps = _num("trailingEps")
+            result["pe_ttm_status"] = "loss" if (eps is not None and eps < 0) else "missing"
+        result["pb"] = _num("priceToBook")
+        result["market_cap"] = _num("marketCap")
+        result["dividend_yield"] = _num("trailingAnnualDividendYield")  # 小数分数，前端 ×100
+        result["week52_low"] = _num("fiftyTwoWeekLow")
+        result["week52_high"] = _num("fiftyTwoWeekHigh")
+        # 归因状态（pe_ttm_status）不是数值字段，不能计入「是否全空」判断，故显式列出数值键
+        meaningful_keys = ["pe_ttm", "forward_pe", "pb", "market_cap",
+                           "dividend_yield", "week52_low", "week52_high"]
+
+    # 关键数值字段全空 → 视同无基本面，让前端整块不显示（gate 排除 is_crypto/currency/status）
+    if all(result.get(k) is None for k in meaningful_keys):
+        return None
+
+    return result
+
+
+def fetch_stock_trend(
+    ticker: str,
+    period: str = "2y",
+    memory_dir: Optional[Path] = None,
+    include_fundamentals: bool = True,
+) -> Dict[str, Any]:
     """获取个股价格历史 + 多周期均线（MA20/60/250）+ 偏离度历史分位。
 
     供 obs 投资总控台「个股趋势分析」弹窗使用。产出仅为描述性指标（均线方向 +
@@ -969,12 +1069,15 @@ def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path
             切换窗口只裁剪图上可见范围，不改变趋势结论。
         memory_dir: 记忆文件目录（含 transaction_logs.jsonl），提供则附带该标的
             的历史买卖点（``trades``，仅显示窗口内的）；``None`` 时跳过。
+        include_fundamentals: 是否附带基本面快照（``fundamentals``）。默认 True；
+            基本面走独立的 ``.info`` 端点，取数失败整体降级为 ``None``，不影响趋势主体。
 
     Returns:
         Dict[str, Any]: 含 ``ticker``/``period``/``latest_price``/``latest_date``/
             ``series``（逐日 date/close/ma20/ma60/ma250）/``ma20``/``ma60``/
             ``ma250``（各自的 ``_ma_trend_info`` 结果）/``regime_note``/
-            ``trades``（``_load_ticker_trades`` 结果）。
+            ``trades``（``_load_ticker_trades`` 结果）/``fundamentals``
+            （``_build_fundamentals`` 结果，可能为 ``None``）。
 
     Raises:
         ValueError: period 不在 ``TREND_WINDOWS`` 白名单内。
@@ -1021,6 +1124,11 @@ def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path
 
     trades = _load_ticker_trades(memory_dir, formatted_ticker, close) if memory_dir is not None else []
 
+    fundamentals = (
+        _build_fundamentals(formatted_ticker, is_crypto_ticker(ticker))
+        if include_fundamentals else None
+    )
+
     return {
         "ticker": formatted_ticker,
         "period": period,
@@ -1032,6 +1140,7 @@ def fetch_stock_trend(ticker: str, period: str = "2y", memory_dir: Optional[Path
         "ma250": ma250_info,
         "regime_note": _build_regime_note(ma60_info, ma250_info),
         "trades": trades,
+        "fundamentals": fundamentals,
     }
 
 

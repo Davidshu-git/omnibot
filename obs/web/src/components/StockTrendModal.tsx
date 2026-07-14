@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   api,
+  type StockFundamentals,
   type StockTrend,
   type StockTrendMaInfo,
   type StockTrendPoint,
   type StockTrendTrade,
 } from "@/lib/api";
-import { fmtPct, pnlColor } from "@/lib/format";
+import { fmtBigMoney, fmtPct, pnlColor } from "@/lib/format";
 
 /** 个股趋势分析弹窗：点击持仓行 / 筛股结果行触发，独立 Modal（Esc / 点击遮罩 / 关闭按钮均可关闭）。
  * 共享组件——investment portfolio 总控台与选股筛股页均复用同一份实现。 */
@@ -108,6 +109,8 @@ export function StockTrendModal({ ticker, onClose }: { ticker: string | null; on
               <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{data.latest_date}</span>
             </div>
 
+            {data.fundamentals && <FundamentalsGrid f={data.fundamentals} />}
+
             <StockTrendChart series={data.series} visible={visible} trades={data.trades ?? []} />
 
             <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 10, marginBottom: 12 }}>
@@ -137,6 +140,115 @@ export function StockTrendModal({ ticker, onClose }: { ticker: string | null; on
       </div>
     </div>
   );
+}
+
+interface FundCell {
+  label: string;
+  value: string;
+  color?: string;
+  /** 值下方的浅色副标题（如亏损股的「动态 65.1」）。 */
+  sub?: string;
+  /** 悬停解释（尤其解释「—」的成因，区分数据缺失 vs 抓取失败）。 */
+  title?: string;
+}
+
+/** 市盈率单元格：把「—」的成因显式化——有效数值直接显示；亏损显示「亏损」+ 动态 PE
+ * 副标题；数据源暂缺才显示「—」并 tooltip 说明。这样用户不会把横线误读成抓取失败。 */
+function peCell(f: StockFundamentals): FundCell {
+  const fwd = f.forward_pe != null ? `动态 ${fmtNum(f.forward_pe)}` : undefined;
+  if (f.pe_ttm != null) {
+    return { label: "市盈率 TTM", value: fmtNum(f.pe_ttm), sub: fwd };
+  }
+  if (f.pe_ttm_status === "loss") {
+    return {
+      label: "市盈率 TTM",
+      value: "亏损",
+      color: "var(--text-muted)",
+      sub: fwd,
+      title: "过去 12 个月每股收益为负，TTM 市盈率无意义（非数据抓取失败）",
+    };
+  }
+  return { label: "市盈率 TTM", value: "—", title: "数据源暂未提供该字段" };
+}
+
+/** 基本面快照小网格：证券显示 PE/PB/市值/股息率/52周区间，加密货币显示市值/24h 量。
+ * 每个字段独立降级——取不到显示「—」并附成因 tooltip（区分数据缺失 vs 抓取失败），
+ * 亏损股 PE 显式标「亏损」而非横线；整块只在后端确有数据时才渲染。
+ * 定位为「估值坐标」而非买卖信号，末尾附免责，延续本弹窗的描述性基调。 */
+function FundamentalsGrid({ f }: { f: StockFundamentals }) {
+  const cur = f.currency;
+  const cells: FundCell[] = f.is_crypto
+    ? [
+        { label: "总市值", value: fmtBigMoney(f.market_cap, cur) },
+        { label: "24h 成交量", value: fmtBigMoney(f.volume_24h, cur) },
+      ]
+    : [
+        peCell(f),
+        { label: "市净率 PB", value: fmtNum(f.pb) },
+        { label: "总市值", value: fmtBigMoney(f.market_cap, cur) },
+        {
+          label: "股息率",
+          value: f.dividend_yield != null ? `${(f.dividend_yield * 100).toFixed(2)}%` : "—",
+        },
+        { label: "52周区间", value: fmt52wRange(f.week52_low, f.week52_high) },
+      ];
+
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))",
+          gap: 8,
+        }}
+      >
+        {cells.map((c) => {
+          // 显示「—」的格子若未自带解释，统一补一句：横线=数据源没有，不是抓取失败
+          const title = c.title ?? (c.value === "—" ? "数据源暂未提供该字段（非抓取失败）" : undefined);
+          return (
+            <div
+              key={c.label}
+              className="card"
+              style={{ padding: "0.5rem 0.6rem", borderColor: "var(--border)", cursor: title ? "help" : "default" }}
+              title={title}
+            >
+              <div style={{ color: "var(--text-dim)", fontSize: 10, marginBottom: 3 }}>{c.label}</div>
+              <div
+                style={{
+                  color: c.color ?? "var(--text)",
+                  fontSize: 13,
+                  fontWeight: 600,
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {c.value}
+              </div>
+              {c.sub && (
+                <div style={{ color: "var(--text-dim)", fontSize: 10, marginTop: 2, fontVariantNumeric: "tabular-nums" }}>
+                  {c.sub}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p style={{ color: "var(--text-dim)", fontSize: 10, margin: "6px 0 0" }}>
+        估值指标为当前快照，需结合行业与自身历史判断，不构成买卖建议。「—」表示数据源暂未提供该字段（非抓取失败）。
+      </p>
+    </div>
+  );
+}
+
+/** 基本面数值格式化：null/非有限数降级为「—」，正常保留两位小数。 */
+function fmtNum(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return v.toLocaleString("en-US", { maximumFractionDigits: 2 });
+}
+
+/** 52 周区间：两端有一端缺失即整体降级为「—」。 */
+function fmt52wRange(low: number | null | undefined, high: number | null | undefined): string {
+  if (low == null || high == null || !Number.isFinite(low) || !Number.isFinite(high)) return "—";
+  return `${fmtNum(low)} – ${fmtNum(high)}`;
 }
 
 /** 趋势图例行（无数值，仅标注线条含义，如"现价"）；点击切换该线条在图上的显示/隐藏。 */
