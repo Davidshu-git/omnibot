@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from stock_bot.twr_engine import compute_windowed_returns
 from stock_bot.valuation_engine import (
     calculate_portfolio_valuation,
     fetch_fx_trend,
@@ -36,6 +37,7 @@ BASE_DIR: Path = Path(__file__).resolve().parent.parent
 STOCK_MEMORY_DIR: Path = BASE_DIR / "data/stock/memory"
 SNAPSHOT_DIR: Path = BASE_DIR / "data/stock/snapshots"
 SNAPSHOT_FILE: Path = SNAPSHOT_DIR / "portfolio.jsonl"
+RETURNS_FILE: Path = SNAPSHOT_DIR / "returns.json"
 TRANSACTION_LOG_FILE: Path = STOCK_MEMORY_DIR / "transaction_logs.jsonl"
 
 
@@ -206,6 +208,58 @@ def build_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     }
 
 
+def _load_transactions() -> List[Dict[str, Any]]:
+    """读取交易流水（``transaction_logs.jsonl``），坏行跳过；文件缺失返回空列表。"""
+    rows: List[Dict[str, Any]] = []
+    if not TRANSACTION_LOG_FILE.exists():
+        return rows
+    try:
+        with open(TRANSACTION_LOG_FILE, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError as exc:
+        logger.warning("读取交易流水失败，TWR 按空流水计：%s", exc)
+    return rows
+
+
+def write_returns(snapshots: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """基于全量快照 + 交易流水，计算各时间窗证券投资 TWR，落盘 ``returns.json``。
+
+    投资总控台「MTD/YTD/1Y」窗口的点亮数据源。纯派生计算，失败不影响主快照——
+    仅记日志并返回 None（obs 侧对 returns.json 缺失做优雅降级）。
+
+    Args:
+        snapshots: 全量快照列表（write_snapshot 回写后的最新集合）。
+
+    Returns:
+        Optional[Dict[str, Any]]: 写入的 returns 字典；计算或落盘失败返回 None。
+    """
+    try:
+        returns = compute_windowed_returns(snapshots, _load_transactions())
+    except Exception as exc:  # 派生计算异常绝不冒泡到快照主流程
+        logger.error("计算窗口 TWR 失败：%s - %s", type(exc).__name__, exc)
+        return None
+    try:
+        SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
+        with open(RETURNS_FILE, "w", encoding="utf-8") as f:
+            json.dump(returns, f, ensure_ascii=False, indent=2)
+        lit = [n for n, w in returns.get("windows", {}).items() if w.get("twr_available")]
+        logger.info(
+            "窗口 TWR 已落盘：可信起点 %s，点亮 %s",
+            returns.get("flow_genesis_date"), "/".join(lit) or "（暂无）",
+        )
+        return returns
+    except OSError as exc:
+        logger.error("窗口 TWR 落盘失败：%s", exc)
+        return None
+
+
 def write_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """生成并落盘一条快照（同日去重：覆盖当天最后一条）。
 
@@ -249,6 +303,9 @@ def write_snapshot(valuation: Optional[Dict[str, Any]] = None) -> Optional[Dict[
             snapshot["date"], snapshot["total_market_value"],
             snapshot["securities_total_cny"], snapshot["cash_total_cny"],
         )
+        # 快照落盘成功后顺手刷新窗口 TWR（投资总控台点亮数据源）。派生计算失败
+        # 不影响快照本身——returns.json 缺失时 obs 侧全窗降级为灰态。
+        write_returns(rows)
         return snapshot
     except OSError as exc:
         logger.error("组合快照落盘失败：%s", exc)

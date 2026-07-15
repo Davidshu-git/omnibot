@@ -7,6 +7,8 @@ import {
   type PortfolioHolding,
   type PortfolioCashHolding,
   type PortfolioHistoryPoint,
+  type PortfolioReturns,
+  type PortfolioReturnWindow,
   type FxTrend,
   type WatchlistItem,
 } from "@/lib/api";
@@ -23,12 +25,26 @@ function fmtCny(n: number | undefined | null): string {
   return `¥${n.toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+/** 按窗口起点切片净值序列：起点后（含基准日）的快照点。缺信息时退化到旧行为。 */
+function sliceHistoryByWindow(
+  history: PortfolioHistoryPoint[],
+  wi: PortfolioReturnWindow | undefined,
+  win: string,
+): PortfolioHistoryPoint[] {
+  // 优先用后端基准日（TWR 锚点）切片，保证图表区间与收益率口径一致。
+  const anchor = wi?.baseline_date ?? wi?.start_date;
+  if (anchor) return history.filter((p) => p.date >= anchor);
+  if (win === "今日") return history.slice(-2);
+  return history;
+}
+
 const CURRENCY_LABEL: Record<string, string> = { USD: "美元", HKD: "港币", CNY: "人民币" };
 const ALLOC_PALETTE = ["var(--cat-1)", "var(--cat-2)", "var(--cat-3)", "var(--blue)", "var(--amber)"];
 
-// Ghostfolio 范式的时间窗；今日/累计已点亮（有基准），MTD/YTD/1Y 待快照与现金流积累（二档）。
+// Ghostfolio 范式时间窗。可点性与证券投资 TWR 由后端 /portfolio/returns 动态判定
+// （twr_engine），前端不再硬编码——数据积累到位后窗口自动点亮。
 const TIME_WINDOWS = ["今日", "WTD", "MTD", "YTD", "1Y", "累计"] as const;
-const ACTIVE_WINDOWS = new Set<string>(["今日", "累计"]);
+type TimeWindow = (typeof TIME_WINDOWS)[number];
 
 export default function PortfolioPage() {
   const isMobile = useIsMobile();
@@ -37,7 +53,8 @@ export default function PortfolioPage() {
   const [snap, setSnap] = useState<PortfolioSnapshot | null>(null);
   const [history, setHistory] = useState<PortfolioHistoryPoint[]>([]);
   const [historyExcludedCount, setHistoryExcludedCount] = useState(0);
-  const [win, setWin] = useState<"今日" | "累计">("累计");
+  const [returns, setReturns] = useState<PortfolioReturns | null>(null);
+  const [win, setWin] = useState<TimeWindow>("累计");
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState("");
   const [revaluing, setRevaluing] = useState(false);
@@ -57,11 +74,12 @@ export default function PortfolioPage() {
 
   const load = useCallback(() => {
     setLoading(true);
-    Promise.all([api.portfolioLatest(), api.portfolioHistory(90)])
-      .then(([s, h]) => {
+    Promise.all([api.portfolioLatest(), api.portfolioHistory(90), api.portfolioReturns()])
+      .then(([s, h, r]) => {
         setSnap(s);
         setHistory(h.points ?? []);
         setHistoryExcludedCount(h.excluded_count ?? h.excluded_points?.length ?? 0);
+        setReturns(r);
         setErr("");
       })
       .catch((e) => setErr(String(e)))
@@ -209,33 +227,45 @@ export default function PortfolioPage() {
 
       {available && (
         <>
-          {/* 时间窗切换（今日/累计已点亮，MTD/YTD/1Y 待积累） */}
+          {/* 时间窗切换：可点性由后端 returns.windows[w].chart_available 决定。
+              returns 缺失（尚未生成）时降级为仅「累计」可点，页面不至于全灰。 */}
           <div style={{ display: "flex", gap: 6, marginBottom: "1rem", flexWrap: "wrap", rowGap: 6, alignItems: "center" }}>
             {TIME_WINDOWS.map((w) => {
-              const active = ACTIVE_WINDOWS.has(w);
-              const selected = active && w === win;
+              const wi = returns?.windows?.[w];
+              const clickable = wi ? wi.chart_available : w === "累计";
+              const selected = clickable && w === win;
+              const twrTag = wi?.twr_available && wi.twr_pct != null
+                ? ` · 投资收益 ${wi.twr_pct >= 0 ? "+" : ""}${wi.twr_pct}%`
+                : "";
+              const tip = clickable
+                ? `查看该窗净值走势${twrTag}`
+                : (wi?.reason ?? "待快照与现金流积累后点亮");
               return (
                 <button
                   key={w}
-                  disabled={!active}
-                  onClick={() => active && setWin(w as "今日" | "累计")}
+                  disabled={!clickable}
+                  onClick={() => clickable && setWin(w)}
                   className={`tag-btn${selected ? " active" : ""}`}
-                  style={{ fontSize: 11, opacity: active ? 1 : 0.4, cursor: active ? "pointer" : "not-allowed" }}
-                  title={active ? "查看该窗净值变化" : "趋势窗待快照与现金流积累（二档）"}
+                  style={{ fontSize: 11, opacity: clickable ? 1 : 0.4, cursor: clickable ? "pointer" : "not-allowed" }}
+                  title={tip}
                 >
                   {w}
                 </button>
               );
             })}
-            <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: 4 }}>
-              MTD/YTD/1Y 待快照与现金流积累后点亮
-            </span>
+            {returns?.flow_genesis_date && (
+              <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: 4 }}>
+                投资收益(TWR)可信起点 {returns.flow_genesis_date}·灰置窗随数据自动点亮
+              </span>
+            )}
           </div>
 
-          {/* 净值走势曲线（Ghostfolio Net Worth Chart：纯总资产走势，不扣现金流） */}
+          {/* 净值走势曲线（Ghostfolio Net Worth Chart：纯总资产走势，不扣现金流）+
+              证券投资 TWR 徽章（剔除加仓的真实收益率，由 returns 提供）。 */}
           <NetWorthCard
-            points={win === "今日" ? history.slice(-2) : history}
+            points={sliceHistoryByWindow(history, returns?.windows?.[win], win)}
             win={win}
+            ret={returns?.windows?.[win] ?? null}
             excludedCount={historyExcludedCount}
           />
 
@@ -444,10 +474,11 @@ function Sparkline({ data, width = 52, height = 14 }: { data: number[]; width?: 
   );
 }
 
-/** 净值走势卡：标题 + 选中窗的净值变化（非投资收益）+ 全宽走势曲线。 */
-function NetWorthCard({ points, win, excludedCount }: {
+/** 净值走势卡：标题 + 选中窗的净值变化（含入金）+ 证券投资 TWR 徽章 + 全宽走势曲线。 */
+function NetWorthCard({ points, win, ret, excludedCount }: {
   points: PortfolioHistoryPoint[];
   win: string;
+  ret: PortfolioReturnWindow | null;
   excludedCount: number;
 }) {
   const enough = points.length >= 2;
@@ -473,6 +504,25 @@ function NetWorthCard({ points, win, excludedCount }: {
         <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: "auto" }}>
           {points.length} 个快照点 · 净值变化 ≠ 投资收益（未扣入金/加仓）
         </span>
+      </div>
+      {/* 证券投资 TWR 徽章：剔除加仓的真实时间加权收益率。可信则显示%，否则给说明。 */}
+      <div style={{
+        display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10,
+        paddingTop: 8, borderTop: "1px solid var(--border)", flexWrap: "wrap",
+      }}>
+        <span style={{ color: "var(--text-muted)", fontSize: 11 }}>证券投资收益 (TWR)</span>
+        {ret?.twr_available && ret.twr_pct != null ? (
+          <>
+            <span style={{ color: pnlColor(ret.twr_pct), fontSize: 16, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+              {ret.twr_pct >= 0 ? "+" : ""}{ret.twr_pct}%
+            </span>
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>已剔除入金/加仓，仅证券+加密</span>
+          </>
+        ) : (
+          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
+            {ret?.reason ?? "暂不可用"}
+          </span>
+        )}
       </div>
       {excludedCount > 0 && (
         <p style={{ color: "var(--amber)", fontSize: 11, margin: "0 0 8px" }}>

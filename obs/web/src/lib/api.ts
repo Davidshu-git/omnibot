@@ -227,6 +227,32 @@ export interface PortfolioHistoryResponse {
   excluded_count?: number;
 }
 
+/** 单个时间窗的证券投资 TWR 与可用性（后端 twr_engine 计算）。 */
+export interface PortfolioReturnWindow {
+  /** 图表区间可用（该窗起点存在基准快照）。false → 按钮灰置。 */
+  chart_available: boolean;
+  /** TWR 可信（基准日 ≥ 现金流可信起点）。false → 不显示收益率。 */
+  twr_available: boolean;
+  /** 证券投资时间加权收益率（百分数，如 -0.55）；不可用为 null。 */
+  twr_pct: number | null;
+  start_date: string | null;
+  baseline_date: string | null;
+  days: number;
+  /** 不可用原因（灰置 tooltip / 徽章说明）。 */
+  reason: string | null;
+}
+
+export interface PortfolioReturns {
+  available: boolean;
+  basis?: string;
+  as_of_date?: string;
+  generated_at?: string;
+  first_snapshot_date?: string | null;
+  /** 现金流可信起点：此日起买卖流水均结构化，TWR 可信。 */
+  flow_genesis_date?: string | null;
+  windows?: Record<string, PortfolioReturnWindow>;
+}
+
 export interface PortfolioSnapshot {
   available: boolean;
   date?: string;
@@ -425,6 +451,8 @@ mhxyExecutorStatus: () => get<MhxyExecutorStatus>("/api/external/mhxy-executor/s
   portfolioLatest: () => get<PortfolioSnapshot>("/api/portfolio/latest"),
   portfolioHistory: (days = 90) =>
     get<PortfolioHistoryResponse>("/api/portfolio/history", { days }),
+  // 各时间窗证券投资 TWR（窗口点亮 + 收益率徽章数据源）。
+  portfolioReturns: () => get<PortfolioReturns>("/api/portfolio/returns"),
   // 触发 stock bot 重新取价 + 覆盖当天快照（区别于 portfolioLatest 的纯重读）。
   portfolioRefresh: () =>
     post<{ status: string; generated_at?: string; total_market_value?: number; retry_after?: number; detail?: string }>(

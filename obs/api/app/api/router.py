@@ -393,6 +393,37 @@ async def portfolio_history(days: int = Query(default=90, ge=1, le=730)):
     }
 
 
+def _portfolio_returns_path() -> Path:
+    """窗口 TWR（returns.json）在 obs 容器内的只读路径。"""
+    base = Path(os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot")
+    return base / "snapshots" / "returns.json"
+
+
+@router.get("/portfolio/returns")
+async def portfolio_returns():
+    """返回各时间窗证券投资 TWR 与可用性（投资总控台窗口点亮数据源）。
+
+    由 stock_bot.snapshot 每次落快照时用 twr_engine 算出并写 returns.json，obs 仅只读
+    转发、不做任何财务计算。文件缺失（尚未生成）时优雅降级为「全窗不可用」，前端据此
+    渲染灰态而非报错。
+
+    Returns:
+        dict: ``{"available": bool, ...returns字段}``。字段见 twr_engine.compute_windowed_returns。
+    """
+    path = _portfolio_returns_path()
+    if not path.is_file():
+        return {"available": False}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("读取窗口 TWR 失败：%s", exc)
+        return {"available": False}
+    if not isinstance(data, dict):
+        return {"available": False}
+    return {"available": True, **data}
+
+
 def _watchlist_path() -> Path:
     """自选观察清单 JSON 在 obs 容器内的只读路径（同 portfolio 快照，直读挂载文件）。"""
     base = Path(os.getenv("RUNTIME_DIR_STOCK_BOT") or "/runtime/stock-bot")
