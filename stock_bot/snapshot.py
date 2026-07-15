@@ -23,6 +23,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from stock_bot.mwr_engine import compute_account_mwr
 from stock_bot.twr_engine import compute_windowed_returns
 from stock_bot.valuation_engine import (
     calculate_portfolio_valuation,
@@ -228,11 +229,44 @@ def _load_transactions() -> List[Dict[str, Any]]:
     return rows
 
 
-def write_returns(snapshots: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """基于全量快照 + 交易流水，计算各时间窗证券投资 TWR，落盘 ``returns.json``。
+def _merge_account_mwr(
+    returns: Dict[str, Any],
+    snapshots: List[Dict[str, Any]],
+    transactions: List[Dict[str, Any]],
+) -> None:
+    """把账户口径 MWR 字段就地合并进 TWR 的 ``returns`` 结构(每窗补 ``mwr_*``)。
 
-    投资总控台「MTD/YTD/1Y」窗口的点亮数据源。纯派生计算，失败不影响主快照——
-    仅记日志并返回 None（obs 侧对 returns.json 缺失做优雅降级）。
+    两口径解耦:MWR 计算失败只记日志、不动已算好的 TWR 部分(证券口径 TWR 与账户
+    口径 MWR 各有独立的可信起点与门控,见 [[mwr_engine]] / [[twr_engine]])。
+
+    Args:
+        returns: ``compute_windowed_returns`` 产出的 TWR 结构(就地修改)。
+        snapshots: 全量快照列表。
+        transactions: 交易流水行列表。
+    """
+    try:
+        mwr = compute_account_mwr(snapshots, transactions)
+    except Exception as exc:  # MWR 派生计算异常不影响 TWR 落盘
+        logger.error("计算账户口径 MWR 失败：%s - %s", type(exc).__name__, exc)
+        return
+    returns["mwr_flow_genesis_date"] = mwr.get("flow_genesis_date")
+    for name, mw in mwr.get("windows", {}).items():
+        w = returns.get("windows", {}).get(name)
+        if w is None:
+            continue
+        w["mwr_available"] = mw.get("mwr_available")
+        w["mwr_pct"] = mw.get("mwr_pct")
+        w["mwr_xirr_annual"] = mw.get("mwr_xirr_annual")
+        w["mwr_reason"] = mw.get("reason")
+
+
+def write_returns(snapshots: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """基于全量快照 + 交易流水，计算各时间窗收益率，落盘 ``returns.json``。
+
+    投资总控台窗口点亮的数据源,同时产出两个互补口径:证券口径 **TWR**(时间加权,
+    衡量选股水平)与账户口径 **MWR**(资金加权 Modified Dietz + 年化 XIRR,衡量含现金
+    的整个投资盘子的钱效率)。纯派生计算,失败不影响主快照——仅记日志并返回 None
+    (obs 侧对 returns.json 缺失做优雅降级)。
 
     Args:
         snapshots: 全量快照列表（write_snapshot 回写后的最新集合）。
@@ -240,23 +274,27 @@ def write_returns(snapshots: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     Returns:
         Optional[Dict[str, Any]]: 写入的 returns 字典；计算或落盘失败返回 None。
     """
+    transactions = _load_transactions()
     try:
-        returns = compute_windowed_returns(snapshots, _load_transactions())
+        returns = compute_windowed_returns(snapshots, transactions)
     except Exception as exc:  # 派生计算异常绝不冒泡到快照主流程
         logger.error("计算窗口 TWR 失败：%s - %s", type(exc).__name__, exc)
         return None
+    _merge_account_mwr(returns, snapshots, transactions)
     try:
         SNAPSHOT_DIR.mkdir(parents=True, exist_ok=True)
         with open(RETURNS_FILE, "w", encoding="utf-8") as f:
             json.dump(returns, f, ensure_ascii=False, indent=2)
-        lit = [n for n, w in returns.get("windows", {}).items() if w.get("twr_available")]
+        lit_twr = [n for n, w in returns.get("windows", {}).items() if w.get("twr_available")]
+        lit_mwr = [n for n, w in returns.get("windows", {}).items() if w.get("mwr_available")]
         logger.info(
-            "窗口 TWR 已落盘：可信起点 %s，点亮 %s",
-            returns.get("flow_genesis_date"), "/".join(lit) or "（暂无）",
+            "窗口收益已落盘：TWR 起点 %s 点亮 %s；MWR 起点 %s 点亮 %s",
+            returns.get("flow_genesis_date"), "/".join(lit_twr) or "（暂无）",
+            returns.get("mwr_flow_genesis_date"), "/".join(lit_mwr) or "（暂无）",
         )
         return returns
     except OSError as exc:
-        logger.error("窗口 TWR 落盘失败：%s", exc)
+        logger.error("窗口收益落盘失败：%s", exc)
         return None
 
 

@@ -227,18 +227,32 @@ export interface PortfolioHistoryResponse {
   excluded_count?: number;
 }
 
-/** 单个时间窗的证券投资 TWR 与可用性（后端 twr_engine 计算）。 */
+/** 单个时间窗的收益率与可用性（后端 twr_engine + mwr_engine 计算）。
+ *
+ * 两个互补口径：
+ * - **TWR**（证券组合口径，twr_engine）：时间加权，剔除买卖现金流，衡量选股水平。
+ * - **MWR**（整体账户口径，mwr_engine）：资金加权 Modified Dietz，含现金的总盘子的
+ *   钱效率，回答「掏了多少真金白银、现在值多少」；副带年化 XIRR（短窗放大，仅参考）。
+ */
 export interface PortfolioReturnWindow {
   /** 图表区间可用（该窗起点存在基准快照）。false → 按钮灰置。 */
   chart_available: boolean;
-  /** TWR 可信（基准日 ≥ 现金流可信起点）。false → 不显示收益率。 */
+  /** TWR 可信（基准日 ≥ 买卖流水可信起点）。false → 不显示收益率。 */
   twr_available: boolean;
   /** 证券投资时间加权收益率（百分数，如 -0.55）；不可用为 null。 */
   twr_pct: number | null;
+  /** MWR 可信（基准日 ≥ 出入金可信起点）。false → 不显示。 */
+  mwr_available?: boolean;
+  /** 账户口径资金加权收益率 Modified Dietz（区间累计百分数）；不可用为 null。 */
+  mwr_pct?: number | null;
+  /** 年化 XIRR（百分数）；短窗严重放大，仅供参考，前端须标注。 */
+  mwr_xirr_annual?: number | null;
+  /** MWR 不可用原因。 */
+  mwr_reason?: string | null;
   start_date: string | null;
   baseline_date: string | null;
   days: number;
-  /** 不可用原因（灰置 tooltip / 徽章说明）。 */
+  /** TWR 不可用原因（灰置 tooltip / 徽章说明）。 */
   reason: string | null;
 }
 
@@ -248,8 +262,10 @@ export interface PortfolioReturns {
   as_of_date?: string;
   generated_at?: string;
   first_snapshot_date?: string | null;
-  /** 现金流可信起点：此日起买卖流水均结构化，TWR 可信。 */
+  /** TWR 现金流可信起点：此日起买卖流水均结构化，TWR 可信。 */
   flow_genesis_date?: string | null;
+  /** MWR 现金流可信起点：此日起出入金流水均结构化，MWR 可信。 */
+  mwr_flow_genesis_date?: string | null;
   windows?: Record<string, PortfolioReturnWindow>;
 }
 

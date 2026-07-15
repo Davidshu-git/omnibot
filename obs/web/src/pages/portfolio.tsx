@@ -234,11 +234,14 @@ export default function PortfolioPage() {
               const wi = returns?.windows?.[w];
               const clickable = wi ? wi.chart_available : w === "累计";
               const selected = clickable && w === win;
-              const twrTag = wi?.twr_available && wi.twr_pct != null
-                ? ` · 投资收益 ${wi.twr_pct >= 0 ? "+" : ""}${wi.twr_pct}%`
-                : "";
+              // 按钮 tooltip 优先展示主指标 MWR（账户口径回报），回退证券口径 TWR。
+              const retTag = wi?.mwr_available && wi.mwr_pct != null
+                ? ` · 回报 ${wi.mwr_pct >= 0 ? "+" : ""}${wi.mwr_pct}%`
+                : (wi?.twr_available && wi.twr_pct != null
+                    ? ` · 选股 ${wi.twr_pct >= 0 ? "+" : ""}${wi.twr_pct}%`
+                    : "");
               const tip = clickable
-                ? `查看该窗净值走势${twrTag}`
+                ? `查看该窗净值走势${retTag}`
                 : (wi?.reason ?? "待快照与现金流积累后点亮");
               return (
                 <button
@@ -253,15 +256,15 @@ export default function PortfolioPage() {
                 </button>
               );
             })}
-            {returns?.flow_genesis_date && (
+            {(returns?.mwr_flow_genesis_date || returns?.flow_genesis_date) && (
               <span style={{ color: "var(--text-dim)", fontSize: 11, marginLeft: 4 }}>
-                投资收益(TWR)可信起点 {returns.flow_genesis_date}·灰置窗随数据自动点亮
+                收益可信起点 MWR {returns.mwr_flow_genesis_date ?? "—"} / TWR {returns.flow_genesis_date ?? "—"}·灰置窗随数据自动点亮
               </span>
             )}
           </div>
 
           {/* 净值走势曲线（Ghostfolio Net Worth Chart：纯总资产走势，不扣现金流）+
-              证券投资 TWR 徽章（剔除加仓的真实收益率，由 returns 提供）。 */}
+              双口径收益徽章（MWR 账户口径主 / TWR 证券口径副，由 returns 提供）。 */}
           <NetWorthCard
             points={sliceHistoryByWindow(history, returns?.windows?.[win], win)}
             win={win}
@@ -474,7 +477,7 @@ function Sparkline({ data, width = 52, height = 14 }: { data: number[]; width?: 
   );
 }
 
-/** 净值走势卡：标题 + 选中窗的净值变化（含入金）+ 证券投资 TWR 徽章 + 全宽走势曲线。 */
+/** 净值走势卡：标题 + 选中窗的净值变化（含入金）+ 双口径收益徽章（MWR 主 / TWR 副）+ 全宽走势曲线。 */
 function NetWorthCard({ points, win, ret, excludedCount }: {
   points: PortfolioHistoryPoint[];
   win: string;
@@ -505,24 +508,48 @@ function NetWorthCard({ points, win, ret, excludedCount }: {
           {points.length} 个快照点 · 净值变化 ≠ 投资收益（未扣入金/加仓）
         </span>
       </div>
-      {/* 证券投资 TWR 徽章：剔除加仓的真实时间加权收益率。可信则显示%，否则给说明。 */}
-      <div style={{
-        display: "flex", alignItems: "baseline", gap: 8, marginBottom: 10,
-        paddingTop: 8, borderTop: "1px solid var(--border)", flexWrap: "wrap",
-      }}>
-        <span style={{ color: "var(--text-muted)", fontSize: 11 }}>证券投资收益 (TWR)</span>
-        {ret?.twr_available && ret.twr_pct != null ? (
-          <>
-            <span style={{ color: pnlColor(ret.twr_pct), fontSize: 16, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
-              {ret.twr_pct >= 0 ? "+" : ""}{ret.twr_pct}%
-            </span>
-            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>已剔除入金/加仓，仅证券+加密</span>
-          </>
-        ) : (
-          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>
-            {ret?.reason ?? "暂不可用"}
-          </span>
-        )}
+      {/* 双口径收益徽章：MWR（账户口径，主）衡量含现金全盘的钱效率；TWR（证券口径，副）
+          衡量剔除加仓的选股水平。两口径可信起点/门控独立，见 mwr_engine / twr_engine。 */}
+      <div style={{ paddingTop: 8, borderTop: "1px solid var(--border)", marginBottom: 10 }}>
+        {/* 主：账户口径 MWR —— 「掏了多少真金白银、现在值多少」 */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+          <span
+            title="资金加权收益率（Modified Dietz）：以入金/出金为现金流、期初期末为总净值（含现金）。回答『掏了多少真金白银、现在值多少』，是个人投资总控的核心指标。"
+            style={{ color: "var(--text-muted)", fontSize: 11, cursor: "help" }}
+          >投资回报 (MWR)</span>
+          {ret?.mwr_available && ret.mwr_pct != null ? (
+            <>
+              <span style={{ color: pnlColor(ret.mwr_pct), fontSize: 18, fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>
+                {ret.mwr_pct >= 0 ? "+" : ""}{ret.mwr_pct}%
+              </span>
+              <span style={{ color: "var(--text-dim)", fontSize: 11 }}>资金加权 · 含现金全盘 · 区间累计</span>
+              {ret.mwr_xirr_annual != null && (
+                <span style={{ color: "var(--text-dim)", fontSize: 10, marginLeft: "auto" }}>
+                  年化 XIRR {ret.mwr_xirr_annual >= 0 ? "+" : ""}{ret.mwr_xirr_annual}%（短窗放大，仅参考）
+                </span>
+              )}
+            </>
+          ) : (
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{ret?.mwr_reason ?? "暂不可用"}</span>
+          )}
+        </div>
+        {/* 副：证券口径 TWR —— 剔除加仓时点的选股水平 */}
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+          <span
+            title="时间加权收益率：以买卖为现金流、只看证券+加密市值，剔除加仓时点影响，衡量选股水平（不含现金）。"
+            style={{ color: "var(--text-muted)", fontSize: 11, cursor: "help" }}
+          >选股收益 (TWR)</span>
+          {ret?.twr_available && ret.twr_pct != null ? (
+            <>
+              <span style={{ color: pnlColor(ret.twr_pct), fontSize: 15, fontWeight: 700, fontVariantNumeric: "tabular-nums" }}>
+                {ret.twr_pct >= 0 ? "+" : ""}{ret.twr_pct}%
+              </span>
+              <span style={{ color: "var(--text-dim)", fontSize: 11 }}>仅证券+加密 · 剔除加仓</span>
+            </>
+          ) : (
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{ret?.reason ?? "暂不可用"}</span>
+          )}
+        </div>
       </div>
       {excludedCount > 0 && (
         <p style={{ color: "var(--amber)", fontSize: 11, margin: "0 0 8px" }}>

@@ -401,14 +401,16 @@ def _portfolio_returns_path() -> Path:
 
 @router.get("/portfolio/returns")
 async def portfolio_returns():
-    """返回各时间窗证券投资 TWR 与可用性（投资总控台窗口点亮数据源）。
+    """返回各时间窗收益率与可用性（投资总控台窗口点亮数据源）。
 
-    由 stock_bot.snapshot 每次落快照时用 twr_engine 算出并写 returns.json，obs 仅只读
-    转发、不做任何财务计算。文件缺失（尚未生成）时优雅降级为「全窗不可用」，前端据此
-    渲染灰态而非报错。
+    两个互补口径：证券口径 **TWR**（twr_engine，时间加权）与账户口径 **MWR**
+    （mwr_engine，资金加权 Modified Dietz + 年化 XIRR）。由 stock_bot.snapshot 每次落
+    快照时算出并写 returns.json，obs 仅只读透传、不做任何财务计算。文件缺失（尚未生成）
+    时优雅降级为「全窗不可用」，前端据此渲染灰态而非报错。
 
     Returns:
-        dict: ``{"available": bool, ...returns字段}``。字段见 twr_engine.compute_windowed_returns。
+        dict: ``{"available": bool, ...returns字段}``。字段见 twr_engine.compute_windowed_returns
+            与 mwr_engine.compute_account_mwr（后者提供每窗 mwr_* 字段）。
     """
     path = _portfolio_returns_path()
     if not path.is_file():
