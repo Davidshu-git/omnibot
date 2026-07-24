@@ -4,6 +4,7 @@
 import json
 import tiktoken
 from pathlib import Path
+from typing import Callable, Optional
 from filelock import FileLock
 from langchain_core.tools import tool
 from langchain_community.chat_message_histories import FileChatMessageHistory
@@ -127,12 +128,18 @@ def get_session_history(
     return history
 
 
-def make_memory_tools(memory_dir: Path) -> list:
+def make_memory_tools(
+    memory_dir: Path,
+    validate_entry: Callable[[str, str], Optional[str]] | None = None,
+) -> list:
     """
     创建绑定了具体记忆目录的 LangChain 工具列表。
 
     Args:
         memory_dir: 记忆文件目录（存放 user_profile.json、transaction_logs.jsonl）
+        validate_entry: 可选的写入前校验函数 (key, value) -> 错误消息或 None。
+            返回非 None 时拒绝写入并把消息原样返给 LLM（用于 bot 专属格式约束，
+            如 stock bot 的持仓/现金格式；不传则不校验，行为与旧版一致）。
     """
     memory_dir.mkdir(parents=True, exist_ok=True)
     profile_path = memory_dir / "user_profile.json"
@@ -146,7 +153,12 @@ def make_memory_tools(memory_dir: Path) -> list:
         用于记录或更新用户的状态、偏好、持仓快照。相同 key 会直接覆盖。
         - 参数 key: 记忆的分类标签，必须是简短明确的名词（例如："风险偏好"、"报告格式要求"）。
         - 参数 value: 具体的客观事实数据。
+        - 写入前会做格式校验；若返回 ❌ 拒绝，请按提示修正 key/value 后重试，不要原样重发。
         """
+        if validate_entry is not None:
+            err = validate_entry(key, value)
+            if err:
+                return err
         try:
             if not profile_path.exists():
                 with open(profile_path, 'w', encoding='utf-8') as f:

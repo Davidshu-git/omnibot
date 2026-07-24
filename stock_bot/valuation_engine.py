@@ -1315,6 +1315,83 @@ def calculate_portfolio_valuation(
     }
 
 
+# 清仓/过时条目的占位文本关键词：这类值应删除条目而非改值保留（僵尸条目）
+_PLACEHOLDER_WORDS = ("已清空", "已清仓", "已卖出", "已删除", "已转出", "无持仓", "待设置", "待重新设置")
+
+
+def validate_profile_entry(key: str, value: str) -> Optional[str]:
+    """update_user_memory 写入 user_profile.json 前的格式校验（stock bot 专用）。
+
+    与 parse_user_profile_to_positions / parse_cash_assets 保持同一解析口径，
+    在写入源头拦截会被解析器静默漏算或误算的坏格式（如 2026-07-16 事故：
+    LLM 重写持仓时写入 `成本 $60,439.27`，`$` 使成本解析失败、千分位使
+    60439.27 被截断成 60，持仓静默漏算数日）。
+
+    Args:
+        key: 记忆条目 key。
+        value: 记忆条目 value。
+
+    Returns:
+        Optional[str]: 通过返回 None；否则返回给 LLM 的纠正指引（含 ❌ 前缀）。
+    """
+    ks, vs = str(key).strip(), str(value).strip()
+
+    if any(w in vs for w in _PLACEHOLDER_WORDS):
+        return (f"❌ 拒绝写入：value 是占位文本（'{vs[:20]}'）。清仓或过时条目请直接调用 "
+                f"delete_user_memory 删除 [{ks}]，不要写占位值保留僵尸条目。")
+
+    if "$" in vs or "＄" in vs:
+        return ("❌ 拒绝写入：value 中不能含 $ 符号（会导致成本/金额解析失败、持仓被静默漏算）。"
+                "币种用中文词（美元/港币/人民币），数字只写纯数值。请修正后重试。")
+
+    if re.search(r'\d,\d', vs):
+        return ("❌ 拒绝写入：数字中不能用千分位逗号（如 60,439.27 会被解析成 60）。"
+                "请写成 60439.27 后重试。")
+
+    shares_match = re.search(r'([\d.]+)\s*(?:股|枚|个)', vs)
+    looks_like_position = bool(shares_match) and "成本" in vs
+
+    # 现金条目：key=`现金·<平台>`，value=`<金额> <币种>`
+    if ks.startswith("现金"):
+        if looks_like_position:
+            return (f"❌ 现金条目 [{ks}] 不能写成持仓格式。"
+                    f"value 必须是 '<金额> <币种>'，如 '105.59 美元'。")
+        if not re.fullmatch(r'[\d.]+\s*(美元|美金|港币|港元|人民币|元)', vs):
+            return (f"❌ 现金条目格式错误：[{ks}] 的 value 必须是 '<金额> <币种>'"
+                    f"（币种只写 美元/港币/人民币），如 '10000 港币'，收到的是 '{vs[:30]}'。")
+        return None
+
+    # 持仓条目：key 必须是裸代码，value 必须能被解析器完整解析
+    if looks_like_position:
+        if ks in PROFILE_SKIP_KEYS or not TICKER_KEY_PATTERN.match(ks):
+            return (f"❌ 持仓 key 非法：[{ks}]。持仓 key 必须是裸代码/币种符号"
+                    f"（如 AAPL、600519、3033.HK、BTC），不能用中文或带后缀，"
+                    f"否则该持仓会被估值引擎静默漏算。")
+        cost_match = re.search(r'成本\s*([\d.]+)', vs)
+        if not cost_match:
+            return ("❌ 持仓成本无法解析：value 必须含 '成本 <单价数字>'（每股/每币单价，"
+                    "不是总投入金额），如 '英伟达，4.1333 股，成本 197.20'。")
+        try:
+            shares = float(shares_match.group(1))
+            cost = float(cost_match.group(1))
+        except ValueError:
+            return "❌ 持仓份额或成本不是合法数字，请检查后重写。"
+        if shares <= 0:
+            return f"❌ 持仓份额必须大于 0；清仓请用 delete_user_memory 删除 [{ks}]。"
+        if cost < 0:
+            return "❌ 持仓成本不能为负数。"
+        return None
+
+    # key 长得像 ticker 但 value 不是持仓格式：写入后会被解析器跳过或误判，直接拦截
+    if TICKER_KEY_PATTERN.match(ks) and ks not in PROFILE_SKIP_KEYS:
+        return (f"❌ [{ks}] 是持仓类 key，但 value 不符合持仓格式 "
+                f"'[中文名]，X 股，成本 Y'（Y=每股/每币单价）。"
+                f"若要记录非持仓信息，请改用中文描述性 key。")
+
+    # 其余（偏好/纪律/教训等自由文本）不做格式约束
+    return None
+
+
 def parse_user_profile_to_positions(user_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """
     将用户持仓记忆文件（user_profile.json）中的自然语言持仓描述解析为标准 positions 格式。

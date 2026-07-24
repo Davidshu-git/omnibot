@@ -12,6 +12,7 @@ from core.tools.memory_tools import make_memory_tools, get_user_profile
 from core.tools.job_tools import make_job_tools
 from stock_bot.tools.stock_tools import make_stock_tools
 from stock_bot.tools.trade_tools import make_trade_tools
+from stock_bot.valuation_engine import validate_profile_entry
 
 load_dotenv()
 
@@ -151,7 +152,7 @@ _tools = (
     make_stock_tools(SANDBOX_DIR, MEMORY_DIR, ALLOWED_TG_USERS)
     + make_trade_tools(MEMORY_DIR)
     + make_file_tools(SANDBOX_DIR, KB_DIR, EMBEDDING_KEY, FAISS_DIR)
-    + make_memory_tools(MEMORY_DIR)
+    + make_memory_tools(MEMORY_DIR, validate_entry=validate_profile_entry)
     + make_job_tools("stock_bot.daily_job")
 )
 
