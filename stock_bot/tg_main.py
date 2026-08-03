@@ -260,6 +260,9 @@ class StockBot(TelegramBotBase):
             "preview_kb_cleanup": "🔍 正在扫描知识库文件列表...",
             "execute_kb_cleanup": "🗑️ 正在清理知识库文件及向量缓存...",
             "fetch_market_news": "📰 正在多源聚合最新全球市场资讯...",
+            "fetch_ticker_news": "📰 正在检索个股最新新闻...",
+            "fetch_fundamentals": "📊 正在拉取基本面快照（估值/财务）...",
+            "check_ticker_momentum": "📈 正在用选股引擎做单票技术面体检...",
         }
 
     async def setup_job_queue(self, app: Application) -> None:

@@ -27,6 +27,39 @@ from stock_bot.valuation_engine import (
 logger = logging.getLogger(__name__)
 
 
+@retry(
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=10),
+)
+def _ddgs_news_with_retry(keyword: str, max_results: int = 8) -> list[tuple[str, str, str]]:
+    """带指数退避重试的 DDGS 新闻检索。
+
+    不按异常类型过滤重试：DDGS 的后端超时与限流统一抛 ``DDGSException``，
+    它不是 ``ConnectionError``/``TimeoutError`` 的子类，用类型白名单会漏掉
+    实际最高频的那类瞬时失败（实测单次调用会随机吐 "No results found"
+    或 Bing 请求超时，重试即恢复）。
+
+    Args:
+        keyword: 检索词，调用方负责按语种拼好。
+        max_results: 最多返回条数。
+
+    Returns:
+        ``(date, source, title)`` 三元组列表，已滤掉空标题；无结果时为空列表。
+
+    Raises:
+        Exception: 三次重试均失败时抛出最后一次的异常，由调用方兜底成用户可读文案。
+    """
+    from ddgs import DDGS
+
+    results = DDGS().news(keyword, max_results=max_results)
+    items: list[tuple[str, str, str]] = []
+    for r in results or []:
+        title = str(r.get("title", "")).strip()
+        if title:
+            items.append((str(r.get("date", ""))[:10], str(r.get("source", "")).strip(), title))
+    return items
+
+
 def make_stock_tools(
     sandbox_dir: Path,
     memory_dir: Path,
@@ -415,6 +448,152 @@ def make_stock_tools(
 
         return "\n".join(lines)
 
+    @tool
+    def fetch_ticker_news(query: str) -> str:
+        """
+        📰 查询【单只股票/公司】的最新新闻（个股深度资讯，区别于 fetch_market_news 的大盘快讯）。
+        当用户问"XX 最近有什么消息/新闻/利好利空"，或你需要为买卖决策收集个股信息面时调用。
+        - 参数 query: 公司名或股票代码（如 "英特尔"、"INTC"、"600519"、"腾讯"）。
+          A 股 6 位代码走东财个股新闻；其余（美股/港股/英文名）走联网搜索。
+        """
+        lines: list[str] = []
+
+        # A 股 6 位数字代码：东财个股新闻接口（标题+时间，最相关）
+        code = query.strip().upper()
+        if code.isdigit() and len(code) == 6:
+            try:
+                import akshare as ak
+                df = ak.stock_news_em(symbol=code)
+                if df is not None and not df.empty:
+                    for _, row in df.head(10).iterrows():
+                        title = str(row.get("新闻标题", "")).strip()
+                        pub = str(row.get("发布时间", ""))[:16]
+                        if title:
+                            lines.append(f"[{pub}] {title}")
+            except Exception as e:
+                logger.warning(f"东财个股新闻获取失败（{code}）：{type(e).__name__}")
+
+        # 通用兜底：DDGS 新闻搜索（美股/港股/英文名，或东财无结果时）。
+        # 纯代码搜新闻质量差（搜 600519 只命中行情页），先用选股引擎的
+        # 代码→常用名静态映射解析成公司名再搜。
+        if not lines:
+            display = query
+            import re as _re
+            if _re.fullmatch(r'[A-Za-z0-9.\-]{1,12}', query.strip()):
+                try:
+                    from stock_bot.screener import resolve_ticker_name
+                    display = resolve_ticker_name(query.strip()) or query
+                except Exception:
+                    pass
+            # 检索词按名称语种拼：中文名配"股票"，英文名配 "stock news"。
+            # 中英混搭（如 "Intel Corporation 股票"）会显著拉低召回质量。
+            has_cjk = bool(_re.search(r'[一-鿿]', display))
+            keyword = f"{display} 股票" if has_cjk else f"{display} stock news"
+            try:
+                for date, src, title in _ddgs_news_with_retry(keyword):
+                    lines.append(f"[{date}][{src}] {title}")
+            except Exception as e:
+                return f"❌ 个股新闻检索失败：{type(e).__name__} - {str(e)[:80]}"
+
+        if not lines:
+            return f"未检索到 '{query}' 的近期新闻，可换公司全名或代码重试。"
+        return f"📰 {query} 相关最新新闻：\n" + "\n".join(lines)
+
+    @tool
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type((ConnectionError, TimeoutError, OSError)),
+    )
+    def fetch_fundamentals(ticker: str) -> str:
+        """
+        📊 查询单只股票的基本面快照：市值、PE/PB、股息率、毛利率、营收增速、52周区间等。
+        当用户问"XX 估值贵不贵/基本面怎么样"，或你需要为买卖决策补充估值与财务数据时调用。
+        数据来自 yfinance 实时接口（禁止凭记忆回答估值数据——训练数据是过时的）。
+        - 参数 ticker: 用户原始输入的代码（如 "INTC"、"0700"、"600519"），底层自动补市场后缀。
+        """
+        import math
+        import yfinance as yf
+        from stock_bot.valuation_engine import format_universal_ticker, is_crypto_ticker
+
+        if is_crypto_ticker(ticker):
+            return "❌ 加密货币没有基本面数据（市值/PE 概念不适用），请直接查价格与走势。"
+
+        formatted = format_universal_ticker(ticker)
+        info = yf.Ticker(formatted).info or {}
+        if not info.get("marketCap") and not info.get("trailingPE") and not info.get("longName"):
+            return f"❌ 未获取到 {formatted} 的基本面数据（接口返回为空），请确认代码或稍后重试。"
+
+        def fmt(v, pct: bool = False, big: bool = False) -> str:
+            if v is None or (isinstance(v, float) and math.isnan(v)):
+                return "—"
+            if big:
+                for unit, div in (("万亿", 1e12), ("亿", 1e8)):
+                    if abs(v) >= div:
+                        return f"{v / div:.2f} {unit}"
+                return f"{v:,.0f}"
+            return f"{v * 100:.2f}%" if pct else f"{v:.2f}"
+
+        currency = info.get("currency", "")
+        rows = [
+            f"📊 {info.get('longName') or formatted}（{formatted}）基本面快照：",
+            f"• 行业：{info.get('sector', '—')} / {info.get('industry', '—')}",
+            f"• 市值：{fmt(info.get('marketCap'), big=True)} {currency}",
+            f"• PE：TTM {fmt(info.get('trailingPE'))} ｜ 预期 {fmt(info.get('forwardPE'))}",
+            f"• PB：{fmt(info.get('priceToBook'))} ｜ PS(TTM)：{fmt(info.get('priceToSalesTrailing12Months'))}",
+            f"• 股息率：{fmt(info.get('dividendYield'), pct=True) if info.get('dividendYield') else '—'}",
+            f"• 毛利率：{fmt(info.get('grossMargins'), pct=True)} ｜ 净利率：{fmt(info.get('profitMargins'), pct=True)}",
+            f"• 营收增速(YoY)：{fmt(info.get('revenueGrowth'), pct=True)} ｜ 盈利增速(YoY)：{fmt(info.get('earningsGrowth'), pct=True)}",
+            f"• ROE：{fmt(info.get('returnOnEquity'), pct=True)} ｜ 负债/股东权益：{fmt(info.get('debtToEquity'))}",
+            f"• 52周区间：{fmt(info.get('fiftyTwoWeekLow'))} ~ {fmt(info.get('fiftyTwoWeekHigh'))}（现价 {fmt(info.get('currentPrice') or info.get('regularMarketPrice'))}）",
+            f"• Beta：{fmt(info.get('beta'))} ｜ 分析师目标价中位：{fmt(info.get('targetMedianPrice'))}",
+        ]
+        return "\n".join(rows)
+
+    @tool
+    def check_ticker_momentum(ticker: str) -> str:
+        """
+        📈 单票技术面体检：复用选股引擎对单只股票跑一遍完整信号——年线方向硬性过滤、
+        相对强度（vs 基准指数）、逆市抗跌强度、趋势持续年限、MA60 偏离度分位、逆小势回调观察。
+        当用户问"XX 技术面/趋势怎么样/现在是不是回调买点"，或你需要为买卖决策补充趋势面时调用。
+        - 参数 ticker: 用户原始输入的代码，底层自动补市场后缀。加密货币不支持。
+        """
+        from stock_bot.screener import _fetch_benchmark_data, _screen_one
+        from stock_bot.valuation_engine import (
+            detect_ticker_currency,
+            format_universal_ticker,
+            is_crypto_ticker,
+        )
+
+        if is_crypto_ticker(ticker):
+            return "❌ 选股引擎不支持加密货币（无基准指数可比），请用价格走势图代替。"
+        try:
+            currency = detect_ticker_currency(format_universal_ticker(ticker))
+            benchmark_data = _fetch_benchmark_data([currency])
+            r = _screen_one(ticker, benchmark_data)
+        except Exception as e:
+            return f"❌ 技术面体检失败：{type(e).__name__} - {str(e)[:80]}"
+
+        name = r.get("name") or r.get("ticker")
+        if not r.get("passed"):
+            return (f"📉 {name}（{r.get('ticker')}）未通过选股硬性过滤：{r.get('skip_reason')}。\n"
+                    f"说明：选股引擎只放行「年线向上」的顺大势标的，未通过≠不能买，"
+                    f"但意味着当前不在右侧趋势中，决策需更多依赖基本面与你的纪律。")
+
+        rs = r.get("relative_strength_pct")
+        cts = r.get("counter_trend_strength")
+        dur_txt = f"≥{r['trend_duration_years']} 年" if r.get("trend_duration_capped") else f"{r['trend_duration_years']} 年"
+        lines = [
+            f"📈 {name}（{r['ticker']}）技术面体检（现价 {r['latest_price']}）：",
+            f"• 年线（MA250）方向：{r['ma250_direction']} ✅ 通过硬性过滤",
+            f"• 相对强度（近60交易日 vs 基准）：{'+' if (rs or 0) >= 0 else ''}{rs if rs is not None else '—'}%",
+            f"• 逆市抗跌强度（大盘下跌日超额）：{cts if cts is not None else '—'}",
+            f"• 趋势持续：{dur_txt}",
+            f"• MA60 偏离度历史分位：{r.get('deviation_percentile_ma60', '—')}",
+            f"• 逆小势回调观察：{'🎯 是——顺大势+跌破MA60+偏离度处恐慌低位，属回调关注区' if r.get('pullback_watch') else '否'}",
+        ]
+        return "\n".join(lines)
+
     return [
         get_universal_stock_price,
         get_etf_price,
@@ -425,4 +604,7 @@ def make_stock_tools(
         list_price_alerts,
         delete_price_alert,
         fetch_market_news,
+        fetch_ticker_news,
+        fetch_fundamentals,
+        check_ticker_momentum,
     ]
