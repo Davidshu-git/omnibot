@@ -98,6 +98,19 @@ def ensure_dirs() -> None:
 
 
 def load_ports() -> list[str]:
+    """加载需要健康检查的实例端口。
+
+    优先取环境变量 MHXY_EXECUTOR_HEALTH_PORTS（逗号分隔），否则读 instances.json。
+
+    Returns:
+        端口字符串列表，保证非空。
+
+    Raises:
+        RuntimeError: 配置不可读、格式非法，或未解析出任何端口。此时宁可让
+            watchdog 显式失败，也不能兜底猜一个端口或返回空列表——ports 为空会
+            让深检的 all([]) 与 adb 判定的 devices_count >= expected_count(0)
+            双双恒真，把整套健康检查静默变成「永远健康」。
+    """
     raw = os.getenv("MHXY_EXECUTOR_HEALTH_PORTS", "").strip()
     if raw:
         return [p.strip() for p in raw.split(",") if p.strip()]
@@ -105,12 +118,19 @@ def load_ports() -> list[str]:
     path = Path(os.getenv("MHXY_INSTANCES_PATH", "/app/data/mhxy/config/instances.json"))
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        ports = [str(inst["port"]) for inst in data.get("instances", []) if inst.get("port")]
-        if ports:
-            return ports
-    except Exception as exc:
-        log.warning("load ports failed path=%s error=%s", path, exc)
-    return ["5557"]
+    except (OSError, ValueError) as exc:
+        log.error("load ports failed path=%s error=%s", path, exc)
+        raise RuntimeError(f"无法读取实例配置 {path}：{exc}") from exc
+
+    instances = data.get("instances", []) if isinstance(data, dict) else []
+    ports = [str(inst["port"]) for inst in instances if isinstance(inst, dict) and inst.get("port")]
+    if not ports:
+        log.error("no ports parsed from instances config path=%s", path)
+        raise RuntimeError(
+            f"实例配置 {path} 未解析出任何端口；"
+            "如需临时指定，设置环境变量 MHXY_EXECUTOR_HEALTH_PORTS=5559,5561"
+        )
+    return ports
 
 
 def write_status(status: dict[str, Any]) -> None:
